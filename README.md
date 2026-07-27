@@ -10,7 +10,7 @@ Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**
 - **Retry strategy** — tenacity with exponential backoff + jitter on all OpenAI and Meta Graph API calls; only transient failures (network errors, timeouts, 429, 5xx) are retried.
 - **OpenAI Responses API** — conversation memory, configurable model & system prompt, tool-calling-ready client, full AI usage logging.
 - **Clean Architecture** — routers → services → repositories → models, with dependency injection and environment-based configuration.
-- **Conversation management** — every message persisted, history reloaded per user, context window trimming and token budgeting.
+- **Conversation management** — every message persisted, history reloaded per user, context window trimming with **accurate tiktoken-based token budgeting** (not a character heuristic).
 - **Admin REST API** — users, conversations, statistics, protected by API key.
 - **Structured JSON logging** via structlog, request logging middleware, centralized exception handling.
 - **Deployment-ready** — Dockerfile, docker-compose (app + worker + Postgres + Redis + optional Nginx), Alembic migrations.
@@ -31,7 +31,7 @@ whatsapp-ai-bot/
 │   ├── workers/         # Celery app + tasks (durable queue)
 │   ├── middleware/      # request logging
 │   ├── dependencies/    # FastAPI dependency wiring
-│   ├── utils/           # token estimation & history trimming
+│   ├── utils/           # tiktoken token counting & history trimming
 │   ├── main.py          # app factory
 │   └── config.py        # pydantic-settings configuration
 ├── alembic/             # migrations
@@ -87,6 +87,15 @@ All outbound calls to OpenAI and the Meta Graph API are wrapped with **tenacity*
 - The OpenAI SDK's built-in retries are disabled (`max_retries=0`) so tenacity is the single source of truth and retry counts don't multiply.
 - Layered with Celery: tenacity handles short blips inside a task; if all attempts are exhausted, the Celery task itself retries later with longer backoff.
 
+## Token budgeting
+
+Conversation history sent to the model is trimmed with **tiktoken** (exact tokenizer counts, not a character estimate):
+
+- The tokenizer is resolved per model via `tiktoken.encoding_for_model`, falling back to `o200k_base` (gpt-4o / gpt-4.1 families) for unrecognized names.
+- Each message costs its token count plus a small per-message formatting overhead.
+- History is trimmed newest-to-oldest until `MAX_CONTEXT_MESSAGES` or `MAX_CONTEXT_TOKENS` is reached; the newest user message is always kept.
+- Note: tiktoken downloads encoding files on first use and caches them. For air-gapped deployments, set `TIKTOKEN_CACHE_DIR` and pre-seed the cache during the image build.
+
 ## Rate limiting
 
 Redis-backed fixed-window limits (slowapi), shared across all app replicas:
@@ -125,7 +134,7 @@ Redis-backed fixed-window limits (slowapi), shared across all app replicas:
 | `SYSTEM_PROMPT` | Assistant persona/instructions | generic |
 | `MAX_OUTPUT_TOKENS` | Max tokens per AI reply | `512` |
 | `MAX_CONTEXT_MESSAGES` | Max history messages sent to the model | `20` |
-| `MAX_CONTEXT_TOKENS` | Approx. token budget for history | `6000` |
+| `MAX_CONTEXT_TOKENS` | Token budget for history (counted with tiktoken) | `6000` |
 | `WHATSAPP_TOKEN` | Cloud API access token | — |
 | `WHATSAPP_PHONE_NUMBER_ID` | Sender phone number ID | — |
 | `WHATSAPP_VERIFY_TOKEN` | Webhook verification token | — |
