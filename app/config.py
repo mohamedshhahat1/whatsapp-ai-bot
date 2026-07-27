@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     celery_broker_url: str = ""
     celery_result_backend: str = ""
 
+    # Rate limiting (limit strings use the `limits` notation, e.g. "60/minute")
+    rate_limit_enabled: bool = True
+    rate_limit_webhook: str = "600/minute"
+    rate_limit_admin: str = "60/minute"
+
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"

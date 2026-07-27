@@ -3,6 +3,8 @@
 Inbound deliveries are ACKed immediately and processed asynchronously:
 - production: enqueued to Celery (durable, survives crashes, retried)
 - development fallback (USE_TASK_QUEUE=false): FastAPI BackgroundTasks
+
+Both endpoints are rate limited per client IP (Redis-backed).
 """
 
 import json
@@ -13,6 +15,7 @@ from fastapi.responses import PlainTextResponse
 
 from app.config import get_settings
 from app.core.logging import get_logger
+from app.core.ratelimit import WEBHOOK_LIMIT, limiter
 from app.core.security import verify_meta_signature
 from app.db.session import SessionLocal
 from app.dependencies.deps import get_openai_client, get_whatsapp_client
@@ -24,6 +27,7 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 
 @router.get("")
+@limiter.limit(WEBHOOK_LIMIT)
 async def verify_webhook(request: Request) -> PlainTextResponse:
     """Meta webhook verification handshake (hub.challenge echo)."""
     params = request.query_params
@@ -36,6 +40,7 @@ async def verify_webhook(request: Request) -> PlainTextResponse:
 
 
 @router.post("")
+@limiter.limit(WEBHOOK_LIMIT)
 async def receive_webhook(
     request: Request, background_tasks: BackgroundTasks
 ) -> dict[str, str]:

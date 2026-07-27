@@ -5,6 +5,8 @@ import os
 os.environ.setdefault("WHATSAPP_VERIFY_TOKEN", "test-verify-token")
 os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
 os.environ.setdefault("WHATSAPP_APP_SECRET", "")
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+os.environ.setdefault("USE_TASK_QUEUE", "false")
 
 import pytest
 from fastapi.testclient import TestClient

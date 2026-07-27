@@ -6,6 +6,7 @@ Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**
 
 - **WhatsApp Cloud API integration** — webhook verification, inbound text/image/document messages, outbound replies, delivery status & read receipts, Meta signature verification (`X-Hub-Signature-256`).
 - **Durable background processing** — webhook deliveries are enqueued to **Celery + Redis** with late acks and exponential-backoff retries, so messages are not lost if a worker crashes mid-processing. Message deduplication makes retries safe.
+- **Rate limiting** — Redis-backed limits (slowapi) on the webhook and Admin API, shared across all replicas, proxy-aware client IP detection.
 - **OpenAI Responses API** — conversation memory, configurable model & system prompt, tool-calling-ready client, full AI usage logging.
 - **Clean Architecture** — routers → services → repositories → models, with dependency injection and environment-based configuration.
 - **Conversation management** — every message persisted, history reloaded per user, context window trimming and token budgeting.
@@ -18,7 +19,7 @@ Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**
 ```
 whatsapp-ai-bot/
 ├── app/
-│   ├── core/            # logging, security, exceptions
+│   ├── core/            # logging, security, rate limiting, exceptions
 │   ├── db/              # engine, session, declarative base
 │   ├── models/          # SQLAlchemy 2.0 models (User, Conversation, Message, AILog, ChatSession)
 │   ├── repositories/    # data access layer (repository pattern)
@@ -75,6 +76,16 @@ Webhook `POST /webhook` deliveries are validated, ACKed immediately, and enqueue
 
 Scale workers independently of the API: `docker compose up -d --scale worker=3`.
 
+## Rate limiting
+
+Redis-backed fixed-window limits (slowapi), shared across all app replicas:
+
+- `POST/GET /webhook` — `RATE_LIMIT_WEBHOOK` (default `600/minute`) per client IP.
+- `/admin/*` — `RATE_LIMIT_ADMIN` (default `60/minute`) per client IP.
+- Client IP honors `X-Forwarded-For` set by the Nginx reverse proxy.
+- Exceeding a limit returns `429 Too Many Requests`.
+- Disable entirely with `RATE_LIMIT_ENABLED=false` (tests/local development).
+
 ## Connecting WhatsApp (Meta)
 
 1. Create a Meta app with the **WhatsApp** product and grab the token, phone number ID, and app secret.
@@ -93,6 +104,9 @@ Scale workers independently of the API: `docker compose up -d --scale worker=3`.
 | `USE_TASK_QUEUE` | Process webhooks via Celery (`true`) or in-process (`false`) | `true` |
 | `CELERY_BROKER_URL` | Celery broker (defaults to `REDIS_URL`) | — |
 | `CELERY_RESULT_BACKEND` | Celery result backend (defaults to `REDIS_URL`) | — |
+| `RATE_LIMIT_ENABLED` | Enable Redis-backed rate limiting | `true` |
+| `RATE_LIMIT_WEBHOOK` | Limit for `/webhook` endpoints | `600/minute` |
+| `RATE_LIMIT_ADMIN` | Limit for `/admin/*` endpoints | `60/minute` |
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `OPENAI_MODEL` | Model used by the Responses API | `gpt-4.1-mini` |
 | `SYSTEM_PROMPT` | Assistant persona/instructions | generic |
