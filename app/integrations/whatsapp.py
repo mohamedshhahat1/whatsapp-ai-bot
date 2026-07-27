@@ -10,6 +10,8 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+GRAPH_API_BASE = "https://graph.facebook.com"
+
 
 class WhatsAppClient:
     """Thin async client over the WhatsApp Cloud API messages endpoint."""
@@ -17,13 +19,13 @@ class WhatsAppClient:
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._client = httpx.AsyncClient(
-            base_url=f"https://graph.facebook.com/{settings.whatsapp_api_version}",
-            headers={"Authorization": f"Bearer {settings.whatsapp_token}"},
+            base_url=GRAPH_API_BASE + "/" + settings.whatsapp_api_version,
+            headers={"Authorization": "Bearer " + settings.whatsapp_token},
             timeout=30.0,
         )
 
     async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
-        url = f"/{self._settings.whatsapp_phone_number_id}/messages"
+        url = "/" + self._settings.whatsapp_phone_number_id + "/messages"
         try:
             response = await self._client.post(url, json=payload)
             response.raise_for_status()
