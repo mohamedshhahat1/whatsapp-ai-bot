@@ -7,6 +7,7 @@ Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**
 - **WhatsApp Cloud API integration** — webhook verification, inbound text/image/document messages, outbound replies, delivery status & read receipts, Meta signature verification (`X-Hub-Signature-256`).
 - **Durable background processing** — webhook deliveries are enqueued to **Celery + Redis** with late acks and exponential-backoff retries, so messages are not lost if a worker crashes mid-processing. Message deduplication makes retries safe.
 - **Rate limiting** — Redis-backed limits (slowapi) on the webhook and Admin API, shared across all replicas, proxy-aware client IP detection.
+- **Retry strategy** — tenacity with exponential backoff + jitter on all OpenAI and Meta Graph API calls; only transient failures (network errors, timeouts, 429, 5xx) are retried.
 - **OpenAI Responses API** — conversation memory, configurable model & system prompt, tool-calling-ready client, full AI usage logging.
 - **Clean Architecture** — routers → services → repositories → models, with dependency injection and environment-based configuration.
 - **Conversation management** — every message persisted, history reloaded per user, context window trimming and token budgeting.
@@ -19,7 +20,7 @@ Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**
 ```
 whatsapp-ai-bot/
 ├── app/
-│   ├── core/            # logging, security, rate limiting, exceptions
+│   ├── core/            # logging, security, rate limiting, retries, exceptions
 │   ├── db/              # engine, session, declarative base
 │   ├── models/          # SQLAlchemy 2.0 models (User, Conversation, Message, AILog, ChatSession)
 │   ├── repositories/    # data access layer (repository pattern)
@@ -76,6 +77,16 @@ Webhook `POST /webhook` deliveries are validated, ACKed immediately, and enqueue
 
 Scale workers independently of the API: `docker compose up -d --scale worker=3`.
 
+## Retry strategy
+
+All outbound calls to OpenAI and the Meta Graph API are wrapped with **tenacity**:
+
+- Exponential backoff with jitter (initial 0.5s, capped at `RETRY_BACKOFF_MAX_SECONDS`), up to `RETRY_MAX_ATTEMPTS` attempts.
+- Only transient failures are retried: network/timeout errors, `429 Too Many Requests`, and `5xx`. Permanent errors (400/401/403) fail fast.
+- Every retry is logged with attempt number and wait time (structured logs).
+- The OpenAI SDK's built-in retries are disabled (`max_retries=0`) so tenacity is the single source of truth and retry counts don't multiply.
+- Layered with Celery: tenacity handles short blips inside a task; if all attempts are exhausted, the Celery task itself retries later with longer backoff.
+
 ## Rate limiting
 
 Redis-backed fixed-window limits (slowapi), shared across all app replicas:
@@ -107,6 +118,8 @@ Redis-backed fixed-window limits (slowapi), shared across all app replicas:
 | `RATE_LIMIT_ENABLED` | Enable Redis-backed rate limiting | `true` |
 | `RATE_LIMIT_WEBHOOK` | Limit for `/webhook` endpoints | `600/minute` |
 | `RATE_LIMIT_ADMIN` | Limit for `/admin/*` endpoints | `60/minute` |
+| `RETRY_MAX_ATTEMPTS` | Max attempts per outbound OpenAI/Meta call | `3` |
+| `RETRY_BACKOFF_MAX_SECONDS` | Backoff cap between attempts | `8` |
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `OPENAI_MODEL` | Model used by the Responses API | `gpt-4.1-mini` |
 | `SYSTEM_PROMPT` | Assistant persona/instructions | generic |

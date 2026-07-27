@@ -7,6 +7,7 @@ alembic>=1.14
 redis>=5.2
 celery>=5.4
 slowapi>=0.1.9
+tenacity>=9.0
 openai>=1.60
 pydantic>=2.10
 pydantic-settings>=2.7

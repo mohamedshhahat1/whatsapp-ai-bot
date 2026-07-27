@@ -1,4 +1,4 @@
-"""WhatsApp Cloud API client (Meta Graph API)."""
+"""WhatsApp Cloud API client (Meta Graph API) with transient-failure retries."""
 
 from typing import Any
 
@@ -7,6 +7,7 @@ import httpx
 from app.config import Settings
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
+from app.core.retry import http_retry
 
 logger = get_logger(__name__)
 
@@ -24,11 +25,18 @@ class WhatsAppClient:
             timeout=30.0,
         )
 
-    async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+    @http_retry()
+    async def _send(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Single attempt; tenacity retries transient failures (429/5xx/network)."""
         url = "/" + self._settings.whatsapp_phone_number_id + "/messages"
+        response = await self._client.post(url, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+    async def _post(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Send with retries, translating exhausted failures to a domain error."""
         try:
-            response = await self._client.post(url, json=payload)
-            response.raise_for_status()
+            return await self._send(payload)
         except httpx.HTTPStatusError as exc:
             logger.error(
                 "whatsapp_api_error",
@@ -39,7 +47,6 @@ class WhatsAppClient:
         except httpx.HTTPError as exc:
             logger.error("whatsapp_network_error", error=str(exc))
             raise ExternalServiceError("WhatsApp API unreachable") from exc
-        return response.json()
 
     async def send_text(self, to: str, text: str) -> dict[str, Any]:
         """Send a plain text message."""

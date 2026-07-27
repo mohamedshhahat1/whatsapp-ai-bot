@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     rate_limit_webhook: str = "600/minute"
     rate_limit_admin: str = "60/minute"
 
+    # Outbound retries (tenacity, exponential backoff with jitter)
+    retry_max_attempts: int = 3
+    retry_backoff_max_seconds: float = 8.0
+
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
