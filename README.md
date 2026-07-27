@@ -8,6 +8,7 @@ Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**
 - **Durable background processing** — webhook deliveries are enqueued to **Celery + Redis** with late acks and exponential-backoff retries, so messages are not lost if a worker crashes mid-processing. Message deduplication makes retries safe.
 - **Rate limiting** — Redis-backed limits (slowapi) on the webhook and Admin API, shared across all replicas, proxy-aware client IP detection.
 - **Retry strategy** — tenacity with exponential backoff + jitter on all OpenAI and Meta Graph API calls; only transient failures (network errors, timeouts, 429, 5xx) are retried.
+- **Structured prompts** — a layered Prompt Builder (system prompt + company info + retrieved documents + conversation context + response rules) with a RAG-ready retriever interface, instead of a static system prompt.
 - **OpenAI Responses API** — conversation memory, configurable model & system prompt, tool-calling-ready client, full AI usage logging.
 - **Clean Architecture** — routers → services → repositories → models, with dependency injection and environment-based configuration.
 - **Conversation management** — every message persisted, history reloaded per user, context window trimming with **accurate tiktoken-based token budgeting** (not a character heuristic).
@@ -24,7 +25,7 @@ whatsapp-ai-bot/
 │   ├── db/              # engine, session, declarative base
 │   ├── models/          # SQLAlchemy 2.0 models (User, Conversation, Message, AILog, ChatSession)
 │   ├── repositories/    # data access layer (repository pattern)
-│   ├── services/        # business logic (chat, conversation, webhook processing, admin)
+│   ├── services/        # business logic (chat, conversation, prompts, retrieval, admin)
 │   ├── schemas/         # Pydantic response/request models
 │   ├── integrations/    # whatsapp.py (Cloud API), openai.py (Responses API)
 │   ├── routers/         # HTTP API layer (webhook, admin, health)
@@ -65,6 +66,28 @@ uvicorn app.main:app --reload
 # in a second terminal (or set USE_TASK_QUEUE=false to skip the worker):
 celery -A app.workers.celery_app.celery_app worker --loglevel=info -Q webhooks
 ```
+
+## Structured prompts
+
+Each AI generation composes its instructions in layers (`app/services/prompt_builder.py`):
+
+```
+SYSTEM_PROMPT                  # persona / base behavior
++ Company information          # COMPANY_INFO env var
++ Retrieved knowledge (RAG)    # documents from the DocumentRetriever
++ Conversation context         # customer name, channel, current time
++ Response rules               # language matching, chat-style replies
+```
+
+Conversation history and the current user message are passed separately as the
+Responses API `input` list — they are token-budgeted independently and never
+mixed into the instructions.
+
+**RAG-ready:** `app/services/retrieval.py` defines a `DocumentRetriever`
+protocol. Implement `retrieve(query, limit)` against your vector store or
+search index and inject it into `ChatService`; retrieved documents are
+automatically rendered into the prompt with source attribution. Until then, a
+`NullRetriever` keeps the pipeline running without a knowledge base.
 
 ## Background processing
 
@@ -131,7 +154,8 @@ Redis-backed fixed-window limits (slowapi), shared across all app replicas:
 | `RETRY_BACKOFF_MAX_SECONDS` | Backoff cap between attempts | `8` |
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `OPENAI_MODEL` | Model used by the Responses API | `gpt-4.1-mini` |
-| `SYSTEM_PROMPT` | Assistant persona/instructions | generic |
+| `SYSTEM_PROMPT` | Base assistant persona (first prompt layer) | generic |
+| `COMPANY_INFO` | Company facts injected into the prompt (optional) | empty |
 | `MAX_OUTPUT_TOKENS` | Max tokens per AI reply | `512` |
 | `MAX_CONTEXT_MESSAGES` | Max history messages sent to the model | `20` |
 | `MAX_CONTEXT_TOKENS` | Token budget for history (counted with tiktoken) | `6000` |
@@ -165,4 +189,4 @@ pytest
 
 ## Roadmap / extension points
 
-The architecture is designed so you can add: RAG (knowledge base retrieval in `services/`), CRM integration (new module in `integrations/`), voice messages & image understanding (extend `chat_service`), appointment booking (tool calling in `integrations/openai.py`), and analytics dashboards on top of `ai_logs`.
+The architecture is designed so you can add: RAG (implement `DocumentRetriever` in `app/services/retrieval.py`), CRM integration (new module in `integrations/`), voice messages & image understanding (extend `chat_service`), appointment booking (tool calling in `integrations/openai.py`), and analytics dashboards on top of `ai_logs`.
