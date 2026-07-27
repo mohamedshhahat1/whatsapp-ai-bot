@@ -3,6 +3,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.core.metrics import MESSAGES_TOTAL
 from app.models.conversation import Conversation
 from app.models.message import Message
 from app.models.user import User
@@ -37,6 +38,7 @@ class ConversationService:
         content: str | None = None,
         media_id: str | None = None,
     ) -> Message:
+        MESSAGES_TOTAL.labels(direction="inbound", type=type).inc()
         return await self.messages.create(
             conversation_id=conversation_id,
             direction="inbound",
@@ -53,6 +55,7 @@ class ConversationService:
         wa_message_id: str | None = None,
         type: str = "text",
     ) -> Message:
+        MESSAGES_TOTAL.labels(direction="outbound", type=type).inc()
         return await self.messages.create(
             conversation_id=conversation_id,
             direction="outbound",

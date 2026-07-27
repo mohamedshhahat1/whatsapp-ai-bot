@@ -11,8 +11,9 @@ from app.config import get_settings
 from app.core.exceptions import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.ratelimit import limiter
+from app.middleware.metrics import MetricsMiddleware
 from app.middleware.request_logging import RequestLoggingMiddleware
-from app.routers import admin, health, webhook
+from app.routers import admin, health, metrics, webhook
 
 settings = get_settings()
 configure_logging(debug=settings.debug)
@@ -42,6 +43,9 @@ def create_app() -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(RequestLoggingMiddleware)
+    if settings.metrics_enabled:
+        app.add_middleware(MetricsMiddleware)
+        app.include_router(metrics.router)
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(webhook.router)

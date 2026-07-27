@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.core.logging import get_logger
+from app.core.metrics import ERRORS_TOTAL
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.services.chat_service import ChatService
@@ -71,6 +72,7 @@ async def _dispatch_message(
                 wa_id, name, wa_message_id, message_type
             )
     except Exception:
+        ERRORS_TOTAL.labels(type="message_processing").inc()
         logger.error(
             "message_processing_failed",
             wa_message_id=wa_message_id,

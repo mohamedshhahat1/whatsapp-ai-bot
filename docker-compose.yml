@@ -16,7 +16,9 @@ services:
 
   worker:
     build: .
-    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=4 -Q webhooks
+    # threads pool: I/O-bound tasks + single process so Prometheus metrics
+    # from all tasks are exposed on one port.
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --pool=threads --concurrency=8 -Q webhooks
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/whatsapp_ai_bot
@@ -50,6 +52,34 @@ services:
       - redisdata:/data
     restart: unless-stopped
 
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - app
+      - worker
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
   nginx:
     image: nginx:alpine
     profiles: ["production"]
@@ -64,3 +94,5 @@ services:
 volumes:
   pgdata:
   redisdata:
+  promdata:
+  grafanadata:

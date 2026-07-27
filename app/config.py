@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     retry_max_attempts: int = 3
     retry_backoff_max_seconds: float = 8.0
 
+    # Observability
+    metrics_enabled: bool = True
+    worker_metrics_port: int = 9100
+    # USD prices per 1M tokens for cost metrics (defaults: gpt-4.1-mini)
+    openai_input_price_per_1m: float = 0.40
+    openai_output_price_per_1m: float = 1.60
+
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"

@@ -1,6 +1,7 @@
 """Celery application configured for durable, at-least-once processing."""
 
 from celery import Celery
+from celery.signals import worker_ready
 
 from app.config import get_settings
 
@@ -28,3 +29,16 @@ celery_app.conf.update(
     task_default_queue="webhooks",
     result_expires=3600,
 )
+
+
+@worker_ready.connect
+def _start_metrics_server(**_kwargs: object) -> None:
+    """Expose worker metrics for Prometheus.
+
+    Requires the threads pool (single process) so all task metrics live in
+    this process: run the worker with ``--pool=threads``.
+    """
+    if settings.metrics_enabled:
+        from prometheus_client import start_http_server
+
+        start_http_server(settings.worker_metrics_port)
