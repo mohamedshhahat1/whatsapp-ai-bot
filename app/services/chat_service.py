@@ -1,4 +1,4 @@
-"""Chat orchestration: inbound message -> AI reply -> outbound message."""
+"""Chat orchestration: inbound message -> structured prompt -> AI reply -> outbound."""
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +9,8 @@ from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.repositories.ai_log import AILogRepository
 from app.services.conversation_service import ConversationService
+from app.services.prompt_builder import PromptBuilder
+from app.services.retrieval import DocumentRetriever, NullRetriever
 
 logger = get_logger(__name__)
 
@@ -26,6 +28,7 @@ class ChatService:
         whatsapp: WhatsAppClient,
         ai: OpenAIClient,
         settings: Settings,
+        retriever: DocumentRetriever | None = None,
     ) -> None:
         self._session = session
         self._whatsapp = whatsapp
@@ -33,6 +36,55 @@ class ChatService:
         self._settings = settings
         self._conversations = ConversationService(session, settings)
         self._ai_logs = AILogRepository(session)
+        self._prompts = PromptBuilder(settings)
+        self._retriever = retriever or NullRetriever()
+
+    async def _generate_and_send(
+        self,
+        wa_id: str,
+        name: str | None,
+        conversation_id: int,
+        history: list[dict],
+        retrieval_query: str | None,
+    ) -> None:
+        """Build structured instructions, generate a reply, send and persist it."""
+        documents = []
+        if retrieval_query:
+            try:
+                documents = await self._retriever.retrieve(retrieval_query)
+            except Exception:
+                # Retrieval must never break the conversation.
+                logger.error("retrieval_failed", exc_info=True)
+
+        instructions = self._prompts.build_instructions(
+            user_name=name, documents=documents
+        )
+
+        reply_text = FALLBACK_REPLY
+        try:
+            result = await self._ai.generate_reply(history, instructions=instructions)
+            reply_text = result.text or FALLBACK_REPLY
+            await self._ai_logs.create(
+                model=result.model,
+                conversation_id=conversation_id,
+                prompt_tokens=result.prompt_tokens,
+                completion_tokens=result.completion_tokens,
+                total_tokens=result.total_tokens,
+                latency_ms=result.latency_ms,
+            )
+        except ExternalServiceError as exc:
+            await self._ai_logs.create(
+                model=self._settings.openai_model,
+                conversation_id=conversation_id,
+                error=str(exc),
+            )
+
+        send_result = await self._whatsapp.send_text(wa_id, reply_text)
+        out_id = (send_result.get("messages") or [{}])[0].get("id")
+        await self._conversations.save_outbound(
+            conversation_id, reply_text, wa_message_id=out_id
+        )
+        await self._session.commit()
 
     async def handle_text_message(
         self, wa_id: str, name: str | None, wa_message_id: str, text: str
@@ -49,31 +101,9 @@ class ChatService:
         await self._whatsapp.mark_as_read(wa_message_id)
 
         history = await self._conversations.build_history(conversation.id)
-        reply_text = FALLBACK_REPLY
-        try:
-            result = await self._ai.generate_reply(history)
-            reply_text = result.text or FALLBACK_REPLY
-            await self._ai_logs.create(
-                model=result.model,
-                conversation_id=conversation.id,
-                prompt_tokens=result.prompt_tokens,
-                completion_tokens=result.completion_tokens,
-                total_tokens=result.total_tokens,
-                latency_ms=result.latency_ms,
-            )
-        except ExternalServiceError as exc:
-            await self._ai_logs.create(
-                model=self._settings.openai_model,
-                conversation_id=conversation.id,
-                error=str(exc),
-            )
-
-        send_result = await self._whatsapp.send_text(wa_id, reply_text)
-        out_id = (send_result.get("messages") or [{}])[0].get("id")
-        await self._conversations.save_outbound(
-            conversation.id, reply_text, wa_message_id=out_id
+        await self._generate_and_send(
+            wa_id, name, conversation.id, history, retrieval_query=text
         )
-        await self._session.commit()
 
     async def handle_media_message(
         self,
@@ -109,31 +139,9 @@ class ChatService:
                 ),
             }
         )
-        reply_text = FALLBACK_REPLY
-        try:
-            result = await self._ai.generate_reply(history)
-            reply_text = result.text or FALLBACK_REPLY
-            await self._ai_logs.create(
-                model=result.model,
-                conversation_id=conversation.id,
-                prompt_tokens=result.prompt_tokens,
-                completion_tokens=result.completion_tokens,
-                total_tokens=result.total_tokens,
-                latency_ms=result.latency_ms,
-            )
-        except ExternalServiceError as exc:
-            await self._ai_logs.create(
-                model=self._settings.openai_model,
-                conversation_id=conversation.id,
-                error=str(exc),
-            )
-
-        send_result = await self._whatsapp.send_text(wa_id, reply_text)
-        out_id = (send_result.get("messages") or [{}])[0].get("id")
-        await self._conversations.save_outbound(
-            conversation.id, reply_text, wa_message_id=out_id
+        await self._generate_and_send(
+            wa_id, name, conversation.id, history, retrieval_query=caption
         )
-        await self._session.commit()
 
     async def handle_unsupported_message(
         self, wa_id: str, name: str | None, wa_message_id: str, type: str

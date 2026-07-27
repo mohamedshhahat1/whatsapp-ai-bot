@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
     system_prompt: str = "You are a helpful WhatsApp assistant for our business."
+    company_info: str = ""
     max_output_tokens: int = 512
     max_context_messages: int = 20
     max_context_tokens: int = 6000
