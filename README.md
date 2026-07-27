@@ -1,16 +1,17 @@
 # WhatsApp AI Bot
 
-Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**, **FastAPI**, **PostgreSQL**, **Redis**, and the **OpenAI Responses API**.
+Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**, **FastAPI**, **PostgreSQL**, **Redis**, **Celery**, and the **OpenAI Responses API**.
 
 ## Features
 
 - **WhatsApp Cloud API integration** — webhook verification, inbound text/image/document messages, outbound replies, delivery status & read receipts, Meta signature verification (`X-Hub-Signature-256`).
+- **Durable background processing** — webhook deliveries are enqueued to **Celery + Redis** with late acks and exponential-backoff retries, so messages are not lost if a worker crashes mid-processing. Message deduplication makes retries safe.
 - **OpenAI Responses API** — conversation memory, configurable model & system prompt, tool-calling-ready client, full AI usage logging.
 - **Clean Architecture** — routers → services → repositories → models, with dependency injection and environment-based configuration.
 - **Conversation management** — every message persisted, history reloaded per user, context window trimming and token budgeting.
 - **Admin REST API** — users, conversations, statistics, protected by API key.
 - **Structured JSON logging** via structlog, request logging middleware, centralized exception handling.
-- **Deployment-ready** — Dockerfile, docker-compose (app + Postgres + Redis + optional Nginx), Alembic migrations.
+- **Deployment-ready** — Dockerfile, docker-compose (app + worker + Postgres + Redis + optional Nginx), Alembic migrations.
 
 ## Project structure
 
@@ -21,10 +22,11 @@ whatsapp-ai-bot/
 │   ├── db/              # engine, session, declarative base
 │   ├── models/          # SQLAlchemy 2.0 models (User, Conversation, Message, AILog, ChatSession)
 │   ├── repositories/    # data access layer (repository pattern)
-│   ├── services/        # business logic (chat, conversation, admin)
+│   ├── services/        # business logic (chat, conversation, webhook processing, admin)
 │   ├── schemas/         # Pydantic response/request models
 │   ├── integrations/    # whatsapp.py (Cloud API), openai.py (Responses API)
 │   ├── routers/         # HTTP API layer (webhook, admin, health)
+│   ├── workers/         # Celery app + tasks (durable queue)
 │   ├── middleware/      # request logging
 │   ├── dependencies/    # FastAPI dependency wiring
 │   ├── utils/           # token estimation & history trimming
@@ -43,7 +45,7 @@ whatsapp-ai-bot/
 
 ```bash
 cp .env.example .env      # fill in your keys
-docker compose up --build -d
+docker compose up --build -d   # starts app + celery worker + postgres + redis
 docker compose exec app alembic revision --autogenerate -m "initial schema"
 docker compose exec app alembic upgrade head
 ```
@@ -58,7 +60,20 @@ pip install -r requirements.txt
 cp .env.example .env
 alembic upgrade head
 uvicorn app.main:app --reload
+# in a second terminal (or set USE_TASK_QUEUE=false to skip the worker):
+celery -A app.workers.celery_app.celery_app worker --loglevel=info -Q webhooks
 ```
+
+## Background processing
+
+Webhook `POST /webhook` deliveries are validated, ACKed immediately, and enqueued to the `webhooks` Celery queue backed by Redis (AOF persistence enabled in compose).
+
+- `task_acks_late` + `task_reject_on_worker_lost` — a delivery is only acknowledged after successful processing; if a worker dies mid-task the message is re-queued.
+- Automatic retries with exponential backoff and jitter (max 5 attempts).
+- Retries are idempotent: messages are deduplicated by `wa_message_id`.
+- For development you can set `USE_TASK_QUEUE=false` to fall back to in-process FastAPI `BackgroundTasks` (no worker needed, no durability guarantees).
+
+Scale workers independently of the API: `docker compose up -d --scale worker=3`.
 
 ## Connecting WhatsApp (Meta)
 
@@ -75,6 +90,9 @@ uvicorn app.main:app --reload
 | `DEBUG` | Enables `/docs` and debug logging | `false` |
 | `DATABASE_URL` | Async SQLAlchemy URL (`postgresql+asyncpg://…`) | local |
 | `REDIS_URL` | Redis connection URL | local |
+| `USE_TASK_QUEUE` | Process webhooks via Celery (`true`) or in-process (`false`) | `true` |
+| `CELERY_BROKER_URL` | Celery broker (defaults to `REDIS_URL`) | — |
+| `CELERY_RESULT_BACKEND` | Celery result backend (defaults to `REDIS_URL`) | — |
 | `OPENAI_API_KEY` | OpenAI API key | — |
 | `OPENAI_MODEL` | Model used by the Responses API | `gpt-4.1-mini` |
 | `SYSTEM_PROMPT` | Assistant persona/instructions | generic |
@@ -94,7 +112,7 @@ uvicorn app.main:app --reload
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
 | `GET` | `/webhook` | Meta webhook verification |
-| `POST` | `/webhook` | Inbound messages & status updates |
+| `POST` | `/webhook` | Inbound messages & status updates (enqueued) |
 | `GET` | `/admin/users` | List users |
 | `GET` | `/admin/conversations` | List conversations |
 | `GET` | `/admin/conversations/{id}` | Conversation with messages |

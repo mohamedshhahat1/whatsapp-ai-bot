@@ -14,6 +14,20 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  worker:
+    build: .
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --concurrency=4 -Q webhooks
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/whatsapp_ai_bot
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
   db:
     image: postgres:16-alpine
     environment:
@@ -31,6 +45,9 @@ services:
 
   redis:
     image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
     restart: unless-stopped
 
   nginx:
@@ -46,3 +63,4 @@ services:
 
 volumes:
   pgdata:
+  redisdata:

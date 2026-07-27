@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     )
     redis_url: str = "redis://localhost:6379/0"
 
+    # Background queue (Celery). Broker/backend default to redis_url when empty.
+    use_task_queue: bool = True
+    celery_broker_url: str = ""
+    celery_result_backend: str = ""
+
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
@@ -45,6 +50,16 @@ class Settings(BaseSettings):
     def database_url_sync(self) -> str:
         """Synchronous database URL used by Alembic migrations."""
         return self.database_url.replace("+asyncpg", "+psycopg")
+
+    @property
+    def broker_url(self) -> str:
+        """Celery broker URL (falls back to Redis)."""
+        return self.celery_broker_url or self.redis_url
+
+    @property
+    def result_backend(self) -> str:
+        """Celery result backend URL (falls back to Redis)."""
+        return self.celery_result_backend or self.redis_url
 
 
 @lru_cache

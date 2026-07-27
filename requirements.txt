@@ -5,6 +5,7 @@ asyncpg>=0.30
 psycopg[binary]>=3.2
 alembic>=1.14
 redis>=5.2
+celery>=5.4
 openai>=1.60
 pydantic>=2.10
 pydantic-settings>=2.7
