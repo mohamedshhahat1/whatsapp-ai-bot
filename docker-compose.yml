@@ -1,4 +1,20 @@
 services:
+  # One-shot schema upgrade. app and worker wait for this to exit 0, so a
+  # container can never serve traffic against a database that has not been
+  # migrated. Running migrations from the app's own entrypoint instead would
+  # race across replicas.
+  migrate:
+    build: .
+    command: alembic upgrade head
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/whatsapp_ai_bot
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   app:
     build: .
     env_file: .env
@@ -15,7 +31,21 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # Readiness, not liveness: this is what decides whether the container is
+    # actually able to serve, so it checks Postgres and Redis too.
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   worker:
@@ -31,7 +61,21 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # `inspect ping` round-trips through the broker to this specific worker,
+    # so it fails if the process is alive but has lost its broker connection
+    # or deadlocked its pool -- the failure modes that silently stop消 message
+    # processing.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.workers.celery_app.celery_app inspect ping -d celery@$$HOSTNAME
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
 
   db:
@@ -55,6 +99,11 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   prometheus:
@@ -93,7 +142,8 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
