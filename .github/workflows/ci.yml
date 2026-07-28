@@ -1,0 +1,205 @@
+name: CI/CD
+
+# Every push runs the full pipeline: lint -> test -> build -> deploy.
+# Pull requests run lint + test + a build check (no image push, no deploy).
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# A newer push on the same branch cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  # 1) LINT ---------------------------------------------------------------
+  lint:
+    name: Lint (Ruff, Black, Mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Ruff (lint)
+        run: ruff check --output-format=github .
+
+      - name: Black (format check)
+        run: black --check --diff .
+
+      - name: Mypy (type check)
+        run: mypy
+
+  # 2) TESTS --------------------------------------------------------------
+  test:
+    name: Tests (pytest)
+    needs: lint
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: whatsapp_ai_bot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/whatsapp_ai_bot_test
+      REDIS_URL: redis://localhost:6379/0
+      USE_TASK_QUEUE: "false"
+      RATE_LIMIT_ENABLED: "false"
+      METRICS_ENABLED: "true"
+      OPENAI_API_KEY: test-key
+      WHATSAPP_TOKEN: test-token
+      WHATSAPP_PHONE_NUMBER_ID: "000000000000000"
+      WHATSAPP_VERIFY_TOKEN: test-verify-token
+      WHATSAPP_APP_SECRET: ""
+      ADMIN_API_KEY: test-admin-key
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run pytest
+        run: pytest --cov=app --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  # 3) BUILD DOCKER -------------------------------------------------------
+  build:
+    name: Build Docker image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Only authenticate & push for branch pushes; PRs from forks build only.
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # 4) DEPLOY -------------------------------------------------------------
+  # Runs only for pushes to main, and only once the deployment target is
+  # configured. Enable it by setting the repository variable
+  # DEPLOY_ENABLED=true and adding the DEPLOY_* secrets below.
+  deploy:
+    name: Deploy
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ vars.DEPLOY_URL }}
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: ${{ secrets.DEPLOY_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            cd ${{ secrets.DEPLOY_PATH }}
+            echo ${{ secrets.GITHUB_TOKEN }} | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+            export IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+            docker pull "$IMAGE"
+            docker compose pull || true
+            docker compose up -d --remove-orphans
+            docker compose exec -T app alembic upgrade head
+            docker image prune -f
+
+      - name: Smoke test /health
+        if: vars.DEPLOY_URL != ''
+        run: |
+          for i in 1 2 3 4 5; do
+            if curl -fsS "${{ vars.DEPLOY_URL }}/health"; then exit 0; fi
+            sleep 10
+          done
+          echo "Health check failed" && exit 1

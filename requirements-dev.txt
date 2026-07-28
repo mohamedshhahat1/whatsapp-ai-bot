@@ -1,0 +1,9 @@
+# Development & CI tooling
+-r requirements.txt
+
+ruff>=0.8
+black>=24.10
+mypy>=1.13
+pytest>=8.3
+pytest-asyncio>=0.25
+pytest-cov>=6.0

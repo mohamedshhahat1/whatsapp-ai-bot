@@ -1,0 +1,49 @@
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+exclude = [
+    ".venv",
+    "alembic/versions",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "C4",  # flake8-comprehensions
+]
+# Black owns line wrapping; B008 is the standard FastAPI Depends() pattern.
+ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# Test config must set environment variables before importing the app.
+"tests/conftest.py" = ["E402"]
+"alembic/env.py" = ["E402"]
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+extend-exclude = "alembic/versions"
+
+[tool.mypy]
+python_version = "3.12"
+files = ["app"]
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+exclude = "alembic/versions"
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+asyncio_mode = "auto"
