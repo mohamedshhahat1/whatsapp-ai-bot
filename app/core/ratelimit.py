@@ -14,10 +14,21 @@ _settings = get_settings()
 
 
 def client_key(request: Request) -> str:
-    """Rate-limit key: the real client IP, honoring the reverse proxy header."""
-    forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
+    """Rate-limit key: the real client IP.
+
+    ``X-Forwarded-For`` is client-controlled. Our nginx appends the peer
+    address to whatever the client sent, so the left-most entry is forgeable
+    and taking it hands every request a brand new bucket -- the rate limit
+    stops existing. Only the last ``TRUSTED_PROXY_HOPS`` entries were written
+    by infrastructure we control, so the real client is that many positions
+    from the right.
+    """
+    hops = _settings.trusted_proxy_hops
+    if hops > 0:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        chain = [part.strip() for part in forwarded.split(",") if part.strip()]
+        if len(chain) >= hops:
+            return chain[-hops]
     return get_remote_address(request)
 
 

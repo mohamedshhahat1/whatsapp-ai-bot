@@ -2,8 +2,9 @@
 
 import hmac
 from functools import lru_cache
+from ipaddress import ip_address
 
-from fastapi import Depends, Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
@@ -63,3 +64,36 @@ def require_admin(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API key"
         )
+
+
+def _peer_is_internal(request: Request) -> bool:
+    """True when the socket peer is on a private or loopback address."""
+    host = request.client.host if request.client else ""
+    try:
+        address = ip_address(host)
+    except ValueError:
+        return False
+    return address.is_private or address.is_loopback
+
+
+def require_metrics_access(
+    request: Request,
+    x_api_key: str = Header(default=""),
+    settings: Settings = Depends(get_settings),
+) -> None:
+    """Guard for ``GET /metrics``.
+
+    Prometheus scrapes the container directly over the private compose
+    network, so a request with no ``X-Forwarded-For`` header from a private
+    peer is in-cluster and needs no credential -- Prometheus cannot send a
+    custom header in its scrape config anyway.
+
+    Anything that arrived through the reverse proxy carries that header and is
+    by definition externally originated, so it must present the admin API key.
+    Reusing ``require_admin`` keeps one admin credential rather than inventing
+    a second one. nginx additionally refuses /metrics outright, so this is the
+    inner of two layers.
+    """
+    if "x-forwarded-for" not in request.headers and _peer_is_internal(request):
+        return
+    require_admin(x_api_key=x_api_key, settings=settings)

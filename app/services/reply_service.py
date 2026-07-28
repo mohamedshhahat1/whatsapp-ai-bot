@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import AppError, NotFoundError
+from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
 from app.integrations.whatsapp import WhatsAppClient
 from app.models.message import Message
@@ -19,8 +19,16 @@ logger = get_logger(__name__)
 CUSTOMER_SERVICE_WINDOW = timedelta(hours=24)
 
 
-class OutsideServiceWindowError(AppError):
-    """Raised when a free-form reply would be rejected by Meta."""
+class OutsideServiceWindowError(ConflictError):
+    """Raised when a free-form reply would be rejected by Meta.
+
+    This is a 409, not a 500: the operator's request is valid, the
+    conversation is simply in a state where Meta will not accept a free-form
+    message. The dashboard shows the message verbatim, so the operator knows
+    to use a template instead of retrying.
+    """
+
+    code = "outside_service_window"
 
 
 class ReplyService:

@@ -26,6 +26,18 @@ class NotFoundError(AppError):
     code = "not_found"
 
 
+class ConflictError(AppError):
+    """The request cannot be satisfied in the resource's current state.
+
+    Distinct from a 400: the request itself is well formed, but the state of
+    the conversation, the customer, or a concurrent writer makes it
+    impossible right now. Clients can surface these messages directly.
+    """
+
+    status_code = 409
+    code = "conflict"
+
+
 class ExternalServiceError(AppError):
     """An upstream service (WhatsApp, OpenAI) failed."""
 

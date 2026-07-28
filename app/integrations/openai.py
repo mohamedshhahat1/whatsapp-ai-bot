@@ -12,7 +12,6 @@ from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
 from app.core.metrics import (
     ERRORS_TOTAL,
-    OPENAI_COST_USD_TOTAL,
     OPENAI_REQUESTS_TOTAL,
     OPENAI_RESPONSE_SECONDS,
     OPENAI_TOKENS_TOTAL,
@@ -42,6 +41,15 @@ class OpenAIClient:
         # SDK retries disabled: tenacity owns the retry policy (single source
         # of truth, consistent logging, no multiplied retry storms).
         self._client = AsyncOpenAI(api_key=settings.openai_api_key, max_retries=0)
+
+    async def aclose(self) -> None:
+        """Release the underlying HTTP connection pool.
+
+        Every Celery task builds a client inside its own event loop, so the
+        pool has to be closed with the loop that opened it. Without this the
+        worker leaks a connection pool and its sockets per task.
+        """
+        await self._client.close()
 
     async def generate_reply(
         self, history: list[dict[str, str]], instructions: str | None = None
@@ -73,15 +81,12 @@ class OpenAIClient:
                 completion_tokens
             )
 
-        # Prices are quoted per 1M tokens, so convert counts to millions first.
-        prompt_millions = (prompt_tokens or 0) / 1_000_000
-        completion_millions = (completion_tokens or 0) / 1_000_000
-        cost_usd = (
-            prompt_millions * self._settings.openai_input_price_per_1m
-            + completion_millions * self._settings.openai_output_price_per_1m
-        )
-        if cost_usd:
-            OPENAI_COST_USD_TOTAL.labels(model=model).inc(cost_usd)
+        # Spend is deliberately NOT computed here. Token counts are a fact the
+        # API reports; converting them to money needs the price that was in
+        # force at the time, which lives in the model_pricing table. Doing it
+        # twice -- once from Settings for a metric, once from model_pricing for
+        # the dashboard -- produced two numbers that disagreed. The single
+        # source of truth is AnalyticsRepository; see docs/PRICING.md.
 
         return AIResult(
             text=response.output_text,

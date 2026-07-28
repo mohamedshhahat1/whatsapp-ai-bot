@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_webhook: str = "600/minute"
     rate_limit_admin: str = "60/minute"
+    # Number of reverse proxies in front of the app that append to
+    # X-Forwarded-For. Only the last N entries are trustworthy; everything to
+    # the left of them is attacker-controlled. Set to 0 when the app is
+    # exposed directly with no proxy.
+    trusted_proxy_hops: int = 1
 
     # Outbound retries (tenacity, exponential backoff with jitter)
     retry_max_attempts: int = 3
@@ -94,12 +99,34 @@ class Settings(BaseSettings):
     openai_input_price_per_1m: float = 0.40
     openai_output_price_per_1m: float = 1.60
 
+    # Reliability: deliveries that exhaust their Celery retries are pushed onto
+    # this Redis list instead of vanishing (see app/workers/tasks.py).
+    dead_letter_key: str = "webhooks:dead-letter"
+    dead_letter_max_entries: int = 1000
+
     # Secret backends (see app/core/secrets.py)
     secrets_dir: str = "/run/secrets"
     vault_enabled: bool = False
     vault_addr: str = ""
     vault_kv_mount: str = "secret"
     vault_secret_path: str = ""
+
+    # Knowledge base / RAG (see docs/RAG.md).
+    # Consumers: services/ingestion.py, services/retrieval.py,
+    # integrations/embeddings.py, core/chunking.py, scripts/ingest_knowledge.py.
+    rag_enabled: bool = True
+    knowledge_dir: str = "knowledge"
+    # Ingestion and retrieval must use the SAME embedding model, and
+    # embedding_dimensions must match the vector column width created by
+    # migration 0001_knowledge_base.
+    embedding_model: str = "text-embedding-3-small"
+    embedding_dimensions: int = 1536
+    embedding_batch_size: int = 64
+    chunk_max_tokens: int = 400
+    chunk_overlap_tokens: int = 60
+    rag_top_k: int = 5
+    rag_min_score: float = 0.25
+    rag_max_context_chars: int = 6000
 
     # OpenAI
     openai_api_key: str = ""

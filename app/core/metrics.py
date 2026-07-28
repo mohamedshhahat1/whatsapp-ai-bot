@@ -1,8 +1,13 @@
 """Prometheus metric definitions (shared by the API and the Celery worker).
 
 The API exposes them at ``GET /metrics``; the worker starts its own metrics
-HTTP server (see ``app/workers/celery_app.py``) since message processing —
-and therefore most OpenAI/message metrics — happens in the worker process.
+HTTP server (see ``app/workers/celery_app.py``) since message processing --
+and therefore most OpenAI/message metrics -- happens in the worker process.
+
+Note there is no spend metric here. Cost is a function of tokens and the price
+in force at the time, which lives in the model_pricing table; the dashboard
+derives it there. A counter fed from Settings prices would be a second,
+silently diverging answer to the same question.
 """
 
 from prometheus_client import Counter, Histogram
@@ -32,16 +37,15 @@ OPENAI_TOKENS_TOTAL = Counter(
     ["model", "kind"],  # kind: prompt | completion
 )
 
-OPENAI_COST_USD_TOTAL = Counter(
-    "openai_cost_usd_total",
-    "Estimated OpenAI spend in USD (token usage x configured prices)",
-    ["model"],
-)
-
 ERRORS_TOTAL = Counter(
     "app_errors_total",
     "Application errors by type",
     ["type"],
+)
+
+WEBHOOK_DEAD_LETTERS_TOTAL = Counter(
+    "webhook_dead_letters_total",
+    "Webhook deliveries parked in the dead letter queue after exhausting retries",
 )
 
 HTTP_REQUESTS_TOTAL = Counter(
