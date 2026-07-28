@@ -4,7 +4,15 @@ Costs are derived, never stored: the OpenAI API returns token counts but no
 price. Rates come from the model_pricing table, matched to the moment each
 call was made, so changing the model or a price leaves historical figures
 untouched. The values in Settings are only a fallback for calls that no
-pricing row covers.
+pricing row covers, and migration 0002 seeds rows from the epoch so that
+fallback should never be reached in practice.
+
+Time windows
+------------
+Every figure carrying a ``_in_period`` / ``new_`` / ``active_`` name is scoped
+to the requested window; ``total_*`` figures are lifetime. Mixing the two is
+what made cost-per-conversation wrong, so the naming is now explicit rather
+than implied.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -14,9 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
 from app.repositories.analytics import AnalyticsRepository, PriceDefaults
-from app.repositories.conversation import ConversationRepository
-from app.repositories.message import MessageRepository
-from app.repositories.user import UserRepository
 from app.schemas.analytics import (
     AnalyticsOverview,
     CostBreakdown,
@@ -31,9 +36,6 @@ from app.schemas.pricing import ModelCostRead
 class AnalyticsService:
     def __init__(self, session: AsyncSession, settings: Settings) -> None:
         self._analytics = AnalyticsRepository(session)
-        self._users = UserRepository(session)
-        self._conversations = ConversationRepository(session)
-        self._messages = MessageRepository(session)
         self._settings = settings
 
     @property
@@ -47,17 +49,22 @@ class AnalyticsService:
     async def overview(self, days: int = 30) -> AnalyticsOverview:
         since = datetime.now(UTC) - timedelta(days=days)
         totals = await self._analytics.usage_totals(since, self._defaults)
+        activity = await self._analytics.activity_totals(since)
+
         input_cost = round(totals.input_cost_usd, 6)
         output_cost = round(totals.output_cost_usd, 6)
         total_cost = round(input_cost + output_cost, 6)
-        conversations = await self._conversations.count()
 
         return AnalyticsOverview(
             period_days=days,
             since=since,
-            total_users=await self._users.count(),
-            total_conversations=conversations,
-            total_messages=await self._messages.count(),
+            total_users=activity.total_users,
+            total_conversations=activity.total_conversations,
+            total_messages=activity.total_messages,
+            new_users=activity.new_users,
+            new_conversations=activity.new_conversations,
+            active_conversations=activity.active_conversations,
+            messages_in_period=activity.messages_in_period,
             ai_requests=totals.requests,
             ai_errors=totals.errors,
             error_rate=(
@@ -73,8 +80,13 @@ class AnalyticsService:
                 output_cost_usd=output_cost,
                 total_cost_usd=total_cost,
             ),
+            # Spend in the window divided by the conversations that were
+            # actually active in that same window. Dividing by the lifetime
+            # conversation count made this number drift downwards forever.
             cost_per_conversation_usd=(
-                round(total_cost / conversations, 6) if conversations else 0.0
+                round(total_cost / activity.active_conversations, 6)
+                if activity.active_conversations
+                else 0.0
             ),
             projected_monthly_cost_usd=(
                 round(total_cost / days * 30, 4) if days else 0.0

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 
 
 class CostBreakdown(BaseModel):
-    """Token spend converted to USD at the configured per-1M prices."""
+    """Token spend converted to USD at the historical per-1M prices."""
 
     prompt_tokens: int
     completion_tokens: int
@@ -17,12 +17,25 @@ class CostBreakdown(BaseModel):
 
 
 class AnalyticsOverview(BaseModel):
+    """Headline KPIs for a reporting window.
+
+    ``total_*`` fields are lifetime; ``new_*``, ``active_*`` and
+    ``messages_in_period`` are scoped to ``period_days``. Every cost figure is
+    scoped to the window, so window-scoped denominators are the only correct
+    ones to divide them by.
+    """
+
     period_days: int
     since: datetime
 
     total_users: int
     total_conversations: int
     total_messages: int
+
+    new_users: int
+    new_conversations: int
+    active_conversations: int
+    messages_in_period: int
 
     ai_requests: int
     ai_errors: int

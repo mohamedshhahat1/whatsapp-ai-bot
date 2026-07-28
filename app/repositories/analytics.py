@@ -42,6 +42,24 @@ class PriceDefaults:
 
 
 @dataclass(frozen=True)
+class ActivityTotals:
+    """Lifetime and in-window volume counts.
+
+    The two are kept apart deliberately. Presenting an all-time customer count
+    next to a 30-day spend figure invites the reader to divide one by the
+    other, which is how cost-per-conversation ended up wrong.
+    """
+
+    total_users: int
+    total_conversations: int
+    total_messages: int
+    new_users: int
+    new_conversations: int
+    active_conversations: int
+    messages_in_period: int
+
+
+@dataclass(frozen=True)
 class UsageTotals:
     requests: int
     errors: int
@@ -137,8 +155,74 @@ def _cost_parts(pricing: Any, defaults: PriceDefaults) -> tuple[Any, Any]:
     return input_cost, output_cost
 
 
+def _escape_like(term: str) -> str:
+    """Escape LIKE wildcards so % and _ are matched literally.
+
+    Without this, searching for "50%" returns every message in the database
+    and "a_b" matches "axb" -- the operator gets confidently wrong results
+    with no indication anything went wrong.
+    """
+    for char in ("\\", "%", "_"):
+        term = term.replace(char, "\\" + char)
+    return term
+
+
 class AnalyticsRepository(BaseRepository):
     """Read-only aggregates over ai_logs, messages, conversations and users."""
+
+    async def activity_totals(self, since: datetime) -> ActivityTotals:
+        """Lifetime and in-window volume counts in a single round trip.
+
+        These were four separate awaited COUNT(*) queries issued one after
+        another. Postgres can evaluate them as uncorrelated scalar subqueries
+        in one statement, which costs one round trip instead of four and
+        gives every figure the same snapshot of the data.
+        """
+        total_users = select(func.count(User.id)).scalar_subquery()
+        total_conversations = select(func.count(Conversation.id)).scalar_subquery()
+        total_messages = select(func.count(Message.id)).scalar_subquery()
+        new_users = (
+            select(func.count(User.id))
+            .where(User.created_at >= since)
+            .scalar_subquery()
+        )
+        new_conversations = (
+            select(func.count(Conversation.id))
+            .where(Conversation.created_at >= since)
+            .scalar_subquery()
+        )
+        active_conversations = (
+            select(func.count(func.distinct(Message.conversation_id)))
+            .where(Message.created_at >= since)
+            .scalar_subquery()
+        )
+        messages_in_period = (
+            select(func.count(Message.id))
+            .where(Message.created_at >= since)
+            .scalar_subquery()
+        )
+        row = (
+            await self.session.execute(
+                select(
+                    total_users,
+                    total_conversations,
+                    total_messages,
+                    new_users,
+                    new_conversations,
+                    active_conversations,
+                    messages_in_period,
+                )
+            )
+        ).one()
+        return ActivityTotals(
+            total_users=int(row[0]),
+            total_conversations=int(row[1]),
+            total_messages=int(row[2]),
+            new_users=int(row[3]),
+            new_conversations=int(row[4]),
+            active_conversations=int(row[5]),
+            messages_in_period=int(row[6]),
+        )
 
     async def usage_totals(
         self, since: datetime, defaults: PriceDefaults
@@ -307,38 +391,38 @@ class AnalyticsRepository(BaseRepository):
     ) -> list[CustomerActivity]:
         """Per-customer conversation and message counts.
 
-        Correlated subqueries rather than joins: joining users to both
-        conversations and messages would multiply the rows and inflate every
-        count (the classic join fan-out).
+        One grouped aggregate rather than three correlated subqueries per row.
+        The correlated form could not be short-circuited by the LIMIT anyway:
+        ordering by last activity forces every user's subqueries to be
+        evaluated before the first page can be chosen.
+
+        count(DISTINCT conversation_id) is what keeps the join fan-out from
+        inflating the conversation count -- the messages join multiplies each
+        conversation row by its message count.
         """
-        conversation_count = (
-            select(func.count(Conversation.id))
-            .where(Conversation.user_id == User.id)
-            .scalar_subquery()
+        activity = (
+            select(
+                Conversation.user_id.label("user_id"),
+                func.count(func.distinct(Conversation.id)).label("conversations"),
+                func.count(Message.id).label("messages"),
+                func.max(Message.created_at).label("last_active"),
+            )
+            .select_from(Conversation)
+            .outerjoin(Message, Message.conversation_id == Conversation.id)
+            .group_by(Conversation.user_id)
+            .subquery()
         )
-        message_count = (
-            select(func.count(Message.id))
-            .select_from(Message)
-            .join(Conversation, Message.conversation_id == Conversation.id)
-            .where(Conversation.user_id == User.id)
-            .scalar_subquery()
-        )
-        last_active = (
-            select(func.max(Message.created_at))
-            .select_from(Message)
-            .join(Conversation, Message.conversation_id == Conversation.id)
-            .where(Conversation.user_id == User.id)
-            .scalar_subquery()
-        )
+        last_active = activity.c.last_active
         result = await self.session.execute(
             select(
                 User.id,
                 User.wa_id,
                 User.name,
-                conversation_count.label("conversations"),
-                message_count.label("messages"),
-                last_active.label("last_active"),
+                func.coalesce(activity.c.conversations, 0),
+                func.coalesce(activity.c.messages, 0),
+                last_active,
             )
+            .outerjoin(activity, activity.c.user_id == User.id)
             .order_by(func.coalesce(last_active, User.created_at).desc())
             .offset(offset)
             .limit(limit)
@@ -356,7 +440,13 @@ class AnalyticsRepository(BaseRepository):
         ]
 
     async def search_messages(self, query: str, limit: int = 50) -> list[MessageHit]:
-        """Case-insensitive substring search across message bodies."""
+        """Case-insensitive substring search across message bodies.
+
+        The leading wildcard rules out a B-tree index, so this is served by
+        ix_messages_content_trgm (pg_trgm GIN), added in migration
+        0003_search_and_concurrency.
+        """
+        pattern = "%" + _escape_like(query) + "%"
         result = await self.session.execute(
             select(
                 Message.id,
@@ -370,7 +460,7 @@ class AnalyticsRepository(BaseRepository):
             )
             .join(Conversation, Message.conversation_id == Conversation.id)
             .join(User, Conversation.user_id == User.id)
-            .where(Message.content.ilike("%" + query + "%"))
+            .where(Message.content.ilike(pattern, escape="\\"))
             .order_by(Message.created_at.desc())
             .limit(limit)
         )
