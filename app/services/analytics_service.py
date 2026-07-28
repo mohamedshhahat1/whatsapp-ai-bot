@@ -1,18 +1,19 @@
 """Usage and cost analytics.
 
-Costs are derived, never stored: the OpenAI API does not return a price, so
-spend is computed from logged token counts multiplied by the configured
-per-1M rates. If prices change, update the settings and every historical
-figure is recalculated at the new rate -- see docs/DASHBOARD.md for the
-caveat this implies.
+Costs are derived, never stored: the OpenAI API returns token counts but no
+price. Rates come from the model_pricing table, matched to the moment each
+call was made, so changing the model or a price leaves historical figures
+untouched. The values in Settings are only a fallback for calls that no
+pricing row covers.
 """
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.repositories.analytics import AnalyticsRepository
+from app.repositories.analytics import AnalyticsRepository, PriceDefaults
 from app.repositories.conversation import ConversationRepository
 from app.repositories.message import MessageRepository
 from app.repositories.user import UserRepository
@@ -24,8 +25,7 @@ from app.schemas.analytics import (
     MessageHitRead,
     TopQuestionRead,
 )
-
-TOKENS_PER_MILLION = 1_000_000
+from app.schemas.pricing import ModelCostRead
 
 
 class AnalyticsService:
@@ -36,23 +36,19 @@ class AnalyticsService:
         self._messages = MessageRepository(session)
         self._settings = settings
 
-    def _costs(self, prompt_tokens: int, completion_tokens: int) -> tuple[float, float]:
-        input_cost = (
-            prompt_tokens / TOKENS_PER_MILLION * self._settings.openai_input_price_per_1m
+    @property
+    def _defaults(self) -> PriceDefaults:
+        """Fallback prices for calls with no matching model_pricing row."""
+        return PriceDefaults(
+            input_price=Decimal(str(self._settings.openai_input_price_per_1m)),
+            output_price=Decimal(str(self._settings.openai_output_price_per_1m)),
         )
-        output_cost = (
-            completion_tokens
-            / TOKENS_PER_MILLION
-            * self._settings.openai_output_price_per_1m
-        )
-        return round(input_cost, 6), round(output_cost, 6)
 
     async def overview(self, days: int = 30) -> AnalyticsOverview:
         since = datetime.now(UTC) - timedelta(days=days)
-        totals = await self._analytics.usage_totals(since)
-        input_cost, output_cost = self._costs(
-            totals.prompt_tokens, totals.completion_tokens
-        )
+        totals = await self._analytics.usage_totals(since, self._defaults)
+        input_cost = round(totals.input_cost_usd, 6)
+        output_cost = round(totals.output_cost_usd, 6)
         total_cost = round(input_cost + output_cost, 6)
         conversations = await self._conversations.count()
 
@@ -87,25 +83,33 @@ class AnalyticsService:
 
     async def daily(self, days: int = 30) -> list[DailyUsageRead]:
         since = datetime.now(UTC) - timedelta(days=days)
-        rows = await self._analytics.daily_usage(since)
-        result: list[DailyUsageRead] = []
-        for row in rows:
-            input_cost, output_cost = self._costs(
-                row.prompt_tokens, row.completion_tokens
+        return [
+            DailyUsageRead(
+                day=row.day,
+                requests=row.requests,
+                messages=row.messages,
+                prompt_tokens=row.prompt_tokens,
+                completion_tokens=row.completion_tokens,
+                total_tokens=row.total_tokens,
+                avg_latency_ms=round(row.avg_latency_ms, 1),
+                cost_usd=round(row.cost_usd, 6),
             )
-            result.append(
-                DailyUsageRead(
-                    day=row.day,
-                    requests=row.requests,
-                    messages=row.messages,
-                    prompt_tokens=row.prompt_tokens,
-                    completion_tokens=row.completion_tokens,
-                    total_tokens=row.total_tokens,
-                    avg_latency_ms=round(row.avg_latency_ms, 1),
-                    cost_usd=round(input_cost + output_cost, 6),
-                )
+            for row in await self._analytics.daily_usage(since, self._defaults)
+        ]
+
+    async def cost_by_model(self, days: int = 30) -> list[ModelCostRead]:
+        since = datetime.now(UTC) - timedelta(days=days)
+        return [
+            ModelCostRead(
+                model=row.model,
+                requests=row.requests,
+                prompt_tokens=row.prompt_tokens,
+                completion_tokens=row.completion_tokens,
+                total_tokens=row.total_tokens,
+                cost_usd=round(row.cost_usd, 6),
             )
-        return result
+            for row in await self._analytics.cost_by_model(since, self._defaults)
+        ]
 
     async def top_questions(
         self, days: int = 30, limit: int = 10
@@ -135,7 +139,9 @@ class AnalyticsService:
             )
         ]
 
-    async def search_messages(self, query: str, limit: int = 50) -> list[MessageHitRead]:
+    async def search_messages(
+        self, query: str, limit: int = 50
+    ) -> list[MessageHitRead]:
         return [
             MessageHitRead(
                 message_id=row.message_id,

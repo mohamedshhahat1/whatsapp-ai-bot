@@ -13,6 +13,7 @@ from app.integrations.whatsapp import WhatsAppClient
 from app.services.admin_service import AdminService
 from app.services.analytics_service import AnalyticsService
 from app.services.chat_service import ChatService
+from app.services.pricing_service import PricingService
 from app.services.reply_service import ReplyService
 
 
@@ -41,6 +42,11 @@ def get_admin_service(db: AsyncSession = Depends(get_db)) -> AdminService:
 def get_analytics_service(db: AsyncSession = Depends(get_db)) -> AnalyticsService:
     """Cost and usage analytics bound to the request-scoped session."""
     return AnalyticsService(db, get_settings())
+
+
+def get_pricing_service(db: AsyncSession = Depends(get_db)) -> PricingService:
+    """Model pricing history bound to the request-scoped session."""
+    return PricingService(db)
 
 
 def get_reply_service(db: AsyncSession = Depends(get_db)) -> ReplyService:
