@@ -1,6 +1,6 @@
 """Admin queries: listings and statistics."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,7 +42,7 @@ class AdminService:
         await self._session.commit()
 
     async def stats(self) -> StatsRead:
-        since = datetime.now(timezone.utc) - timedelta(hours=24)
+        since = datetime.now(UTC) - timedelta(hours=24)
         return StatsRead(
             total_users=await self._users.count(),
             total_conversations=await self._conversations.count(),

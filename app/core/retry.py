@@ -11,12 +11,12 @@ retries (with longer backoff) remain the outer one.
 import httpx
 import openai
 from tenacity import (
+    RetryCallState,
     retry,
     retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
 )
-from tenacity import RetryCallState
 
 from app.config import get_settings
 from app.core.logging import get_logger

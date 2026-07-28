@@ -1,7 +1,7 @@
 """FastAPI application factory and entrypoint."""
 
-from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from slowapi import _rate_limit_exceeded_handler

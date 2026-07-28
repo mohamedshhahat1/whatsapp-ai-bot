@@ -13,7 +13,7 @@ instructions: the Responses API takes them separately as the ``input`` list,
 which keeps instructions cacheable and history token-budgeted independently.
 """
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from app.config import Settings
 from app.services.retrieval import RetrievedDocument
@@ -55,7 +55,7 @@ class PromptBuilder:
 
         context_lines = [
             "Channel: WhatsApp",
-            f"Current UTC time: {datetime.now(timezone.utc):%Y-%m-%d %H:%M}",
+            f"Current UTC time: {datetime.now(UTC):%Y-%m-%d %H:%M}",
         ]
         if user_name:
             context_lines.append(f"Customer name: {user_name}")

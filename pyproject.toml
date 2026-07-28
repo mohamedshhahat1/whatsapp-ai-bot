@@ -19,6 +19,13 @@ select = [
 # Black owns line wrapping; B008 is the standard FastAPI Depends() pattern.
 ignore = ["E501", "B008"]
 
+[tool.ruff.lint.isort]
+# "app" is the only first-party package. The repository also contains an
+# "alembic/" directory, which makes isort's src-based detection classify the
+# installed "alembic" distribution as first-party; pin it explicitly.
+known-first-party = ["app"]
+known-third-party = ["alembic"]
+
 [tool.ruff.lint.per-file-ignores]
 # Test config must set environment variables before importing the app.
 "tests/conftest.py" = ["E402"]
