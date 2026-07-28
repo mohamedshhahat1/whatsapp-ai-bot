@@ -31,6 +31,4 @@ class AILogRepository(BaseRepository):
         return log
 
     async def total_tokens(self) -> int:
-        return int(
-            await self.session.scalar(select(func.sum(AILog.total_tokens))) or 0
-        )
+        return int(await self.session.scalar(select(func.sum(AILog.total_tokens))) or 0)

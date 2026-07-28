@@ -45,6 +45,4 @@ class ConversationRepository(BaseRepository):
         await self.session.delete(conversation)
 
     async def count(self) -> int:
-        return int(
-            await self.session.scalar(select(func.count(Conversation.id))) or 0
-        )
+        return int(await self.session.scalar(select(func.count(Conversation.id))) or 0)

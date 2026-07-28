@@ -71,11 +71,13 @@ class OpenAIClient:
             OPENAI_TOKENS_TOTAL.labels(model=model, kind="completion").inc(
                 completion_tokens
             )
+
+        # Prices are quoted per 1M tokens, so convert counts to millions first.
+        prompt_millions = (prompt_tokens or 0) / 1_000_000
+        completion_millions = (completion_tokens or 0) / 1_000_000
         cost_usd = (
-            (prompt_tokens or 0) / 1_000_000 * self._settings.openai_input_price_per_1m
-            + (completion_tokens or 0)
-            / 1_000_000
-            * self._settings.openai_output_price_per_1m
+            prompt_millions * self._settings.openai_input_price_per_1m
+            + completion_millions * self._settings.openai_output_price_per_1m
         )
         if cost_usd:
             OPENAI_COST_USD_TOTAL.labels(model=model).inc(cost_usd)

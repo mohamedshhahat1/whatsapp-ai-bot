@@ -160,7 +160,5 @@ class ChatService:
 
     async def handle_status_update(self, wa_message_id: str, status: str) -> None:
         """Record delivery/read/failed status updates for outbound messages."""
-        await self._conversations.messages.update_status_by_wa_id(
-            wa_message_id, status
-        )
+        await self._conversations.messages.update_status_by_wa_id(wa_message_id, status)
         await self._session.commit()

@@ -31,9 +31,9 @@ def _log_before_sleep(retry_state: RetryCallState) -> None:
         "retrying_external_call",
         callee=retry_state.fn.__qualname__ if retry_state.fn else "unknown",
         attempt=retry_state.attempt_number,
-        wait_seconds=round(retry_state.next_action.sleep, 2)
-        if retry_state.next_action
-        else None,
+        wait_seconds=(
+            round(retry_state.next_action.sleep, 2) if retry_state.next_action else None
+        ),
         error=str(exc),
     )
 

@@ -38,7 +38,9 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(AppError)
     async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        logger.warning("app_error", code=exc.code, message=exc.message, path=request.url.path)
+        logger.warning(
+            "app_error", code=exc.code, message=exc.message, path=request.url.path
+        )
         return JSONResponse(
             status_code=exc.status_code,
             content={"error": {"code": exc.code, "message": exc.message}},
@@ -46,8 +48,12 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def handle_unexpected(request: Request, exc: Exception) -> JSONResponse:
-        logger.error("unhandled_error", error=str(exc), path=request.url.path, exc_info=True)
+        logger.error(
+            "unhandled_error", error=str(exc), path=request.url.path, exc_info=True
+        )
         return JSONResponse(
             status_code=500,
-            content={"error": {"code": "internal_error", "message": "Internal server error"}},
+            content={
+                "error": {"code": "internal_error", "message": "Internal server error"}
+            },
         )

@@ -22,15 +22,11 @@ class RetrievedDocument:
 class DocumentRetriever(Protocol):
     """Anything that can fetch relevant documents for a query."""
 
-    async def retrieve(
-        self, query: str, limit: int = 5
-    ) -> list[RetrievedDocument]: ...
+    async def retrieve(self, query: str, limit: int = 5) -> list[RetrievedDocument]: ...
 
 
 class NullRetriever:
     """Default no-op retriever used until a real knowledge base is added."""
 
-    async def retrieve(
-        self, query: str, limit: int = 5
-    ) -> list[RetrievedDocument]:
+    async def retrieve(self, query: str, limit: int = 5) -> list[RetrievedDocument]:
         return []
