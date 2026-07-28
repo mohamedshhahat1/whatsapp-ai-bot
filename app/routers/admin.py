@@ -3,12 +3,28 @@
 from fastapi import APIRouter, Depends, Query, Request
 
 from app.core.ratelimit import ADMIN_LIMIT, limiter
-from app.dependencies.deps import get_admin_service, require_admin
+from app.dependencies.deps import (
+    get_admin_service,
+    get_analytics_service,
+    get_reply_service,
+    require_admin,
+)
 from app.schemas.admin import StatsRead
+from app.schemas.analytics import (
+    AnalyticsOverview,
+    CustomerActivityRead,
+    DailyUsageRead,
+    ManualReplyRequest,
+    ManualReplyResponse,
+    MessageHitRead,
+    TopQuestionRead,
+)
 from app.schemas.conversation import ConversationDetail, ConversationRead
 from app.schemas.knowledge import KnowledgeDocumentRead, KnowledgeSearchHit
 from app.schemas.user import UserRead
 from app.services.admin_service import AdminService
+from app.services.analytics_service import AnalyticsService
+from app.services.reply_service import ReplyService
 
 router = APIRouter(
     prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)]
@@ -60,6 +76,91 @@ async def delete_conversation(
     service: AdminService = Depends(get_admin_service),
 ) -> None:
     await service.delete_conversation(conversation_id)
+
+
+@router.post("/conversations/{conversation_id}/reply", response_model=ManualReplyResponse)
+@limiter.limit(ADMIN_LIMIT)
+async def send_manual_reply(
+    request: Request,
+    conversation_id: int,
+    payload: ManualReplyRequest,
+    service: ReplyService = Depends(get_reply_service),
+) -> ManualReplyResponse:
+    """Let a human operator take over and reply directly to the customer."""
+    message = await service.send_manual_reply(conversation_id, payload.text)
+    return ManualReplyResponse(
+        message_id=message.id,
+        conversation_id=message.conversation_id,
+        wa_message_id=message.wa_message_id,
+        sent_at=message.created_at,
+    )
+
+
+@router.get("/stats", response_model=StatsRead)
+@limiter.limit(ADMIN_LIMIT)
+async def stats(
+    request: Request,
+    service: AdminService = Depends(get_admin_service),
+) -> StatsRead:
+    return await service.stats()
+
+
+@router.get("/search", response_model=list[MessageHitRead])
+@limiter.limit(ADMIN_LIMIT)
+async def search_messages(
+    request: Request,
+    q: str = Query(..., min_length=2, description="Text to look for in messages"),
+    limit: int = Query(50, ge=1, le=200),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> list[MessageHitRead]:
+    """Full conversation search across inbound and outbound message bodies."""
+    return await service.search_messages(q, limit=limit)
+
+
+@router.get("/analytics/overview", response_model=AnalyticsOverview)
+@limiter.limit(ADMIN_LIMIT)
+async def analytics_overview(
+    request: Request,
+    days: int = Query(30, ge=1, le=365),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> AnalyticsOverview:
+    """Headline KPIs: tokens, spend, latency and error rate."""
+    return await service.overview(days=days)
+
+
+@router.get("/analytics/daily", response_model=list[DailyUsageRead])
+@limiter.limit(ADMIN_LIMIT)
+async def analytics_daily(
+    request: Request,
+    days: int = Query(30, ge=1, le=365),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> list[DailyUsageRead]:
+    """Day-by-day message volume, token usage and cost."""
+    return await service.daily(days=days)
+
+
+@router.get("/analytics/questions", response_model=list[TopQuestionRead])
+@limiter.limit(ADMIN_LIMIT)
+async def analytics_questions(
+    request: Request,
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=50),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> list[TopQuestionRead]:
+    """Most frequently asked customer questions."""
+    return await service.top_questions(days=days, limit=limit)
+
+
+@router.get("/analytics/customers", response_model=list[CustomerActivityRead])
+@limiter.limit(ADMIN_LIMIT)
+async def analytics_customers(
+    request: Request,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> list[CustomerActivityRead]:
+    """Conversation and message counts per customer."""
+    return await service.customers(offset=offset, limit=limit)
 
 
 @router.get("/knowledge", response_model=list[KnowledgeDocumentRead])

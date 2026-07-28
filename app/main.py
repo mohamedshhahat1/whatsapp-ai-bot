@@ -2,11 +2,16 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import cast
 
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import Scope
 
 from app.config import get_settings
 from app.core.exceptions import register_exception_handlers
@@ -19,6 +24,13 @@ from app.routers import admin, health, metrics, webhook
 settings = get_settings()
 configure_logging(debug=settings.debug)
 logger = get_logger(__name__)
+
+# Built dashboard assets (produced by `npm run build` in dashboard/).
+DASHBOARD_DIST = Path(__file__).resolve().parent.parent / "dashboard" / "dist"
+
+# Vite's dev server, for running the dashboard with hot reload against a
+# locally running API.
+DEV_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
 
 @asynccontextmanager
@@ -42,6 +54,22 @@ async def handle_rate_limit_exceeded(request: Request, exc: Exception) -> Respon
     return _rate_limit_exceeded_handler(request, cast(RateLimitExceeded, exc))
 
 
+class SpaStaticFiles(StaticFiles):
+    """Static files with an index.html fallback for client-side routes.
+
+    Without this, reloading the browser on /dashboard/customers would 404:
+    that path exists only in the React router, not on disk.
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code == 404:
+                return await super().get_response("index.html", scope)
+            raise
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     app = FastAPI(
@@ -53,6 +81,15 @@ def create_app() -> FastAPI:
     )
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, handle_rate_limit_exceeded)
+    if settings.debug:
+        # Only in debug: production serves the dashboard same-origin, so no
+        # cross-origin access is needed or wanted.
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=DEV_ORIGINS,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
     app.add_middleware(RequestLoggingMiddleware)
     if settings.metrics_enabled:
         app.add_middleware(MetricsMiddleware)
@@ -61,6 +98,15 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(webhook.router)
     app.include_router(admin.router)
+
+    if DASHBOARD_DIST.is_dir():
+        app.mount(
+            "/dashboard",
+            SpaStaticFiles(directory=DASHBOARD_DIST, html=True),
+            name="dashboard",
+        )
+    else:
+        logger.info("dashboard_not_built", path=str(DASHBOARD_DIST))
     return app
 
 

@@ -11,7 +11,9 @@ from app.db.session import get_db
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.services.admin_service import AdminService
+from app.services.analytics_service import AnalyticsService
 from app.services.chat_service import ChatService
+from app.services.reply_service import ReplyService
 
 
 @lru_cache
@@ -34,6 +36,16 @@ def get_chat_service(db: AsyncSession = Depends(get_db)) -> ChatService:
 def get_admin_service(db: AsyncSession = Depends(get_db)) -> AdminService:
     """Admin service bound to the request-scoped database session."""
     return AdminService(db)
+
+
+def get_analytics_service(db: AsyncSession = Depends(get_db)) -> AnalyticsService:
+    """Cost and usage analytics bound to the request-scoped session."""
+    return AnalyticsService(db, get_settings())
+
+
+def get_reply_service(db: AsyncSession = Depends(get_db)) -> ReplyService:
+    """Manual reply service bound to the request-scoped session."""
+    return ReplyService(db, get_whatsapp_client())
 
 
 def require_admin(

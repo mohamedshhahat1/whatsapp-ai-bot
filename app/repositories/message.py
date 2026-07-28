@@ -54,6 +54,19 @@ class MessageRepository(BaseRepository):
             .values(status=status)
         )
 
+    async def last_inbound_at(self, conversation_id: int) -> datetime | None:
+        """Timestamp of the customer's most recent message.
+
+        Used to check the WhatsApp 24-hour customer service window before an
+        operator sends a free-form manual reply.
+        """
+        return await self.session.scalar(
+            select(func.max(Message.created_at)).where(
+                Message.conversation_id == conversation_id,
+                Message.direction == "inbound",
+            )
+        )
+
     async def count(self) -> int:
         return int(await self.session.scalar(select(func.count(Message.id))) or 0)
 
