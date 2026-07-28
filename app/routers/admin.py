@@ -6,6 +6,7 @@ from app.core.ratelimit import ADMIN_LIMIT, limiter
 from app.dependencies.deps import get_admin_service, require_admin
 from app.schemas.admin import StatsRead
 from app.schemas.conversation import ConversationDetail, ConversationRead
+from app.schemas.knowledge import KnowledgeDocumentRead, KnowledgeSearchHit
 from app.schemas.user import UserRead
 from app.services.admin_service import AdminService
 
@@ -61,10 +62,30 @@ async def delete_conversation(
     await service.delete_conversation(conversation_id)
 
 
-@router.get("/stats", response_model=StatsRead)
+@router.get("/knowledge", response_model=list[KnowledgeDocumentRead])
 @limiter.limit(ADMIN_LIMIT)
-async def stats(
+async def list_knowledge_documents(
     request: Request,
     service: AdminService = Depends(get_admin_service),
-) -> StatsRead:
-    return await service.stats()
+) -> list[KnowledgeDocumentRead]:
+    """Documents currently indexed in the vector store."""
+    return [
+        KnowledgeDocumentRead.model_validate(d) for d in await service.list_documents()
+    ]
+
+
+@router.get("/knowledge/search", response_model=list[KnowledgeSearchHit])
+@limiter.limit(ADMIN_LIMIT)
+async def search_knowledge(
+    request: Request,
+    q: str = Query(..., min_length=2, description="Question to test retrieval with"),
+    limit: int = Query(5, ge=1, le=20),
+    service: AdminService = Depends(get_admin_service),
+) -> list[KnowledgeSearchHit]:
+    """Preview exactly which chunks the model would receive for a question."""
+    return [
+        KnowledgeSearchHit(
+            source=doc.source, score=doc.score or 0.0, content=doc.content
+        )
+        for doc in await service.search_knowledge(q, limit=limit)
+    ]

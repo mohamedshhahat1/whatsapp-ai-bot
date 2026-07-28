@@ -1,0 +1,4 @@
+# Knowledge sources are business documents (prices, contracts): never commit.
+*
+!.gitignore
+!README.md

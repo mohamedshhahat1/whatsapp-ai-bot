@@ -4,14 +4,18 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.core.exceptions import NotFoundError
 from app.models.conversation import Conversation
+from app.models.document import Document
 from app.models.user import User
 from app.repositories.ai_log import AILogRepository
 from app.repositories.conversation import ConversationRepository
+from app.repositories.document import DocumentRepository
 from app.repositories.message import MessageRepository
 from app.repositories.user import UserRepository
 from app.schemas.admin import StatsRead
+from app.services.retrieval import RetrievedDocument, build_retriever
 
 
 class AdminService:
@@ -21,6 +25,7 @@ class AdminService:
         self._conversations = ConversationRepository(session)
         self._messages = MessageRepository(session)
         self._ai_logs = AILogRepository(session)
+        self._documents = DocumentRepository(session)
 
     async def list_users(self, offset: int, limit: int) -> list[User]:
         return await self._users.list(offset=offset, limit=limit)
@@ -40,6 +45,17 @@ class AdminService:
             raise NotFoundError(f"Conversation {conversation_id} not found")
         await self._conversations.delete(conversation)
         await self._session.commit()
+
+    async def list_documents(self) -> list[Document]:
+        """Knowledge-base documents currently indexed."""
+        return await self._documents.list_documents()
+
+    async def search_knowledge(
+        self, query: str, limit: int = 5
+    ) -> list[RetrievedDocument]:
+        """Preview what RAG would feed the model for a given question."""
+        retriever = build_retriever(self._session, get_settings())
+        return await retriever.retrieve(query, limit=limit)
 
     async def stats(self) -> StatsRead:
         since = datetime.now(UTC) - timedelta(hours=24)

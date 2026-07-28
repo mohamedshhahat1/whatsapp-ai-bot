@@ -2,8 +2,17 @@
 
 from app.models.ai_log import AILog
 from app.models.conversation import Conversation
+from app.models.document import Document, DocumentChunk
 from app.models.message import Message
 from app.models.session import ChatSession
 from app.models.user import User
 
-__all__ = ["AILog", "Conversation", "Message", "ChatSession", "User"]
+__all__ = [
+    "AILog",
+    "ChatSession",
+    "Conversation",
+    "Document",
+    "DocumentChunk",
+    "Message",
+    "User",
+]

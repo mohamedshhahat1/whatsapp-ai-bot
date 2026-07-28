@@ -10,7 +10,11 @@ from app.integrations.whatsapp import WhatsAppClient
 from app.repositories.ai_log import AILogRepository
 from app.services.conversation_service import ConversationService
 from app.services.prompt_builder import PromptBuilder
-from app.services.retrieval import DocumentRetriever, NullRetriever
+from app.services.retrieval import (
+    DocumentRetriever,
+    RetrievedDocument,
+    build_retriever,
+)
 
 logger = get_logger(__name__)
 
@@ -37,7 +41,9 @@ class ChatService:
         self._conversations = ConversationService(session, settings)
         self._ai_logs = AILogRepository(session)
         self._prompts = PromptBuilder(settings)
-        self._retriever = retriever or NullRetriever()
+        # Defaulting here (rather than in the callers) means the API and the
+        # Celery worker both get RAG without duplicating the wiring.
+        self._retriever = retriever or build_retriever(session, settings)
 
     async def _generate_and_send(
         self,
@@ -48,10 +54,12 @@ class ChatService:
         retrieval_query: str | None,
     ) -> None:
         """Build structured instructions, generate a reply, send and persist it."""
-        documents = []
+        documents: list[RetrievedDocument] = []
         if retrieval_query:
             try:
-                documents = await self._retriever.retrieve(retrieval_query)
+                documents = await self._retriever.retrieve(
+                    retrieval_query, limit=self._settings.rag_top_k
+                )
             except Exception:
                 # Retrieval must never break the conversation.
                 logger.error("retrieval_failed", exc_info=True)
