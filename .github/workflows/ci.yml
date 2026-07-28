@@ -47,6 +47,21 @@ jobs:
       - name: Mypy (type check)
         run: mypy
 
+  # 1b) SECRET SCAN -------------------------------------------------------
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository history for committed secrets
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
+            detect --source=/repo --config=/repo/.gitleaks.toml \
+            --redact --no-banner --verbose
+
   # 2) TESTS --------------------------------------------------------------
   test:
     name: Tests (pytest)
@@ -77,6 +92,8 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    # Test-only values. Real credentials never enter CI: production secrets
+    # live in Docker secrets / Vault on the server (see docs/SECRETS.md).
     env:
       ENVIRONMENT: test
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/whatsapp_ai_bot_test
@@ -121,13 +138,11 @@ jobs:
   # 3) BUILD DOCKER -------------------------------------------------------
   build:
     name: Build Docker image
-    needs: test
+    needs: [test, secret-scan]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    outputs:
-      image: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v4
 
@@ -167,6 +182,8 @@ jobs:
   # Runs only for pushes to main, and only once the deployment target is
   # configured. Enable it by setting the repository variable
   # DEPLOY_ENABLED=true and adding the DEPLOY_* secrets below.
+  # The server holds its own credentials as Docker secrets - none are shipped
+  # from CI (see docs/SECRETS.md).
   deploy:
     name: Deploy
     needs: build
@@ -184,15 +201,15 @@ jobs:
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: ${{ secrets.DEPLOY_PORT || 22 }}
           script_stop: true
+          envs: APP_IMAGE
           script: |
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
-            echo ${{ secrets.GITHUB_TOKEN }} | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-            export IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
-            docker pull "$IMAGE"
-            docker compose pull || true
-            docker compose up -d --remove-orphans
-            docker compose exec -T app alembic upgrade head
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
+            export APP_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            docker compose -f docker-compose.prod.yml exec -T app alembic upgrade head
             docker image prune -f
 
       - name: Smoke test /health

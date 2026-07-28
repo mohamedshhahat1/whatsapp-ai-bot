@@ -1,0 +1,26 @@
+title = "whatsapp-ai-bot secret scanning"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentation placeholders and test fixtures"
+paths = [
+  '''\.env\.example''',
+  '''docs/SECRETS\.md''',
+  '''README\.md''',
+  '''tests/''',
+  '''\.gitleaks\.toml''',
+]
+regexes = [
+  '''sk-your-key''',
+  '''sk-from-file''',
+  '''sk-real''',
+  '''EAAG-your-permanent-token''',
+  '''EAAG-real''',
+  '''choose-a-(random-string|strong-random-key)''',
+  '''your-meta-app-secret''',
+  '''change-me''',
+  '''test-(verify-token|admin-key|key|token)''',
+  '''postgres:postgres''',
+]

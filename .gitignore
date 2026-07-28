@@ -10,9 +10,13 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
 dist/
 build/
 .idea/
 .vscode/
 *.log
+
+# Docker secrets - never commit real credentials
+secrets/

@@ -1,15 +1,65 @@
-"""Application configuration loaded from environment variables (12-factor)."""
+"""Application configuration loaded from environment variables (12-factor).
 
+Production never relies on a ``.env`` file. Credentials come from Docker
+secrets, ``<FIELD>_FILE`` files, Vault or the process environment (GitHub
+Actions secrets) -- see ``app/core/secrets.py`` and ``docs/SECRETS.md``.
+"""
+
+import os
 from functools import lru_cache
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+from app.core.secrets import (
+    FileEnvSecretsSource,
+    VaultSettingsSource,
+    resolve_secrets_dir,
+)
+
+# Secrets that must be provided by a real backend before the app may boot in
+# production.
+REQUIRED_IN_PRODUCTION = (
+    "openai_api_key",
+    "whatsapp_token",
+    "whatsapp_phone_number_id",
+    "whatsapp_verify_token",
+    "whatsapp_app_secret",
+    "admin_api_key",
+)
+
+# Values that mean "not configured" -- copied from .env.example or defaults.
+PLACEHOLDER_VALUES = frozenset(
+    {
+        "",
+        "change-me",
+        "sk-your-key",
+        "choose-a-random-string",
+        "choose-a-strong-random-key",
+        "your-meta-app-secret",
+        "EAAG-your-permanent-token",
+    }
+)
+
+
+def _running_in_production() -> bool:
+    return os.environ.get("ENVIRONMENT", "development").strip().lower() == "production"
 
 
 class Settings(BaseSettings):
     """Central, environment-based application settings."""
 
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        # The .env file is a local development convenience only.
+        env_file=None if _running_in_production() else ".env",
+        env_file_encoding="utf-8",
+        # Docker secrets: /run/secrets/<field_name> (when the directory exists).
+        secrets_dir=resolve_secrets_dir(),
+        extra="ignore",
     )
 
     # Application
@@ -44,6 +94,13 @@ class Settings(BaseSettings):
     openai_input_price_per_1m: float = 0.40
     openai_output_price_per_1m: float = 1.60
 
+    # Secret backends (see app/core/secrets.py)
+    secrets_dir: str = "/run/secrets"
+    vault_enabled: bool = False
+    vault_addr: str = ""
+    vault_kv_mount: str = "secret"
+    vault_secret_path: str = ""
+
     # OpenAI
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1-mini"
@@ -62,6 +119,45 @@ class Settings(BaseSettings):
 
     # Admin API
     admin_api_key: str = "change-me"
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Highest priority first: env > *_FILE > Vault > Docker secrets > .env."""
+        return (
+            init_settings,
+            env_settings,
+            FileEnvSecretsSource(settings_cls),
+            VaultSettingsSource(settings_cls),
+            file_secret_settings,
+            dotenv_settings,
+        )
+
+    @model_validator(mode="after")
+    def _require_production_secrets(self) -> "Settings":
+        """Fail fast when production boots without real credentials."""
+        if self.environment.strip().lower() != "production":
+            return self
+        missing = [
+            name
+            for name in REQUIRED_IN_PRODUCTION
+            if str(getattr(self, name)).strip() in PLACEHOLDER_VALUES
+        ]
+        if missing:
+            raise ValueError(
+                "Missing production secrets: "
+                + ", ".join(missing)
+                + ". Provide them through Docker secrets (/run/secrets/<name>), "
+                "a <NAME>_FILE variable, Vault, or the process environment. "
+                "The .env file is not read when ENVIRONMENT=production."
+            )
+        return self
 
     @property
     def database_url_sync(self) -> str:

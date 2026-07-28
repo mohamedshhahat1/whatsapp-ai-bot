@@ -1,0 +1,148 @@
+# Production stack: no .env file -- every credential is a Docker secret.
+#
+#   ./scripts/init-secrets.sh          # create ./secrets/* once
+#   docker compose -f docker-compose.prod.yml up -d
+#
+# Secrets are mounted read-only at /run/secrets/<name>; pydantic-settings loads
+# files whose name matches a settings field automatically (SECRETS_DIR).
+# On Docker Swarm, replace each `file:` entry with `external: true` and manage
+# the values with `docker secret create <name> -`.
+
+x-app-environment: &app-environment
+  ENVIRONMENT: production
+  DEBUG: "false"
+  SECRETS_DIR: /run/secrets
+  REDIS_URL: redis://redis:6379/0
+  USE_TASK_QUEUE: "true"
+  RATE_LIMIT_ENABLED: "true"
+  METRICS_ENABLED: "true"
+  OPENAI_MODEL: gpt-4.1-mini
+  WHATSAPP_API_VERSION: v21.0
+
+x-app-secrets: &app-secrets
+  - database_url
+  - openai_api_key
+  - whatsapp_token
+  - whatsapp_phone_number_id
+  - whatsapp_verify_token
+  - whatsapp_app_secret
+  - admin_api_key
+
+services:
+  app:
+    image: ${APP_IMAGE:-ghcr.io/mohamedshhahat1/whatsapp-ai-bot:latest}
+    environment: *app-environment
+    secrets: *app-secrets
+    expose:
+      - "8000"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  worker:
+    image: ${APP_IMAGE:-ghcr.io/mohamedshhahat1/whatsapp-ai-bot:latest}
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --pool=threads --concurrency=8 -Q webhooks
+    environment: *app-environment
+    secrets: *app-secrets
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      POSTGRES_DB: whatsapp_ai_bot
+    secrets:
+      - postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - app
+      - worker
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      # Grafana reads any setting from a file with the __FILE suffix.
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    secrets:
+      - grafana_admin_password
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - app
+    restart: unless-stopped
+
+secrets:
+  database_url:
+    file: ./secrets/database_url
+  postgres_password:
+    file: ./secrets/postgres_password
+  openai_api_key:
+    file: ./secrets/openai_api_key
+  whatsapp_token:
+    file: ./secrets/whatsapp_token
+  whatsapp_phone_number_id:
+    file: ./secrets/whatsapp_phone_number_id
+  whatsapp_verify_token:
+    file: ./secrets/whatsapp_verify_token
+  whatsapp_app_secret:
+    file: ./secrets/whatsapp_app_secret
+  admin_api_key:
+    file: ./secrets/admin_api_key
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password
+
+volumes:
+  pgdata:
+  redisdata:
+  promdata:
+  grafanadata:
