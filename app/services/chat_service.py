@@ -1,4 +1,4 @@
-"""Chat orchestration: inbound message -> structured prompt -> AI reply -> outbound."""
+"""Chat orchestration: inbound message -> prompt -> AI reply -> outbound send."""
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,8 +41,9 @@ class ChatService:
         self._conversations = ConversationService(session, settings)
         self._ai_logs = AILogRepository(session)
         self._prompts = PromptBuilder(settings)
-        # Defaulting here (rather than in the callers) means the API and the
-        # Celery worker both get RAG without duplicating the wiring.
+        # Defaulting here (rather than in every caller) means the API and the
+        # Celery worker both get RAG without duplicating the wiring, while the
+        # parameter keeps the retriever injectable for tests.
         self._retriever = retriever or build_retriever(session, settings)
 
     async def _generate_and_send(
@@ -53,19 +54,24 @@ class ChatService:
         history: list[dict],
         retrieval_query: str | None,
     ) -> None:
-        """Build structured instructions, generate a reply, send and persist it."""
+        """Build layered instructions, generate a reply, send and persist it."""
         documents: list[RetrievedDocument] = []
+        retrieval_attempted = bool(retrieval_query)
         if retrieval_query:
             try:
                 documents = await self._retriever.retrieve(
                     retrieval_query, limit=self._settings.rag_top_k
                 )
             except Exception:
-                # Retrieval must never break the conversation.
+                # Retrieval must never break the conversation. The prompt is
+                # still told a search happened and returned nothing, so the
+                # model declines to quote prices rather than inventing them.
                 logger.error("retrieval_failed", exc_info=True)
 
         instructions = self._prompts.build_instructions(
-            user_name=name, documents=documents
+            user_name=name,
+            documents=documents,
+            retrieval_attempted=retrieval_attempted,
         )
 
         reply_text = FALLBACK_REPLY
