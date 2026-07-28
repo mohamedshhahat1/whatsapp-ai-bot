@@ -2,6 +2,7 @@
 
 import time
 from dataclasses import dataclass
+from typing import Any, cast
 
 import openai as openai_sdk
 from openai import AsyncOpenAI
@@ -96,10 +97,14 @@ class OpenAIClient:
         self, history: list[dict[str, str]], instructions: str | None
     ):
         """Single Responses API attempt; tenacity retries transient failures."""
+        # History is a list of {"role": ..., "content": ...} dicts, which is
+        # structurally an EasyInputMessageParam. The SDK types `input` as a
+        # large TypedDict union that plain dicts do not statically satisfy,
+        # so cast at the boundary instead of importing 30+ param types.
         # Tool calling: pass `tools=[...]` here when adding function calling.
         return await self._client.responses.create(
             model=self._settings.openai_model,
             instructions=instructions or self._settings.system_prompt,
-            input=history,
+            input=cast(Any, history),
             max_output_tokens=self._settings.max_output_tokens,
         )

@@ -64,12 +64,13 @@ class ChatService:
         try:
             result = await self._ai.generate_reply(history, instructions=instructions)
             reply_text = result.text or FALLBACK_REPLY
+            # Usage fields are optional in the API response; log 0 when absent.
             await self._ai_logs.create(
                 model=result.model,
                 conversation_id=conversation_id,
-                prompt_tokens=result.prompt_tokens,
-                completion_tokens=result.completion_tokens,
-                total_tokens=result.total_tokens,
+                prompt_tokens=result.prompt_tokens or 0,
+                completion_tokens=result.completion_tokens or 0,
+                total_tokens=result.total_tokens or 0,
                 latency_ms=result.latency_ms,
             )
         except ExternalServiceError as exc:

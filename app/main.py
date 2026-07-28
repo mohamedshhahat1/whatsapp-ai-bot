@@ -2,8 +2,9 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import cast
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
@@ -31,6 +32,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("shutdown")
 
 
+async def handle_rate_limit_exceeded(request: Request, exc: Exception) -> Response:
+    """Adapt slowapi's handler to Starlette's exception handler signature.
+
+    Starlette types handlers as accepting a bare ``Exception``; slowapi's
+    handler is narrowed to ``RateLimitExceeded``. This thin wrapper bridges
+    the two without silencing the type checker globally.
+    """
+    return _rate_limit_exceeded_handler(request, cast(RateLimitExceeded, exc))
+
+
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
     app = FastAPI(
@@ -41,7 +52,7 @@ def create_app() -> FastAPI:
         redoc_url=None,
     )
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RateLimitExceeded, handle_rate_limit_exceeded)
     app.add_middleware(RequestLoggingMiddleware)
     if settings.metrics_enabled:
         app.add_middleware(MetricsMiddleware)
