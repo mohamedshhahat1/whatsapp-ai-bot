@@ -18,6 +18,8 @@ x-app-environment: &app-environment
   METRICS_ENABLED: "true"
   OPENAI_MODEL: gpt-4.1-mini
   WHATSAPP_API_VERSION: v21.0
+  RAG_ENABLED: "true"
+  KNOWLEDGE_DIR: /app/knowledge
 
 x-app-secrets: &app-secrets
   - database_url
@@ -33,6 +35,9 @@ services:
     image: ${APP_IMAGE:-ghcr.io/mohamedshhahat1/whatsapp-ai-bot:latest}
     environment: *app-environment
     secrets: *app-secrets
+    volumes:
+      # Company documents live on the host, never inside the image.
+      - ./knowledge:/app/knowledge:ro
     expose:
       - "8000"
     ports:
@@ -57,7 +62,8 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16-alpine
+    # Postgres 16 + pgvector (required by the knowledge-base migration).
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password

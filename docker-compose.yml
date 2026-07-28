@@ -5,6 +5,10 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/whatsapp_ai_bot
       REDIS_URL: redis://redis:6379/0
+    volumes:
+      # Knowledge sources, so `python scripts/ingest_knowledge.py` can read
+      # them inside the container without rebuilding the image.
+      - ./knowledge:/app/knowledge:ro
     ports:
       - "8000:8000"
     depends_on:
@@ -31,7 +35,8 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16-alpine
+    # Postgres 16 + the pgvector extension used by the knowledge base.
+    image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
