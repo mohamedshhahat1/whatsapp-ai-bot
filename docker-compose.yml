@@ -66,8 +66,8 @@ services:
         condition: service_completed_successfully
     # `inspect ping` round-trips through the broker to this specific worker,
     # so it fails if the process is alive but has lost its broker connection
-    # or deadlocked its pool -- the failure modes that silently stop消 message
-    # processing.
+    # or deadlocked its pool -- the failure modes that silently stop message
+    # processing while the container still looks up.
     healthcheck:
       test:
         - CMD-SHELL

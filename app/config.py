@@ -84,8 +84,8 @@ class Settings(BaseSettings):
     rate_limit_admin: str = "60/minute"
     # Number of reverse proxies in front of the app that append to
     # X-Forwarded-For. Only the last N entries are trustworthy; everything to
-    # the left of them is attacker-controlled. Set to 0 when the app is
-    # exposed directly with no proxy.
+    # the left of them is client-supplied. Set to 0 when the app is exposed
+    # directly with no proxy.
     trusted_proxy_hops: int = 1
 
     # Outbound retries (tenacity, exponential backoff with jitter)
@@ -95,7 +95,9 @@ class Settings(BaseSettings):
     # Observability
     metrics_enabled: bool = True
     worker_metrics_port: int = 9100
-    # USD prices per 1M tokens for cost metrics (defaults: gpt-4.1-mini)
+    # USD prices per 1M tokens. FALLBACK ONLY: spend is computed from the
+    # model_pricing table so historical figures stay correct across price
+    # changes. These apply only to a model with no pricing row at all.
     openai_input_price_per_1m: float = 0.40
     openai_output_price_per_1m: float = 1.60
 

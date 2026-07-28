@@ -7,6 +7,9 @@
 # files whose name matches a settings field automatically (SECRETS_DIR).
 # On Docker Swarm, replace each `file:` entry with `external: true` and manage
 # the values with `docker secret create <name> -`.
+#
+# Schema upgrades run in the one-shot `migrate` service before app and worker
+# start; no manual `alembic upgrade head` step is required on deploy.
 
 x-app-environment: &app-environment
   ENVIRONMENT: production
@@ -15,6 +18,10 @@ x-app-environment: &app-environment
   REDIS_URL: redis://redis:6379/0
   USE_TASK_QUEUE: "true"
   RATE_LIMIT_ENABLED: "true"
+  # nginx is the only proxy in front of the app, so the real client IP is the
+  # last X-Forwarded-For entry. Raise this if you add a CDN or load balancer,
+  # or rate limiting can be bypassed with a forged header.
+  TRUSTED_PROXY_HOPS: "1"
   METRICS_ENABLED: "true"
   OPENAI_MODEL: gpt-4.1-mini
   WHATSAPP_API_VERSION: v21.0
@@ -31,6 +38,16 @@ x-app-secrets: &app-secrets
   - admin_api_key
 
 services:
+  migrate:
+    image: ${APP_IMAGE:-ghcr.io/mohamedshhahat1/whatsapp-ai-bot:latest}
+    command: alembic upgrade head
+    environment: *app-environment
+    secrets: *app-secrets
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
   app:
     image: ${APP_IMAGE:-ghcr.io/mohamedshhahat1/whatsapp-ai-bot:latest}
     environment: *app-environment
@@ -46,7 +63,19 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=5)
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   worker:
@@ -58,7 +87,17 @@ services:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - celery -A app.workers.celery_app.celery_app inspect ping -d celery@$$HOSTNAME
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
 
   db:
@@ -84,6 +123,11 @@ services:
     command: redis-server --appendonly yes
     volumes:
       - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   prometheus:
@@ -124,7 +168,8 @@ services:
     ports:
       - "80:80"
     depends_on:
-      - app
+      app:
+        condition: service_healthy
     restart: unless-stopped
 
 secrets:

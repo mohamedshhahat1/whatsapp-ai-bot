@@ -19,11 +19,26 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Estimated OpenAI cost (24h)",
+      "title": "Dead-lettered webhooks (24h)",
+      "description": "Deliveries that exhausted all Celery retries and were parked in Redis. Anything above zero means a customer message was not answered -- inspect the webhooks:dead-letter list. Spend is deliberately not shown here: cost depends on the price in force at the time, which lives in the model_pricing table, so the admin dashboard is the single source of truth for money.",
       "gridPos": { "h": 5, "w": 6, "x": 6, "y": 0 },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4 }, "overrides": [] },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      },
       "targets": [
-        { "expr": "sum(increase(openai_cost_usd_total[24h]))", "refId": "A" }
+        {
+          "expr": "sum(increase(webhook_dead_letters_total[24h]))",
+          "refId": "A"
+        }
       ]
     },
     {
