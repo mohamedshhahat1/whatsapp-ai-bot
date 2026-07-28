@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react"
 
 import { ApiError, ModelCost, ModelPricing, api } from "../api"
+import "./pricing.css"
 
 function formatDate(value: string): string {
   return new Date(value).toLocaleDateString(undefined, {
