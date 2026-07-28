@@ -75,7 +75,9 @@ def _dead_letter(payload: dict[str, Any], error: BaseException) -> None:
     try:
         with redis.Redis.from_url(settings.redis_url) as client:
             client.lpush(settings.dead_letter_key, entry)
-            client.ltrim(settings.dead_letter_key, 0, settings.dead_letter_max_entries - 1)
+            client.ltrim(
+                settings.dead_letter_key, 0, settings.dead_letter_max_entries - 1
+            )
     except Exception:
         # Losing the dead letter is bad, but raising here would replace the
         # real error with a Redis error in the logs.

@@ -1,7 +1,7 @@
 """Knowledge base: pgvector extension, documents and document_chunks.
 
 Revision ID: 0001_knowledge_base
-Revises:
+Revises: 0000_initial_schema
 Create Date: 2026-07-28
 
 Requires a Postgres image with pgvector available (pgvector/pgvector:pg16).
@@ -12,7 +12,7 @@ from alembic import op
 from pgvector.sqlalchemy import Vector
 
 revision = "0001_knowledge_base"
-down_revision = None
+down_revision = "0000_initial_schema"
 branch_labels = None
 depends_on = None
 
@@ -42,9 +42,7 @@ def upgrade() -> None:
             nullable=False,
         ),
     )
-    op.create_index(
-        "ix_documents_source", "documents", ["source"], unique=True
-    )
+    op.create_index("ix_documents_source", "documents", ["source"], unique=True)
 
     op.create_table(
         "document_chunks",
