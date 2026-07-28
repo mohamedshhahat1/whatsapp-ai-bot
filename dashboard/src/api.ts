@@ -94,6 +94,33 @@ export interface TopQuestion {
   last_asked: string
 }
 
+export interface ModelCost {
+  model: string
+  requests: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost_usd: number
+}
+
+export interface ModelPricing {
+  id: number
+  model: string
+  input_price_per_1m: number
+  output_price_per_1m: number
+  effective_from: string
+  note: string | null
+  created_at: string
+}
+
+export interface NewModelPricing {
+  model: string
+  input_price_per_1m: number
+  output_price_per_1m: number
+  effective_from?: string
+  note?: string
+}
+
 export interface Customer {
   user_id: number
   wa_id: string
@@ -154,12 +181,22 @@ export const api = {
     request<Overview>(`/admin/analytics/overview?days=${days}`),
   daily: (days: number) =>
     request<DailyUsage[]>(`/admin/analytics/daily?days=${days}`),
+  models: (days: number) =>
+    request<ModelCost[]>(`/admin/analytics/models?days=${days}`),
   questions: (days: number, limit = 10) =>
     request<TopQuestion[]>(
       `/admin/analytics/questions?days=${days}&limit=${limit}`,
     ),
   customers: (limit = 100) =>
     request<Customer[]>(`/admin/analytics/customers?limit=${limit}`),
+  pricing: () => request<ModelPricing[]>("/admin/pricing"),
+  addPricing: (payload: NewModelPricing) =>
+    request<ModelPricing>("/admin/pricing", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  deletePricing: (id: number) =>
+    request<void>(`/admin/pricing/${id}`, { method: "DELETE" }),
   conversations: (limit = 50) =>
     request<Conversation[]>(`/admin/conversations?limit=${limit}`),
   conversation: (id: number) =>

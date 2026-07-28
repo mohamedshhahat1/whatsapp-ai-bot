@@ -1,11 +1,12 @@
 """Admin REST API (protected by X-API-Key and rate limited per client IP)."""
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.core.ratelimit import ADMIN_LIMIT, limiter
 from app.dependencies.deps import (
     get_admin_service,
     get_analytics_service,
+    get_pricing_service,
     get_reply_service,
     require_admin,
 )
@@ -21,9 +22,11 @@ from app.schemas.analytics import (
 )
 from app.schemas.conversation import ConversationDetail, ConversationRead
 from app.schemas.knowledge import KnowledgeDocumentRead, KnowledgeSearchHit
+from app.schemas.pricing import ModelCostRead, ModelPricingCreate, ModelPricingRead
 from app.schemas.user import UserRead
 from app.services.admin_service import AdminService
 from app.services.analytics_service import AnalyticsService
+from app.services.pricing_service import DuplicatePricingError, PricingService
 from app.services.reply_service import ReplyService
 
 router = APIRouter(
@@ -78,7 +81,9 @@ async def delete_conversation(
     await service.delete_conversation(conversation_id)
 
 
-@router.post("/conversations/{conversation_id}/reply", response_model=ManualReplyResponse)
+@router.post(
+    "/conversations/{conversation_id}/reply", response_model=ManualReplyResponse
+)
 @limiter.limit(ADMIN_LIMIT)
 async def send_manual_reply(
     request: Request,
@@ -139,6 +144,17 @@ async def analytics_daily(
     return await service.daily(days=days)
 
 
+@router.get("/analytics/models", response_model=list[ModelCostRead])
+@limiter.limit(ADMIN_LIMIT)
+async def analytics_models(
+    request: Request,
+    days: int = Query(30, ge=1, le=365),
+    service: AnalyticsService = Depends(get_analytics_service),
+) -> list[ModelCostRead]:
+    """Spend split per model, each costed at its own historical rates."""
+    return await service.cost_by_model(days=days)
+
+
 @router.get("/analytics/questions", response_model=list[TopQuestionRead])
 @limiter.limit(ADMIN_LIMIT)
 async def analytics_questions(
@@ -161,6 +177,54 @@ async def analytics_customers(
 ) -> list[CustomerActivityRead]:
     """Conversation and message counts per customer."""
     return await service.customers(offset=offset, limit=limit)
+
+
+@router.get("/pricing", response_model=list[ModelPricingRead])
+@limiter.limit(ADMIN_LIMIT)
+async def list_pricing(
+    request: Request,
+    service: PricingService = Depends(get_pricing_service),
+) -> list[ModelPricingRead]:
+    """Full token price history, newest period first."""
+    return [ModelPricingRead.model_validate(p) for p in await service.list()]
+
+
+@router.post("/pricing", response_model=ModelPricingRead, status_code=201)
+@limiter.limit(ADMIN_LIMIT)
+async def add_pricing(
+    request: Request,
+    payload: ModelPricingCreate,
+    service: PricingService = Depends(get_pricing_service),
+) -> ModelPricingRead:
+    """Record a new price period.
+
+    Existing rows are never modified, so historical costs stay as they were.
+    Calls made before ``effective_from`` keep using the previous price.
+    """
+    try:
+        pricing = await service.add(
+            model=payload.model,
+            input_price_per_1m=payload.input_price_per_1m,
+            output_price_per_1m=payload.output_price_per_1m,
+            effective_from=payload.effective_from,
+            note=payload.note,
+        )
+    except DuplicatePricingError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    return ModelPricingRead.model_validate(pricing)
+
+
+@router.delete("/pricing/{pricing_id}", status_code=204)
+@limiter.limit(ADMIN_LIMIT)
+async def delete_pricing(
+    request: Request,
+    pricing_id: int,
+    service: PricingService = Depends(get_pricing_service),
+) -> None:
+    """Delete a price period. This does change historical figures."""
+    await service.delete(pricing_id)
 
 
 @router.get("/knowledge", response_model=list[KnowledgeDocumentRead])

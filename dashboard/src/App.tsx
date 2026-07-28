@@ -5,9 +5,16 @@ import Conversations from "./views/Conversations"
 import Customers from "./views/Customers"
 import Knowledge from "./views/Knowledge"
 import Overview from "./views/Overview"
+import Pricing from "./views/Pricing"
 import Search from "./views/Search"
 
-type View = "overview" | "customers" | "conversations" | "search" | "knowledge"
+type View =
+  | "overview"
+  | "customers"
+  | "conversations"
+  | "search"
+  | "knowledge"
+  | "pricing"
 
 const NAV: { id: View; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -15,6 +22,7 @@ const NAV: { id: View; label: string }[] = [
   { id: "conversations", label: "Conversations" },
   { id: "search", label: "Search" },
   { id: "knowledge", label: "Knowledge base" },
+  { id: "pricing", label: "Model pricing" },
 ]
 
 function Login({ onSubmit }: { onSubmit: () => void }) {
@@ -88,6 +96,7 @@ export default function App() {
         {view === "conversations" && <Conversations />}
         {view === "search" && <Search />}
         {view === "knowledge" && <Knowledge />}
+        {view === "pricing" && <Pricing />}
       </main>
     </div>
   )
