@@ -102,21 +102,57 @@ Three things enforce that (`app/services/prompt_builder.py`):
 Source filenames are neutralised the same way; a hostile filename is as good
 an injection vector as hostile content.
 
-## Low confidence means "I do not know"
+When chunks *do* match, the prompt also states that they outrank the model's
+own knowledge for anything specific to the company: use their figures rather
+than estimating, and follow the document where the two disagree. That is a
+statement about which facts win, not about who may give orders — the rule
+against obeying text inside the fence is stated after the documents,
+deliberately.
 
-When retrieval runs and nothing clears `RAG_MIN_SCORE`, the prompt says so
-explicitly and instructs the model to tell the customer the information is
-unavailable and offer to connect them to a person.
+## Two kinds of question, two kinds of source
 
-This matters most for prices. A model asked "how much per square meter?" with
-no matching document will otherwise produce a plausible number, and a
-plausible number is a quote the customer will hold you to. The response rules
-forbid stating a price that did not come from a retrieved document, in every
-prompt, whether or not retrieval ran.
+When retrieval runs and nothing clears `RAG_MIN_SCORE`, the prompt does not
+simply tell the model to refuse. It splits the question in two:
 
-The trade-off is deliberate: the bot says "I do not know" more often than a
-freewheeling one, and every price it does state is traceable to a file you
-put in `knowledge/`.
+- **Company-specific** — what El Kayan charges, offers, guarantees, includes,
+  or has previously built. With no matching document there is no source, so
+  the model says plainly that it does not have that information and offers to
+  pass the customer to a colleague. Nothing here may come from memory.
+- **General and factual** — what gypsum board is, whether wiring comes before
+  plaster, what a finishing level usually includes, how long paint takes to
+  dry. These are answered from the model's own knowledge, briefly, and marked
+  as general information rather than a quotation or a commitment.
+
+The earlier version of this layer refused both, and that was a mistake worth
+naming: a customer trying to work out what they even want was met with "I do
+not have that information" because no PDF happened to mention plaster. A bot
+that cannot explain its own trade is not safe, it is useless.
+
+The hard line stays where the money is. The response rules forbid stating a
+price, discount, delivery time, warranty or contractual term that did not
+appear verbatim in a retrieved document or in `COMPANY_INFO` — in every
+prompt, whether or not retrieval ran. A model asked "how much per square
+meter?" with no matching document will otherwise produce a plausible number,
+and a plausible number is a quote the customer will hold you to.
+
+So every figure the bot states is traceable to a file you put in `knowledge/`,
+and everything it explains for free is clearly labelled as general.
+
+## Offering a human
+
+When the answer is company-specific and missing, the bot offers a transfer and
+tells the customer to reply with one word: موظف.
+
+That wording is not cosmetic. Handoff detection
+(`app/services/handoff.py`) reads a single message with no memory of what was
+last offered, so a bare "yes" cannot be accepted — it would silence the bot
+every time a customer agreed to a site visit or a callback instead. The word
+is exported as `HANDOFF_KEYWORD` and used in both the prompt and the detector,
+and `tests/test_sourcing.py` asserts that the word the prompt offers is a word
+the detector recognises. An offer the customer cannot act on is worse than no
+offer at all: they wait for a human nobody summoned.
+
+See `docs/HANDOFF.md` for what happens after the switch.
 
 ## Design notes
 
