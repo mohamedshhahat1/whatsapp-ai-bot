@@ -1,6 +1,7 @@
 import { FormEvent, useState } from "react"
 
 import { ApiError, api } from "../api"
+import type { ModelPricing } from "../api"
 import { Empty, Loader, useAsync } from "../components/Async"
 import { date, money, number } from "../format"
 import "./pricing.css"
@@ -69,9 +70,10 @@ export default function Pricing() {
     }
   }
 
-  // Group by model so each model's history reads as a timeline.
-  const byModel = new Map<string, typeof rowsType>()
-  const rows = pricing.data ?? []
+  // Group by model so each model's history reads as a timeline. The API
+  // already returns rows newest period first within each model.
+  const rows: ModelPricing[] = pricing.data ?? []
+  const byModel = new Map<string, ModelPricing[]>()
   for (const row of rows) {
     const list = byModel.get(row.model) ?? []
     list.push(row)
