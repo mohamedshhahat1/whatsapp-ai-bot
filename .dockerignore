@@ -1,0 +1,43 @@
+# Keep the build context small and free of things that must never ship.
+
+.git
+.github
+.gitignore
+.gitleaks.toml
+
+# Local secrets and configuration. Production reads Docker secrets or Vault.
+.env
+.env.*
+!.env.example
+secrets/
+
+# Your PDFs: price lists and contracts. Mounted at runtime, never baked in.
+knowledge/*
+!knowledge/README.md
+
+# Python
+.venv
+venv
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node: the image installs and builds inside the build stage.
+dashboard/node_modules
+dashboard/dist
+
+# Editors and OS noise
+.idea/
+.vscode/
+.DS_Store
+
+# Docs and compose files are not needed to run the app.
+docs/
+*.md
+!README.md
+docker-compose*.yml

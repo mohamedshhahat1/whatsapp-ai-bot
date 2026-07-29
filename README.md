@@ -1,46 +1,53 @@
 # WhatsApp AI Bot
 
-Production-ready AI-powered WhatsApp Business chatbot built with **Python 3.12**, **FastAPI**, **PostgreSQL**, **Redis**, **Celery**, and the **OpenAI Responses API**.
+Production AI-powered WhatsApp Business chatbot built with **Python 3.12**, **FastAPI**, **PostgreSQL + pgvector**, **Redis**, **Celery**, and the **OpenAI Responses API**.
 
 ## Features
 
-- **WhatsApp Cloud API integration** — webhook verification, inbound text/image/document messages, outbound replies, delivery status & read receipts, Meta signature verification (`X-Hub-Signature-256`).
-- **Durable background processing** — webhook deliveries are enqueued to **Celery + Redis** with late acks and exponential-backoff retries, so messages are not lost if a worker crashes mid-processing. Message deduplication makes retries safe.
-- **Rate limiting** — Redis-backed limits (slowapi) on the webhook and Admin API, shared across all replicas, proxy-aware client IP detection.
-- **Retry strategy** — tenacity with exponential backoff + jitter on all OpenAI and Meta Graph API calls; only transient failures (network errors, timeouts, 429, 5xx) are retried.
-- **Structured prompts** — a layered Prompt Builder (system prompt + company info + retrieved documents + conversation context + response rules) with a RAG-ready retriever interface, instead of a static system prompt.
-- **OpenAI Responses API** — conversation memory, configurable model & system prompt, tool-calling-ready client, full AI usage logging.
-- **Clean Architecture** — routers → services → repositories → models, with dependency injection and environment-based configuration.
-- **Conversation management** — every message persisted, history reloaded per user, context window trimming with **accurate tiktoken-based token budgeting** (not a character heuristic).
-- **Admin REST API** — users, conversations, statistics, protected by API key.
-- **Structured JSON logging** via structlog, request logging middleware, centralized exception handling.
-- **Deployment-ready** — Dockerfile, docker-compose (app + worker + Postgres + Redis + optional Nginx), Alembic migrations.
+- **WhatsApp Cloud API integration** - webhook verification, inbound text/image/document messages, outbound replies, delivery status & read receipts, Meta signature verification (`X-Hub-Signature-256`).
+- **Durable background processing** - webhook deliveries are enqueued to **Celery + Redis** with late acks and exponential-backoff retries. A delivery that exhausts every retry is parked on a **dead-letter list** rather than disappearing.
+- **RAG over your own documents** - PDFs in `knowledge/` are chunked, embedded and searched with pgvector; retrieved passages are injected as clearly fenced reference material. See [docs/RAG.md](docs/RAG.md).
+- **Prompt-injection resistant prompts** - retrieved documents are data, never instructions, and an empty retrieval makes the model decline rather than invent a price.
+- **Cost analytics with historical pricing** - every call is costed at the price that was in force when it was made, from the `model_pricing` table. See [docs/PRICING.md](docs/PRICING.md).
+- **Admin dashboard** - React + Vite SPA served at `/dashboard`: spend, usage, customers, transcripts, manual replies, search, knowledge base and price management. See [docs/DASHBOARD.md](docs/DASHBOARD.md).
+- **Rate limiting** - Redis-backed limits (slowapi) shared across replicas, with proxy-aware client IP resolution that cannot be forged.
+- **Retry strategy** - tenacity with exponential backoff + jitter on all OpenAI and Meta Graph API calls; only transient failures are retried.
+- **Clean architecture** - routers -> services -> repositories -> models, with dependency injection and environment-based configuration.
+- **Secrets without .env in production** - Docker secrets, `<NAME>_FILE` variables or Vault. See [docs/SECRETS.md](docs/SECRETS.md).
+- **Observability** - structured JSON logs (structlog), Prometheus metrics (authenticated), Grafana dashboard, liveness and readiness probes.
+- **Deployment** - Dockerfile, compose files for development and production, automatic migrations, container health checks, CI/CD. See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Project structure
 
 ```
 whatsapp-ai-bot/
 ├── app/
-│   ├── core/            # logging, security, rate limiting, retries, exceptions
+│   ├── core/            # logging, security, rate limiting, retries, exceptions, metrics, secrets, chunking
 │   ├── db/              # engine, session, declarative base
-│   ├── models/          # SQLAlchemy 2.0 models (User, Conversation, Message, AILog, ChatSession)
+│   ├── models/          # User, Conversation, Message, AILog, ModelPricing, Document, DocumentChunk
 │   ├── repositories/    # data access layer (repository pattern)
-│   ├── services/        # business logic (chat, conversation, prompts, retrieval, admin)
-│   ├── schemas/         # Pydantic response/request models
-│   ├── integrations/    # whatsapp.py (Cloud API), openai.py (Responses API)
-│   ├── routers/         # HTTP API layer (webhook, admin, health)
-│   ├── workers/         # Celery app + tasks (durable queue)
-│   ├── middleware/      # request logging
+│   ├── services/        # chat, conversation, prompts, retrieval, ingestion, admin, analytics, pricing, reply
+│   ├── schemas/         # Pydantic request/response models
+│   ├── integrations/    # whatsapp.py, openai.py, embeddings.py
+│   ├── routers/         # webhook, admin, health, metrics
+│   ├── workers/         # Celery app + tasks (durable queue, dead-letter)
+│   ├── middleware/      # request logging, metrics
 │   ├── dependencies/    # FastAPI dependency wiring
 │   ├── utils/           # tiktoken token counting & history trimming
 │   ├── main.py          # app factory
 │   └── config.py        # pydantic-settings configuration
-├── alembic/             # migrations
-├── tests/
-├── docker-compose.yml
-├── Dockerfile
+├── alembic/versions/    # 0000 baseline -> 0001 knowledge -> 0002 pricing -> 0003 search/concurrency
+├── dashboard/           # React + Vite admin SPA
+├── docs/                # RAG, PRICING, DASHBOARD, DEPLOYMENT, SECRETS
+├── knowledge/           # your PDFs (gitignored)
+├── monitoring/          # Prometheus config + Grafana dashboard
 ├── nginx/nginx.conf
-├── requirements.txt
+├── scripts/             # ingest_knowledge.py, init-secrets.sh
+├── tests/
+├── docker-compose.yml           # development
+├── docker-compose.prod.yml      # production
+├── Dockerfile
+├── requirements.txt / requirements-dev.txt
 └── .env.example
 ```
 
@@ -48,18 +55,29 @@ whatsapp-ai-bot/
 
 ```bash
 cp .env.example .env      # fill in your keys
-docker compose up --build -d   # starts app + celery worker + postgres + redis
-docker compose exec app alembic revision --autogenerate -m "initial schema"
-docker compose exec app alembic upgrade head
+docker compose up --build -d
 ```
 
-The API is now at `http://localhost:8000` (`/docs` for Swagger UI when `DEBUG=true`).
+That is the whole sequence. A one-shot `migrate` service runs
+`alembic upgrade head` before the app and worker start, so a fresh database is
+ready with no manual step. **Never run `alembic revision --autogenerate` as
+part of a deployment** - the schema is owned by the checked-in migrations.
+
+The API is at `http://localhost:8000`, the dashboard at
+`http://localhost:8000/dashboard` (sign in with `ADMIN_API_KEY`), and Swagger
+at `/docs` when `DEBUG=true`.
+
+To answer from your own documents, drop PDFs into `knowledge/` and index them:
+
+```bash
+docker compose exec app python scripts/ingest_knowledge.py
+```
 
 ## Local development
 
 ```bash
 python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r requirements-dev.txt
 cp .env.example .env
 alembic upgrade head
 uvicorn app.main:app --reload
@@ -69,117 +87,187 @@ celery -A app.workers.celery_app.celery_app worker --loglevel=info -Q webhooks
 
 ## Structured prompts
 
-Each AI generation composes its instructions in layers (`app/services/prompt_builder.py`):
+Each AI generation composes its instructions in layers
+(`app/services/prompt_builder.py`):
 
 ```
-SYSTEM_PROMPT                  # persona / base behavior
+SYSTEM_PROMPT                  # persona / base behaviour
 + Company information          # COMPANY_INFO env var
-+ Retrieved knowledge (RAG)    # documents from the DocumentRetriever
++ Retrieved knowledge (RAG)    # fenced, labelled as reference material
 + Conversation context         # customer name, channel, current time
-+ Response rules               # language matching, chat-style replies
++ Response rules               # language matching, chat style, price honesty
 ```
 
 Conversation history and the current user message are passed separately as the
-Responses API `input` list — they are token-budgeted independently and never
-mixed into the instructions.
+Responses API `input` list. They are never mixed into the instructions, which
+keeps customer-authored text out of the trusted channel entirely.
 
-**RAG-ready:** `app/services/retrieval.py` defines a `DocumentRetriever`
-protocol. Implement `retrieve(query, limit)` against your vector store or
-search index and inject it into `ChatService`; retrieved documents are
-automatically rendered into the prompt with source attribution. Until then, a
-`NullRetriever` keeps the pipeline running without a knowledge base.
+**Retrieved documents are data, not orders.** Chunks are wrapped in a
+`<retrieved_documents>` fence, fence delimiters are stripped from the content
+so a document cannot close its own container, and the response rules state
+that nothing inside it is an instruction. If retrieval finds nothing above the
+similarity floor, the prompt says so explicitly and the model is told to admit
+it does not know rather than estimate a price.
 
 ## Background processing
 
-Webhook `POST /webhook` deliveries are validated, ACKed immediately, and enqueued to the `webhooks` Celery queue backed by Redis (AOF persistence enabled in compose).
+`POST /webhook` deliveries are validated, ACKed immediately, and enqueued to
+the `webhooks` Celery queue backed by Redis (AOF persistence enabled).
 
-- `task_acks_late` + `task_reject_on_worker_lost` — a delivery is only acknowledged after successful processing; if a worker dies mid-task the message is re-queued.
-- Automatic retries with exponential backoff and jitter (max 5 attempts).
+- `task_acks_late` + `task_reject_on_worker_lost` - a delivery is acknowledged
+  only after successful processing; if a worker dies mid-task it is requeued.
+- Automatic retries with exponential backoff and jitter, up to 5 attempts.
 - Retries are idempotent: messages are deduplicated by `wa_message_id`.
-- For development you can set `USE_TASK_QUEUE=false` to fall back to in-process FastAPI `BackgroundTasks` (no worker needed, no durability guarantees).
+- **Dead-letter queue**: after the last retry the raw payload is pushed onto
+  the capped Redis list `DEAD_LETTER_KEY` and `webhook_dead_letters_total` is
+  incremented, so a lost message is visible and replayable instead of silent.
+- Each task runs its own event loop and closes everything it opened - OpenAI
+  client, WhatsApp client and database engine - so long-running workers do not
+  leak connection pools.
+- For development, `USE_TASK_QUEUE=false` falls back to in-process
+  `BackgroundTasks` (no worker, no durability).
 
-Scale workers independently of the API: `docker compose up -d --scale worker=3`.
+Scale workers independently: `docker compose up -d --scale worker=3`.
 
-## Retry strategy
+Inspect the dead-letter list:
 
-All outbound calls to OpenAI and the Meta Graph API are wrapped with **tenacity**:
-
-- Exponential backoff with jitter (initial 0.5s, capped at `RETRY_BACKOFF_MAX_SECONDS`), up to `RETRY_MAX_ATTEMPTS` attempts.
-- Only transient failures are retried: network/timeout errors, `429 Too Many Requests`, and `5xx`. Permanent errors (400/401/403) fail fast.
-- Every retry is logged with attempt number and wait time (structured logs).
-- The OpenAI SDK's built-in retries are disabled (`max_retries=0`) so tenacity is the single source of truth and retry counts don't multiply.
-- Layered with Celery: tenacity handles short blips inside a task; if all attempts are exhausted, the Celery task itself retries later with longer backoff.
-
-## Token budgeting
-
-Conversation history sent to the model is trimmed with **tiktoken** (exact tokenizer counts, not a character estimate):
-
-- The tokenizer is resolved per model via `tiktoken.encoding_for_model`, falling back to `o200k_base` (gpt-4o / gpt-4.1 families) for unrecognized names.
-- Each message costs its token count plus a small per-message formatting overhead.
-- History is trimmed newest-to-oldest until `MAX_CONTEXT_MESSAGES` or `MAX_CONTEXT_TOKENS` is reached; the newest user message is always kept.
-- Note: tiktoken downloads encoding files on first use and caches them. For air-gapped deployments, set `TIKTOKEN_CACHE_DIR` and pre-seed the cache during the image build.
+```bash
+docker compose exec redis redis-cli lrange webhooks:dead-letter 0 -1
+```
 
 ## Rate limiting
 
-Redis-backed fixed-window limits (slowapi), shared across all app replicas:
+Redis-backed fixed-window limits (slowapi), shared across all replicas:
 
-- `POST/GET /webhook` — `RATE_LIMIT_WEBHOOK` (default `600/minute`) per client IP.
-- `/admin/*` — `RATE_LIMIT_ADMIN` (default `60/minute`) per client IP.
-- Client IP honors `X-Forwarded-For` set by the Nginx reverse proxy.
-- Exceeding a limit returns `429 Too Many Requests`.
-- Disable entirely with `RATE_LIMIT_ENABLED=false` (tests/local development).
+- `GET/POST /webhook` - `RATE_LIMIT_WEBHOOK` (default `600/minute`) per client.
+- `/admin/*` - `RATE_LIMIT_ADMIN` (default `60/minute`) per client.
+- Exceeding a limit returns `429`.
 
-## Connecting WhatsApp (Meta)
+The client identity comes from the last `TRUSTED_PROXY_HOPS` entries of
+`X-Forwarded-For`, not the left-most one. The left of that header is written
+by the client and is forgeable: trusting it lets a caller mint a fresh quota
+per request. Set `TRUSTED_PROXY_HOPS=0` when nothing proxies the app.
 
-1. Create a Meta app with the **WhatsApp** product and grab the token, phone number ID, and app secret.
-2. Expose your server publicly (in dev: `ngrok http 8000`).
-3. In *WhatsApp → Configuration*, set the callback URL to `https://<your-domain>/webhook` and the verify token to `WHATSAPP_VERIFY_TOKEN`.
-4. Subscribe to the `messages` webhook field.
+## Health checks
+
+| Endpoint | Meaning | Depends on |
+| --- | --- | --- |
+| `GET /health` | Liveness: the process is up | nothing |
+| `GET /health/ready` | Readiness: this replica can serve | database + Redis, checked concurrently; `503` when either is down |
+
+Liveness deliberately checks nothing external, so a Redis blip does not
+restart every container. Compose uses readiness for the app container and
+`celery inspect ping` for the worker.
+
+## Metrics
+
+Prometheus metrics are served at `GET /metrics` and are **not public**:
+
+- In-cluster scrapes (private peer, no `X-Forwarded-For`) are allowed, because
+  Prometheus cannot attach a custom header in its scrape config.
+- Anything arriving through the proxy must present `ADMIN_API_KEY`.
+- nginx refuses `/metrics` outright, so there are two layers.
+
+Exposed: `whatsapp_messages_total`, `openai_requests_total`,
+`openai_tokens_total`, `openai_response_seconds`, `http_requests_total`,
+`app_errors_total`, `webhook_dead_letters_total`. Spend is deliberately *not* a
+metric - it lives in `model_pricing` so history stays correct.
 
 ## Environment variables
 
 | Variable | Description | Default |
 |---|---|---|
 | `ENVIRONMENT` | `development` / `production` | `development` |
-| `DEBUG` | Enables `/docs` and debug logging | `false` |
-| `DATABASE_URL` | Async SQLAlchemy URL (`postgresql+asyncpg://…`) | local |
+| `DEBUG` | Enables `/docs`, debug logging and dev CORS | `false` |
+| `DATABASE_URL` | Async SQLAlchemy URL (`postgresql+asyncpg://...`) | local |
 | `REDIS_URL` | Redis connection URL | local |
-| `USE_TASK_QUEUE` | Process webhooks via Celery (`true`) or in-process (`false`) | `true` |
-| `CELERY_BROKER_URL` | Celery broker (defaults to `REDIS_URL`) | — |
-| `CELERY_RESULT_BACKEND` | Celery result backend (defaults to `REDIS_URL`) | — |
+| `USE_TASK_QUEUE` | Celery (`true`) or in-process (`false`) | `true` |
+| `CELERY_BROKER_URL` | Celery broker (defaults to `REDIS_URL`) | empty |
+| `CELERY_RESULT_BACKEND` | Celery result backend (defaults to `REDIS_URL`) | empty |
 | `RATE_LIMIT_ENABLED` | Enable Redis-backed rate limiting | `true` |
-| `RATE_LIMIT_WEBHOOK` | Limit for `/webhook` endpoints | `600/minute` |
-| `RATE_LIMIT_ADMIN` | Limit for `/admin/*` endpoints | `60/minute` |
-| `RETRY_MAX_ATTEMPTS` | Max attempts per outbound OpenAI/Meta call | `3` |
+| `RATE_LIMIT_WEBHOOK` | Limit for `/webhook` | `600/minute` |
+| `RATE_LIMIT_ADMIN` | Limit for `/admin/*` | `60/minute` |
+| `TRUSTED_PROXY_HOPS` | Proxies that append to `X-Forwarded-For` | `1` |
+| `RETRY_MAX_ATTEMPTS` | Max attempts per outbound call | `3` |
 | `RETRY_BACKOFF_MAX_SECONDS` | Backoff cap between attempts | `8` |
-| `OPENAI_API_KEY` | OpenAI API key | — |
+| `DEAD_LETTER_KEY` | Redis list holding exhausted deliveries | `webhooks:dead-letter` |
+| `DEAD_LETTER_MAX_ENTRIES` | Cap on that list | `1000` |
+| `METRICS_ENABLED` | Mount `/metrics` and the metrics middleware | `true` |
+| `WORKER_METRICS_PORT` | Port the worker exposes metrics on | `9100` |
+| `OPENAI_INPUT_PRICE_PER_1M` | **Fallback only** input price | `0.40` |
+| `OPENAI_OUTPUT_PRICE_PER_1M` | **Fallback only** output price | `1.60` |
+| `SECRETS_DIR` | Docker secrets directory | `/run/secrets` |
+| `VAULT_ENABLED` | Read secrets from HashiCorp Vault | `false` |
+| `VAULT_ADDR` / `VAULT_KV_MOUNT` / `VAULT_SECRET_PATH` | Vault location | empty / `secret` / empty |
+| `RAG_ENABLED` | Retrieve from the knowledge base | `true` |
+| `KNOWLEDGE_DIR` | Folder ingested by the indexer | `knowledge` |
+| `EMBEDDING_MODEL` | Embedding model (must match what was indexed) | `text-embedding-3-small` |
+| `EMBEDDING_DIMENSIONS` | Vector width (must match migration 0001) | `1536` |
+| `EMBEDDING_BATCH_SIZE` | Texts per embeddings call | `64` |
+| `CHUNK_MAX_TOKENS` | Chunk size | `400` |
+| `CHUNK_OVERLAP_TOKENS` | Overlap between chunks | `60` |
+| `RAG_TOP_K` | Chunks injected per message | `5` |
+| `RAG_MIN_SCORE` | Cosine similarity floor | `0.25` |
+| `RAG_MAX_CONTEXT_CHARS` | Hard cap on injected context | `6000` |
+| `OPENAI_API_KEY` | OpenAI API key | empty |
 | `OPENAI_MODEL` | Model used by the Responses API | `gpt-4.1-mini` |
-| `SYSTEM_PROMPT` | Base assistant persona (first prompt layer) | generic |
-| `COMPANY_INFO` | Company facts injected into the prompt (optional) | empty |
-| `MAX_OUTPUT_TOKENS` | Max tokens per AI reply | `512` |
-| `MAX_CONTEXT_MESSAGES` | Max history messages sent to the model | `20` |
-| `MAX_CONTEXT_TOKENS` | Token budget for history (counted with tiktoken) | `6000` |
-| `WHATSAPP_TOKEN` | Cloud API access token | — |
-| `WHATSAPP_PHONE_NUMBER_ID` | Sender phone number ID | — |
-| `WHATSAPP_VERIFY_TOKEN` | Webhook verification token | — |
-| `WHATSAPP_APP_SECRET` | Used to verify Meta signatures | — |
+| `SYSTEM_PROMPT` | Base assistant persona | generic |
+| `COMPANY_INFO` | Company facts injected into the prompt | empty |
+| `MAX_OUTPUT_TOKENS` | Max tokens per reply | `512` |
+| `MAX_CONTEXT_MESSAGES` | Max history messages | `20` |
+| `MAX_CONTEXT_TOKENS` | Token budget for history | `6000` |
+| `WHATSAPP_TOKEN` | Cloud API access token | empty |
+| `WHATSAPP_PHONE_NUMBER_ID` | Sender phone number ID | empty |
+| `WHATSAPP_VERIFY_TOKEN` | Webhook verification token | `change-me` |
+| `WHATSAPP_APP_SECRET` | Verifies Meta signatures | empty |
 | `WHATSAPP_API_VERSION` | Graph API version | `v21.0` |
-| `ADMIN_API_KEY` | Key for `/admin/*` endpoints (`X-API-Key` header) | — |
+| `ADMIN_API_KEY` | Key for `/admin/*` and external `/metrics` | `change-me` |
+
+In production the six credentials in `REQUIRED_IN_PRODUCTION` must come from a
+real secret backend; the app refuses to boot with placeholder values.
 
 ## API
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/health` | Liveness probe |
+| `GET` | `/health/ready` | Readiness probe (database + Redis) |
+| `GET` | `/metrics` | Prometheus metrics (in-cluster or admin key) |
 | `GET` | `/webhook` | Meta webhook verification |
-| `POST` | `/webhook` | Inbound messages & status updates (enqueued) |
-| `GET` | `/admin/users` | List users |
+| `POST` | `/webhook` | Inbound messages & status updates |
+| `GET` | `/admin/users` | List customers |
 | `GET` | `/admin/conversations` | List conversations |
 | `GET` | `/admin/conversations/{id}` | Conversation with messages |
 | `DELETE` | `/admin/conversations/{id}` | Delete a conversation |
+| `POST` | `/admin/conversations/{id}/reply` | Manual operator reply (`409` outside the 24h window) |
 | `GET` | `/admin/stats` | Usage statistics |
+| `GET` | `/admin/search?q=` | Message body search |
+| `GET` | `/admin/analytics/overview?days=` | Headline KPIs and spend |
+| `GET` | `/admin/analytics/daily?days=` | Per-day usage and cost |
+| `GET` | `/admin/analytics/models?days=` | Spend per model |
+| `GET` | `/admin/analytics/questions?days=` | Most frequent questions |
+| `GET` | `/admin/analytics/customers` | Per-customer activity |
+| `GET` | `/admin/pricing` | Token price history |
+| `POST` | `/admin/pricing` | Record a new price period (`409` on duplicate) |
+| `DELETE` | `/admin/pricing/{id}` | Delete a price period |
+| `GET` | `/admin/knowledge` | Indexed RAG documents |
+| `GET` | `/admin/knowledge/search?q=` | Retrieval preview |
+| `GET` | `/dashboard` | Admin SPA |
 
-Admin endpoints require the `X-API-Key: <ADMIN_API_KEY>` header.
+Admin endpoints require `X-API-Key: <ADMIN_API_KEY>`.
+
+## Database & migrations
+
+```
+0000_initial_schema        users, conversations, messages, ai_logs
+0001_knowledge_base        documents, document_chunks, pgvector + HNSW index
+0002_model_pricing         model_pricing, seeded from the epoch
+0003_search_and_concurrency  pg_trgm GIN index on messages.content,
+                             partial unique index: one active conversation
+                             per customer
+```
+
+`alembic upgrade head` on an empty database produces the complete schema.
 
 ## Tests
 
@@ -187,6 +275,25 @@ Admin endpoints require the `X-API-Key: <ADMIN_API_KEY>` header.
 pytest
 ```
 
-## Roadmap / extension points
+The suite runs against a real PostgreSQL (with pgvector) and Redis, which is
+what CI provides; the migrations are applied before pytest runs. Tests that
+need a database skip themselves when one is not reachable, so `pytest` still
+works on a bare checkout - it simply covers less.
 
-The architecture is designed so you can add: RAG (implement `DocumentRetriever` in `app/services/retrieval.py`), CRM integration (new module in `integrations/`), voice messages & image understanding (extend `chat_service`), appointment booking (tool calling in `integrations/openai.py`), and analytics dashboards on top of `ai_logs`.
+## Connecting WhatsApp (Meta)
+
+1. Create a Meta app with the **WhatsApp** product; note the token, phone
+   number ID and app secret.
+2. Expose your server publicly (in dev: `ngrok http 8000`).
+3. In *WhatsApp -> Configuration*, set the callback URL to
+   `https://<your-domain>/webhook` and the verify token to
+   `WHATSAPP_VERIFY_TOKEN`.
+4. Subscribe to the `messages` webhook field.
+
+## Extension points
+
+CRM integration (new module in `integrations/`), voice messages and image
+understanding (extend `chat_service`), appointment booking (tool calling is
+already wired into `integrations/openai.py`), semantic clustering of frequent
+questions (the embedding infrastructure exists), and message templates for
+replies outside the 24-hour window.
