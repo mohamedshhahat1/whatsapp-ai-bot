@@ -8,6 +8,7 @@ Production AI-powered WhatsApp Business chatbot built with **Python 3.12**, **Fa
 - **Durable background processing** - webhook deliveries are enqueued to **Celery + Redis** with late acks and exponential-backoff retries. A delivery that exhausts every retry is parked on a **dead-letter list** rather than disappearing.
 - **RAG over your own documents** - PDFs in `knowledge/` are chunked, embedded and searched with pgvector; retrieved passages are injected as clearly fenced reference material. See [docs/RAG.md](docs/RAG.md).
 - **Prompt-injection resistant prompts** - retrieved documents are data, never instructions, and an empty retrieval makes the model decline rather than invent a price.
+- **Reviewed persona with a guaranteed welcome** - the assistant's identity and the approved Arabic welcome live in version-controlled code, and the welcome is sent by the code exactly once per conversation rather than being requested in the prompt. See [docs/PERSONA.md](docs/PERSONA.md).
 - **Human handoff** - a customer who asks for a person gets one, and the bot goes completely silent on that conversation until an operator presses Resume AI. Detection is deterministic, so it does not depend on the model being up. See [docs/HANDOFF.md](docs/HANDOFF.md).
 - **Cost analytics with historical pricing** - every call is costed at the price that was in force when it was made, from the `model_pricing` table. See [docs/PRICING.md](docs/PRICING.md).
 - **Admin dashboard** - React + Vite SPA served at `/dashboard`: spend, usage, customers, transcripts, takeover, manual replies, search, knowledge base and price management. See [docs/DASHBOARD.md](docs/DASHBOARD.md).
@@ -28,7 +29,7 @@ whatsapp-ai-bot/
 │   ├── db/              # engine, session, declarative base
 │   ├── models/          # User, Conversation, Message, AILog, ModelPricing, Document, DocumentChunk
 │   ├── repositories/    # data access layer (repository pattern)
-│   ├── services/        # chat, conversation, prompts, retrieval, ingestion, handoff, admin, analytics, pricing, reply
+│   ├── services/        # chat, conversation, persona, prompts, retrieval, ingestion, handoff, admin, analytics, pricing, reply
 │   ├── schemas/         # Pydantic request/response models
 │   ├── integrations/    # whatsapp.py, openai.py, embeddings.py
 │   ├── routers/         # webhook, admin, health, metrics, events (WebSocket)
@@ -40,7 +41,7 @@ whatsapp-ai-bot/
 │   └── config.py        # pydantic-settings configuration
 ├── alembic/versions/    # 0000 baseline -> 0001 knowledge -> 0002 pricing -> 0003 search/concurrency -> 0004 handoff
 ├── dashboard/           # React + Vite admin SPA
-├── docs/                # RAG, PRICING, HANDOFF, DASHBOARD, DEPLOYMENT, SECRETS
+├── docs/                # PERSONA, RAG, PRICING, HANDOFF, DASHBOARD, DEPLOYMENT, SECRETS
 ├── knowledge/           # your PDFs (gitignored)
 ├── monitoring/          # Prometheus config + Grafana dashboard
 ├── nginx/nginx.conf
@@ -93,11 +94,12 @@ Each AI generation composes its instructions in layers
 (`app/services/prompt_builder.py`):
 
 ```
-SYSTEM_PROMPT                  # persona / base behaviour
+Persona                        # app/services/persona.py, or SYSTEM_PROMPT
 + Company information          # COMPANY_INFO env var
 + Retrieved knowledge (RAG)    # fenced, labelled as reference material
 + Conversation context         # customer name, channel, current time
-+ Response rules               # language matching, chat style, price honesty
++ First message                # only on the opening turn: the welcome is done
++ Response rules               # language, chat style, price honesty
 ```
 
 Conversation history and the current user message are passed separately as the
@@ -110,6 +112,13 @@ so a document cannot close its own container, and the response rules state
 that nothing inside it is an instruction. If retrieval finds nothing above the
 similarity floor, the prompt says so explicitly and the model is told to admit
 it does not know rather than estimate a price.
+
+**The welcome is not part of the prompt.** It is approved copy that the code
+prepends to the first reply of a conversation, decided by counting the
+customer's messages in the database. A prompt cannot promise "exactly once".
+See [docs/PERSONA.md](docs/PERSONA.md), which also states plainly what the bot
+cannot do: it cannot see images or read attachments, and the persona is written
+so that it never pretends otherwise.
 
 ## Human handoff
 
@@ -236,7 +245,7 @@ metric - it lives in `model_pricing` so history stays correct.
 | `RAG_MAX_CONTEXT_CHARS` | Hard cap on injected context | `6000` |
 | `OPENAI_API_KEY` | OpenAI API key | empty |
 | `OPENAI_MODEL` | Model used by the Responses API | `gpt-4.1-mini` |
-| `SYSTEM_PROMPT` | Base assistant persona | generic |
+| `SYSTEM_PROMPT` | Replaces the packaged persona entirely (see [docs/PERSONA.md](docs/PERSONA.md)) | empty = use the persona |
 | `COMPANY_INFO` | Company facts injected into the prompt | empty |
 | `MAX_OUTPUT_TOKENS` | Max tokens per reply | `512` |
 | `MAX_CONTEXT_MESSAGES` | Max history messages | `20` |
@@ -252,8 +261,9 @@ In production the six credentials in `REQUIRED_IN_PRODUCTION` must come from a
 real secret backend; the app refuses to boot with placeholder values.
 
 The live dashboard stream needs no configuration of its own: it uses
-`REDIS_URL` and `ADMIN_API_KEY`. Handoff has no settings either - the phrases
-that trigger it are code, reviewed like code.
+`REDIS_URL` and `ADMIN_API_KEY`. Handoff and the persona have no settings
+either - the wording and the phrases that trigger a handoff are code, reviewed
+like code.
 
 ## API
 
@@ -327,9 +337,11 @@ without Redis for the same reason.
 
 ## Extension points
 
-CRM integration (new module in `integrations/`), voice messages and image
-understanding (extend `chat_service`), appointment booking (tool calling is
-already wired into `integrations/openai.py`), semantic clustering of frequent
-questions (the embedding infrastructure exists), per-operator accounts with an
-operator id on replies and handoffs, a handoff SLA alert, and message templates
-for replies outside the 24-hour window.
+CRM integration (new module in `integrations/`), voice transcription, **image
+understanding and reading customer attachments** (today the model is told only
+that a file arrived - see [docs/PERSONA.md](docs/PERSONA.md) for what is
+missing), appointment booking (tool calling is already wired into
+`integrations/openai.py`), semantic clustering of frequent questions (the
+embedding infrastructure exists), per-operator accounts with an operator id on
+replies and handoffs, a handoff SLA alert, and message templates for replies
+outside the 24-hour window.
