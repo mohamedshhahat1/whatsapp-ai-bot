@@ -10,6 +10,7 @@ Production AI-powered WhatsApp Business chatbot built with **Python 3.12**, **Fa
 - **Prompt-injection resistant prompts** - retrieved documents are data, never instructions, and an empty retrieval makes the model decline rather than invent a price.
 - **Cost analytics with historical pricing** - every call is costed at the price that was in force when it was made, from the `model_pricing` table. See [docs/PRICING.md](docs/PRICING.md).
 - **Admin dashboard** - React + Vite SPA served at `/dashboard`: spend, usage, customers, transcripts, manual replies, search, knowledge base and price management. See [docs/DASHBOARD.md](docs/DASHBOARD.md).
+- **Live conversation stream** - new customer messages are pushed to the dashboard over a WebSocket (fanned out through Redis so the Celery worker and every API replica can reach it) and the conversation opens itself in front of the operator.
 - **Rate limiting** - Redis-backed limits (slowapi) shared across replicas, with proxy-aware client IP resolution that cannot be forged.
 - **Retry strategy** - tenacity with exponential backoff + jitter on all OpenAI and Meta Graph API calls; only transient failures are retried.
 - **Clean architecture** - routers -> services -> repositories -> models, with dependency injection and environment-based configuration.
@@ -22,14 +23,14 @@ Production AI-powered WhatsApp Business chatbot built with **Python 3.12**, **Fa
 ```
 whatsapp-ai-bot/
 ├── app/
-│   ├── core/            # logging, security, rate limiting, retries, exceptions, metrics, secrets, chunking
+│   ├── core/            # logging, security, rate limiting, retries, exceptions, metrics, secrets, chunking, events
 │   ├── db/              # engine, session, declarative base
 │   ├── models/          # User, Conversation, Message, AILog, ModelPricing, Document, DocumentChunk
 │   ├── repositories/    # data access layer (repository pattern)
 │   ├── services/        # chat, conversation, prompts, retrieval, ingestion, admin, analytics, pricing, reply
 │   ├── schemas/         # Pydantic request/response models
 │   ├── integrations/    # whatsapp.py, openai.py, embeddings.py
-│   ├── routers/         # webhook, admin, health, metrics
+│   ├── routers/         # webhook, admin, health, metrics, events (WebSocket)
 │   ├── workers/         # Celery app + tasks (durable queue, dead-letter)
 │   ├── middleware/      # request logging, metrics
 │   ├── dependencies/    # FastAPI dependency wiring
@@ -124,6 +125,8 @@ the `webhooks` Celery queue backed by Redis (AOF persistence enabled).
 - Each task runs its own event loop and closes everything it opened - OpenAI
   client, WhatsApp client and database engine - so long-running workers do not
   leak connection pools.
+- Once a turn is committed, the worker publishes a dashboard event to Redis so
+  connected operators see it immediately.
 - For development, `USE_TASK_QUEUE=false` falls back to in-process
   `BackgroundTasks` (no worker, no durability).
 
@@ -142,6 +145,8 @@ Redis-backed fixed-window limits (slowapi), shared across all replicas:
 - `GET/POST /webhook` - `RATE_LIMIT_WEBHOOK` (default `600/minute`) per client.
 - `/admin/*` - `RATE_LIMIT_ADMIN` (default `60/minute`) per client.
 - Exceeding a limit returns `429`.
+- The `/ws/events` upgrade is **not** limited - slowapi covers HTTP routes
+  only. See the security note in [docs/DASHBOARD.md](docs/DASHBOARD.md).
 
 The client identity comes from the last `TRUSTED_PROXY_HOPS` entries of
 `X-Forwarded-For`, not the left-most one. The left of that header is written
@@ -221,10 +226,13 @@ metric - it lives in `model_pricing` so history stays correct.
 | `WHATSAPP_VERIFY_TOKEN` | Webhook verification token | `change-me` |
 | `WHATSAPP_APP_SECRET` | Verifies Meta signatures | empty |
 | `WHATSAPP_API_VERSION` | Graph API version | `v21.0` |
-| `ADMIN_API_KEY` | Key for `/admin/*` and external `/metrics` | `change-me` |
+| `ADMIN_API_KEY` | Key for `/admin/*`, `/ws/events` and external `/metrics` | `change-me` |
 
 In production the six credentials in `REQUIRED_IN_PRODUCTION` must come from a
 real secret backend; the app refuses to boot with placeholder values.
+
+The live dashboard stream needs no configuration of its own: it uses
+`REDIS_URL` and `ADMIN_API_KEY`.
 
 ## API
 
@@ -252,6 +260,7 @@ real secret backend; the app refuses to boot with placeholder values.
 | `DELETE` | `/admin/pricing/{id}` | Delete a price period |
 | `GET` | `/admin/knowledge` | Indexed RAG documents |
 | `GET` | `/admin/knowledge/search?q=` | Retrieval preview |
+| `WS` | `/ws/events` | Live conversation activity (admin key as the first frame) |
 | `GET` | `/dashboard` | Admin SPA |
 
 Admin endpoints require `X-API-Key: <ADMIN_API_KEY>`.
@@ -278,7 +287,8 @@ pytest
 The suite runs against a real PostgreSQL (with pgvector) and Redis, which is
 what CI provides; the migrations are applied before pytest runs. Tests that
 need a database skip themselves when one is not reachable, so `pytest` still
-works on a bare checkout - it simply covers less.
+works on a bare checkout - it simply covers less. The event fan-out test skips
+without Redis for the same reason.
 
 ## Connecting WhatsApp (Meta)
 

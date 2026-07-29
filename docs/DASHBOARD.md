@@ -19,43 +19,130 @@ tool), or its own backend routes (it has one already).
 
 ## Screens
 
-| Screen | What it shows | Auto refresh |
+| Screen | What it shows | Updates |
 | --- | --- | --- |
-| Overview | Spend, projected monthly cost, tokens, cost per conversation, average and p95 response time, error rate, daily usage chart, most frequently asked questions | 60s |
-| Customers | Every customer with conversation count, message count and last activity | 60s |
-| Conversations | Conversation list, full transcript, and manual operator reply | 30s list / 10s transcript |
+| Overview | Spend, projected monthly cost, tokens, cost per conversation, average and p95 response time, error rate, daily usage chart, most frequently asked questions | 60s poll |
+| Customers | Every customer with conversation count, message count and last activity | 60s poll |
+| Conversations | Conversation list, full transcript, and manual operator reply | live (WebSocket) |
 | Search | Substring search across all inbound and outbound messages | on demand |
 | Knowledge base | Indexed documents and a retrieval tester | on demand |
 | Pricing | Token price history per model, and spend per model | on demand |
 
-## Loading, error, empty and refresh states
+## Live updates
+
+The conversation screens do not poll. They are pushed to:
+
+```
+customer message
+     |  Celery worker processes the turn and commits
+     v
+Redis publish  ->  channel dashboard:events
+     v
+every API replica forwards to its connected sockets
+     v
+operator's browser refetches the conversation
+     v
+the conversation opens automatically
+```
+
+**Why Redis pub/sub and not the socket alone.** Inbound messages are processed
+by the Celery worker, which is a different process from the API holding the
+operator's socket -- and in production there can be several API replicas behind
+nginx. A worker cannot write to a socket it does not own, and an operator
+connected to replica 2 must still hear about work done by replica 1. Redis is
+already a hard dependency here, so the bus costs no new infrastructure.
+
+**What the event contains.** `{type, conversation_id, inbound, at}`. That is
+all: no phone number, no customer name, no message body. The browser refetches
+through the authenticated `/admin` API, which keeps one source of truth for the
+data and stops the message bus from becoming an unauthenticated copy of the
+customer database.
+
+**When it is published.** After the database transaction commits, never before.
+The dashboard reacts by refetching, so announcing an uncommitted turn would
+point the operator at rows that do not exist yet -- and if the transaction
+rolled back and Celery retried the delivery, the notification would already
+have been sent for a message that never existed.
+
+The practical consequence is worth being precise about: a customer's message
+and the bot's reply are one transaction, so the operator sees the customer
+message when that turn commits -- after the model has answered, typically a
+second or two after arrival, not at the instant of arrival. Announcing earlier
+would mean either splitting the transaction (a message that failed mid-turn
+would be marked handled and never answered on retry) or announcing rows that
+may vanish. Waiting for the commit is the correct trade.
+
+**Conversation opens automatically.** An event with `inbound: true` selects
+that conversation and switches to the Conversations screen from wherever the
+operator was. Only customer-initiated turns do this: the bot answering, or an
+operator's own manual reply, must not steal focus. The behaviour is a toggle in
+the Conversations header ("Open new customer messages automatically") for the
+case where an operator is deliberately reading one old transcript while others
+are active.
+
+**Delivery receipts are not pushed.** Every outbound message produces
+sent/delivered/read callbacks. Pushing them would roughly triple event volume
+to move a label nobody is waiting on; the next real activity picks the status
+up.
+
+**Analytics screens still poll.** Their figures are aggregates over days. A
+per-message push would recompute a 30-day spend total to change it by a
+fraction of a cent.
+
+### Authentication
+
+A browser cannot set headers on a WebSocket, so `X-API-Key` is unavailable.
+Passing the key in the query string would write it into nginx access logs and
+browser history, so the client sends it as the **first frame** instead:
+
+```json
+{ "api_key": "<ADMIN_API_KEY>" }
+```
+
+The server compares it with `hmac.compare_digest` and subscribes only on a
+match; otherwise it closes with code **1008** within a 5 second deadline. A
+client that is closed with 1008 does not retry -- reconnecting with the same
+rejected key would only hammer the server.
+
+The handshake is *not* rate limited: slowapi decorates HTTP routes, and the
+limiter does not apply to a WebSocket upgrade. The endpoint is cheap to reject
+and the deployment binds port 8000 to localhost, but a public deployment should
+put a connection limit in front of `/ws/`.
+
+### Reconnection and degradation
+
+`dashboard/src/events.tsx` owns exactly one socket for the whole app. On an
+unexpected close it reconnects with exponential backoff from 1s to 30s. The
+server sends a heartbeat every 20 seconds so a dead peer is noticed, and nginx
+is configured with a 3600s read timeout on `/ws/` (the default 60s would drop
+the stream roughly every minute).
+
+While the socket is down the views fall back to the old intervals -- 30s for
+the list, 10s for the transcript -- so a Redis outage makes the dashboard
+slower, not blind. The sidebar shows which mode you are in: "Live" or
+"Reconnecting - polling".
+
+## Loading, error and empty states
 
 All data fetching goes through one hook, `useAsync` in
 `dashboard/src/components/Async.tsx`, so every screen behaves the same way:
 
 - **Loading** - shown only when there is nothing on screen yet.
-- **Refreshing** - a background poll shows a small "Updating..." marker
-  instead of replacing the page with a spinner, so numbers do not flicker
-  every interval.
+- **Refreshing** - a background refetch shows a small "Updating..." marker
+  instead of replacing the page with a spinner, so numbers do not flicker.
 - **Error** - a failed refresh keeps the data already displayed rather than
   blanking a working dashboard.
 - **Empty** - each list states that it is empty rather than rendering an
   empty table.
 
-Two details that polling makes necessary: responses are matched to a request
-id, so a slow earlier response cannot land after a newer one and show stale
-numbers; and intervals are cleared on unmount.
+Responses are matched to a request id, so a slow earlier response cannot land
+after a newer one and show stale numbers. That guard matters more with events
+than it did with polling: a burst of messages can trigger several overlapping
+refetches.
 
-**Why polling and not WebSockets.** The screens are read-mostly and used by
-one or two operators. A socket would add a second transport, reconnect and
-backoff logic, and server-side connection state, to save a handful of
-requests a minute. Live transcripts are the only place latency is felt, and
-10 seconds is enough there. If the tool ever grows to many operators watching
-live conversations, a socket on the transcript view alone would be the change
-to make.
-
-The Pricing screen does not poll: it is a configuration form, and rows moving
-underneath someone who is typing would be worse than slightly stale prices.
+The Pricing screen does not auto-update at all: it is a configuration form, and
+rows moving underneath someone who is typing would be worse than slightly
+stale prices.
 
 ## Endpoints behind it
 
@@ -78,6 +165,12 @@ All require the `X-API-Key` header and are rate limited by `ADMIN_LIMIT`.
 | GET | `/admin/knowledge` | Indexed RAG documents |
 | GET | `/admin/knowledge/search?q=...` | Retrieval preview |
 
+Plus one WebSocket, authenticated by its first frame rather than a header:
+
+| Protocol | Path | Purpose |
+| --- | --- | --- |
+| WS | `/ws/events` | Live conversation activity stream |
+
 ## Running it
 
 ### Production
@@ -98,8 +191,10 @@ uvicorn app.main:app --reload                 # terminal 1
 cd dashboard && npm install && npm run dev    # terminal 2 -> :5173
 ```
 
-Vite proxies `/admin` to `localhost:8000`. The API also enables CORS for
-`localhost:5173`, but only when `DEBUG=true`.
+Vite proxies `/admin` to `localhost:8000`, and `/ws` with `ws: true` -- without
+that flag the upgrade request is proxied as plain HTTP and the event stream
+silently never connects in dev. The API also enables CORS for `localhost:5173`,
+but only when `DEBUG=true`.
 
 If `dashboard/dist` does not exist, the API logs `dashboard_not_built` at
 startup and simply does not mount the route. Nothing else is affected, so
@@ -175,6 +270,10 @@ which is not implemented yet. It is a 409 and not a 500 on purpose: the
 request is valid, the conversation is simply in a state that forbids it, and
 the dashboard shows the explanation verbatim.
 
+A successful manual reply publishes an event too, with `inbound: false`, so a
+second operator watching the same conversation sees it appear without being
+yanked to it.
+
 Manual replies are stored as ordinary outbound messages, so they become part
 of the context the model sees on the next turn. If an operator corrects the
 bot, the bot sees the correction.
@@ -209,10 +308,16 @@ The queries scan the full period each time they are called. At a few hundred
 thousand `ai_logs` rows that is still fast. Well beyond that, the answer is a
 nightly rollup table of daily totals rather than a bigger database.
 
+Events replaced a poll every 10 seconds per open transcript with a refetch per
+actual message. On a quiet afternoon that is a large reduction; during a busy
+hour it is roughly break-even, and the request-id guard is what keeps
+overlapping refetches from rendering out of order.
+
 ## Security
 
 The dashboard authenticates with the same `ADMIN_API_KEY` as the rest of the
-admin API, held in `sessionStorage` and sent as `X-API-Key`.
+admin API, held in `sessionStorage` and sent as `X-API-Key` -- or, for the
+WebSocket, as the first frame.
 
 Be clear about what this is: a shared secret in a browser tab. It is
 reasonable for a single operator on an internal tool, and it is the same key
