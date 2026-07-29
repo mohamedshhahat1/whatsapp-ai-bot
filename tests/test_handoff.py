@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.models.conversation import MODE_BOT, MODE_HUMAN
 from app.repositories.conversation import ConversationRepository
-from app.services.handoff import wants_human
+from app.services.handoff import HANDOFF_KEYWORD, wants_human
 from app.services.webhook_processor import process_webhook_payload
 from tests.conftest import Customer
 from tests.test_webhook_integration import FakeOpenAI, FakeWhatsApp
@@ -49,6 +49,30 @@ ORDINARY_MESSAGES = (
     "",
 )
 
+# The bot offers a transfer by naming one word for the customer to send back.
+# Sent alone, these are unambiguous; inside a sentence they still need a
+# request verb, which ORDINARY_MESSAGES above guards.
+STANDALONE_REQUESTS = (
+    HANDOFF_KEYWORD,
+    f"{HANDOFF_KEYWORD}.",
+    "  human  ",
+    "Agent",
+    # modeer, as the entire message
+    "\u0645\u062f\u064a\u0631",
+)
+
+# Deliberately NOT accepted. wants_human sees one message with no memory of
+# what was last offered, so accepting a bare "yes" would silence the bot every
+# time a customer agreed to anything else -- a site visit, a callback, a
+# summary. The named keyword exists precisely to avoid guessing here.
+BARE_AGREEMENT = (
+    "yes",
+    "ok",
+    # aywa / tamam
+    "\u0623\u064a\u0648\u0647",
+    "\u062a\u0645\u0627\u0645",
+)
+
 
 @pytest.mark.parametrize("message", ASKS_FOR_A_HUMAN)
 def test_requests_for_a_person_are_detected(message: str) -> None:
@@ -57,6 +81,16 @@ def test_requests_for_a_person_are_detected(message: str) -> None:
 
 @pytest.mark.parametrize("message", ORDINARY_MESSAGES)
 def test_ordinary_messages_do_not_trigger_a_handoff(message: str) -> None:
+    assert not wants_human(message)
+
+
+@pytest.mark.parametrize("message", STANDALONE_REQUESTS)
+def test_the_offered_keyword_is_a_request_on_its_own(message: str) -> None:
+    assert wants_human(message)
+
+
+@pytest.mark.parametrize("message", BARE_AGREEMENT)
+def test_a_bare_yes_does_not_hand_off(message: str) -> None:
     assert not wants_human(message)
 
 
@@ -164,6 +198,25 @@ async def test_asking_for_a_person_stops_the_bot_and_acknowledges_once(
     )
     assert ai.calls == []
     assert len(whatsapp.sent) == 1
+
+
+async def test_the_single_keyword_hands_off_through_the_webhook(
+    db: AsyncSession, customer: Customer
+) -> None:
+    """The word the prompt tells customers to send has to work end to end."""
+    ai = FakeOpenAI()
+    whatsapp = FakeWhatsApp()
+    await process_webhook_payload(
+        db,
+        whatsapp,
+        ai,
+        get_settings(),
+        _payload(customer.wa_id, "wamid.handoff.5", HANDOFF_KEYWORD),
+    )
+
+    assert ai.calls == []
+    assert len(whatsapp.sent) == 1
+    assert await _mode(db, customer.conversation_id) == MODE_HUMAN
 
 
 async def test_the_bot_answers_again_after_the_ai_is_resumed(
