@@ -137,10 +137,20 @@ export interface Customer {
   last_active: string | null
 }
 
+// "bot" or "human". Kept as a string rather than a union so that an unknown
+// value from a newer server renders instead of breaking the build.
+export type ConversationMode = string
+
 export interface Conversation {
   id: number
   user_id: number
+  // status is lifecycle (active / archived); mode is ownership (bot / human).
+  // They are independent: a conversation stays active the whole time a human
+  // operator owns it.
   status: string
+  mode: ConversationMode
+  assigned_operator: string | null
+  handoff_at: string | null
   created_at: string
   updated_at: string
 }
@@ -212,6 +222,17 @@ export const api = {
     request<{ message_id: number }>(`/admin/conversations/${id}/reply`, {
       method: "POST",
       body: JSON.stringify({ text }),
+    }),
+  // Stops the bot answering this conversation. The operator name is a label
+  // for other operators, not a credential.
+  takeOver: (id: number, operator: string) =>
+    request<Conversation>(`/admin/conversations/${id}/takeover`, {
+      method: "POST",
+      body: JSON.stringify({ operator: operator || null }),
+    }),
+  resumeAi: (id: number) =>
+    request<Conversation>(`/admin/conversations/${id}/resume-ai`, {
+      method: "POST",
     }),
   search: (q: string) =>
     request<MessageHit[]>(`/admin/search?q=${encodeURIComponent(q)}`),

@@ -11,6 +11,29 @@ import { datetime } from "../format"
 const DETAIL_FALLBACK_POLL_MS = 10_000
 const LIST_FALLBACK_POLL_MS = 30_000
 
+const MODE_HUMAN = "human"
+
+// Remembered so the question is asked once per browser. There are no operator
+// accounts, so this is a label that keeps two operators from answering the same
+// customer -- not an authenticated identity, and not a permission.
+const OPERATOR_STORAGE = "waai_operator"
+
+function operatorName(): string | null {
+  const stored = localStorage.getItem(OPERATOR_STORAGE) ?? ""
+  if (stored) return stored
+  const entered =
+    window.prompt("Your name (shown to other operators)")?.trim() ?? ""
+  if (!entered) return null
+  localStorage.setItem(OPERATOR_STORAGE, entered)
+  return entered
+}
+
+// Both event kinds change what these views show: one adds messages, the other
+// changes who owns the conversation.
+function isRelevant(type: string): boolean {
+  return type === "conversation.activity" || type === "conversation.handoff"
+}
+
 interface Props {
   openId: number | null
   onOpen: (id: number) => void
@@ -27,13 +50,22 @@ function ConversationView({ id }: { id: number }) {
   )
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
+  const [switching, setSwitching] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEvents((event) => {
-    if (event.type !== "conversation.activity") return
+    if (!isRelevant(event.type)) return
     if (event.conversation_id !== id) return
     detail.reload()
   })
+
+  const humanOwned = detail.data?.mode === MODE_HUMAN
+
+  function report(exception: unknown) {
+    setError(
+      exception instanceof ApiError ? exception.message : String(exception),
+    )
+  }
 
   async function send() {
     if (!text.trim()) return
@@ -46,13 +78,37 @@ function ConversationView({ id }: { id: number }) {
       // message appears even if the stream is down.
       detail.reload()
     } catch (exception) {
-      setError(
-        exception instanceof ApiError
-          ? exception.message
-          : String(exception),
-      )
+      report(exception)
     } finally {
       setSending(false)
+    }
+  }
+
+  async function takeOver() {
+    const operator = operatorName()
+    if (!operator) return
+    setSwitching(true)
+    setError(null)
+    try {
+      await api.takeOver(id, operator)
+      detail.reload()
+    } catch (exception) {
+      report(exception)
+    } finally {
+      setSwitching(false)
+    }
+  }
+
+  async function resumeAi() {
+    setSwitching(true)
+    setError(null)
+    try {
+      await api.resumeAi(id)
+      detail.reload()
+    } catch (exception) {
+      report(exception)
+    } finally {
+      setSwitching(false)
     }
   }
 
@@ -60,11 +116,40 @@ function ConversationView({ id }: { id: number }) {
     <div className="panel">
       <div className="row" style={{ justifyContent: "space-between" }}>
         <h2>Conversation #{id}</h2>
-        <Refreshing active={detail.refreshing} />
+        <div className="row">
+          {detail.data && (
+            <span className="badge">
+              {humanOwned
+                ? "human" +
+                  (detail.data.assigned_operator
+                    ? " - " + detail.data.assigned_operator
+                    : " - unassigned")
+                : "bot"}
+            </span>
+          )}
+          {detail.data && !humanOwned && (
+            <button disabled={switching} onClick={takeOver}>
+              {switching ? "Working..." : "Take Over"}
+            </button>
+          )}
+          {detail.data && humanOwned && (
+            <button disabled={switching} onClick={resumeAi}>
+              {switching ? "Working..." : "Resume AI"}
+            </button>
+          )}
+          <Refreshing active={detail.refreshing} />
+        </div>
       </div>
       <Loader loading={detail.loading} error={detail.error}>
         {detail.data && (
           <>
+            {humanOwned && (
+              <p className="muted" style={{ fontSize: 12 }}>
+                The bot is not answering this conversation. Incoming messages
+                are saved and shown here, but nothing is sent until you reply or
+                press Resume AI.
+              </p>
+            )}
             <div className="chat">
               {detail.data.messages.map((message) => (
                 <div
@@ -101,9 +186,10 @@ function ConversationView({ id }: { id: number }) {
                 {error && <span className="error">{error}</span>}
               </div>
               <p className="muted" style={{ fontSize: 12 }}>
-                Free-form replies are only delivered within 24 hours of the
-                customer's last message. Outside that window the API returns
-                409 and the message is not sent.
+                Sending a reply does not stop the bot on its own - press Take
+                Over for that. Free-form replies are only delivered within 24
+                hours of the customer's last message. Outside that window the
+                API returns 409 and the message is not sent.
               </p>
             </div>
           </>
@@ -127,8 +213,9 @@ export default function Conversations({
   )
 
   useEvents((event) => {
-    if (event.type !== "conversation.activity") return
-    // Any activity can reorder the list or add a row to it.
+    if (!isRelevant(event.type)) return
+    // Any activity can reorder the list or add a row to it, and a handoff
+    // elsewhere changes a badge here.
     conversations.reload()
   })
 
@@ -162,6 +249,7 @@ export default function Conversations({
                   <th>ID</th>
                   <th>Customer</th>
                   <th>Status</th>
+                  <th>Answered by</th>
                   <th>Last update</th>
                 </tr>
               </thead>
@@ -178,6 +266,15 @@ export default function Conversations({
                     <td>user {conversation.user_id}</td>
                     <td>
                       <span className="badge">{conversation.status}</span>
+                    </td>
+                    <td>
+                      <span className="badge">{conversation.mode}</span>
+                      {conversation.mode === MODE_HUMAN && (
+                        <span className="muted" style={{ fontSize: 12 }}>
+                          {" "}
+                          {conversation.assigned_operator ?? "unassigned"}
+                        </span>
+                      )}
                     </td>
                     <td className="muted">
                       {datetime(conversation.updated_at)}
