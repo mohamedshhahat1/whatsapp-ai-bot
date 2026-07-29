@@ -23,7 +23,7 @@ tool), or its own backend routes (it has one already).
 | --- | --- | --- |
 | Overview | Spend, projected monthly cost, tokens, cost per conversation, average and p95 response time, error rate, daily usage chart, most frequently asked questions | 60s poll |
 | Customers | Every customer with conversation count, message count and last activity | 60s poll |
-| Conversations | Conversation list, full transcript, and manual operator reply | live (WebSocket) |
+| Conversations | Conversation list, full transcript, who is answering each thread, Take Over / Resume AI, and manual operator reply | live (WebSocket) |
 | Search | Substring search across all inbound and outbound messages | on demand |
 | Knowledge base | Indexed documents and a retrieval tester | on demand |
 | Pricing | Token price history per model, and spend per model | on demand |
@@ -58,6 +58,11 @@ through the authenticated `/admin` API, which keeps one source of truth for the
 data and stops the message bus from becoming an unauthenticated copy of the
 customer database.
 
+There is a second event type, `conversation.handoff`, published when ownership
+of a conversation changes between the bot and a human. It carries the operator
+name so a colleague's screen can show who already owns a thread. See
+[HANDOFF.md](HANDOFF.md).
+
 **When it is published.** After the database transaction commits, never before.
 The dashboard reacts by refetching, so announcing an uncommitted turn would
 point the operator at rows that do not exist yet -- and if the transaction
@@ -71,6 +76,10 @@ second or two after arrival, not at the instant of arrival. Announcing earlier
 would mean either splitting the transaction (a message that failed mid-turn
 would be marked handled and never answered on retry) or announcing rows that
 may vanish. Waiting for the commit is the correct trade.
+
+Messages to a conversation a human has taken over are announced as soon as they
+are saved, since no generation happens first -- so for exactly the
+conversations where an operator is waiting, the notification is immediate.
 
 **Conversation opens automatically.** An event with `inbound: true` selects
 that conversation and switches to the Conversations screen from wherever the
@@ -158,6 +167,8 @@ All require the `X-API-Key` header and are rate limited by `ADMIN_LIMIT`.
 | GET | `/admin/conversations?limit=50` | Conversation list |
 | GET | `/admin/conversations/{id}` | Full transcript |
 | POST | `/admin/conversations/{id}/reply` | Manual operator reply |
+| POST | `/admin/conversations/{id}/takeover` | Stop the bot; assign the conversation to an operator |
+| POST | `/admin/conversations/{id}/resume-ai` | Give the conversation back to the bot |
 | GET | `/admin/search?q=...` | Message body search |
 | GET | `/admin/pricing` | Price history |
 | POST | `/admin/pricing` | Add a price period |
@@ -169,7 +180,7 @@ Plus one WebSocket, authenticated by its first frame rather than a header:
 
 | Protocol | Path | Purpose |
 | --- | --- | --- |
-| WS | `/ws/events` | Live conversation activity stream |
+| WS | `/ws/events` | Live conversation activity and handoff stream |
 
 ## Running it
 
@@ -278,10 +289,11 @@ Manual replies are stored as ordinary outbound messages, so they become part
 of the context the model sees on the next turn. If an operator corrects the
 bot, the bot sees the correction.
 
-There is no takeover flag: the bot keeps answering new inbound messages even
-while an operator is typing. If you want a real handover mode, the natural
-place is the existing `conversations.status` column -- set it to `human` and
-have `ChatService` skip generation for those conversations.
+**Replying does not stop the bot.** It keeps answering new inbound messages
+even while an operator is typing, because one clarifying message should not
+permanently silence the assistant. To stop it, press **Take Over** -- see
+[HANDOFF.md](HANDOFF.md), which also explains why handoff is a separate `mode`
+column and not a `conversations.status` value.
 
 ## Performance
 
@@ -323,12 +335,14 @@ Be clear about what this is: a shared secret in a browser tab. It is
 reasonable for a single operator on an internal tool, and it is the same key
 that already protects the admin API. It is not a user system -- there are no
 accounts, no per-person permissions, and no audit trail of which operator
-sent which manual reply.
+sent which manual reply. The operator name on a takeover is self-reported and
+stored in `localStorage`: it stops two people answering the same customer, and
+proves nothing.
 
 Before more than one or two people use this, three things should change:
-real user accounts with sessions, an operator id recorded on manual replies,
-and HTTPS enforced at nginx. Until then, do not expose port 8000 publicly --
-the production compose file already binds it to `127.0.0.1`.
+real user accounts with sessions, an operator id recorded on manual replies
+and handoffs, and HTTPS enforced at nginx. Until then, do not expose port 8000
+publicly -- the production compose file already binds it to `127.0.0.1`.
 
 The dashboard also displays full customer conversations, which for a
 finishing and renovation business means names, phone numbers, addresses and

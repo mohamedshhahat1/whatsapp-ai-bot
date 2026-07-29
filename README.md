@@ -8,8 +8,9 @@ Production AI-powered WhatsApp Business chatbot built with **Python 3.12**, **Fa
 - **Durable background processing** - webhook deliveries are enqueued to **Celery + Redis** with late acks and exponential-backoff retries. A delivery that exhausts every retry is parked on a **dead-letter list** rather than disappearing.
 - **RAG over your own documents** - PDFs in `knowledge/` are chunked, embedded and searched with pgvector; retrieved passages are injected as clearly fenced reference material. See [docs/RAG.md](docs/RAG.md).
 - **Prompt-injection resistant prompts** - retrieved documents are data, never instructions, and an empty retrieval makes the model decline rather than invent a price.
+- **Human handoff** - a customer who asks for a person gets one, and the bot goes completely silent on that conversation until an operator presses Resume AI. Detection is deterministic, so it does not depend on the model being up. See [docs/HANDOFF.md](docs/HANDOFF.md).
 - **Cost analytics with historical pricing** - every call is costed at the price that was in force when it was made, from the `model_pricing` table. See [docs/PRICING.md](docs/PRICING.md).
-- **Admin dashboard** - React + Vite SPA served at `/dashboard`: spend, usage, customers, transcripts, manual replies, search, knowledge base and price management. See [docs/DASHBOARD.md](docs/DASHBOARD.md).
+- **Admin dashboard** - React + Vite SPA served at `/dashboard`: spend, usage, customers, transcripts, takeover, manual replies, search, knowledge base and price management. See [docs/DASHBOARD.md](docs/DASHBOARD.md).
 - **Live conversation stream** - new customer messages are pushed to the dashboard over a WebSocket (fanned out through Redis so the Celery worker and every API replica can reach it) and the conversation opens itself in front of the operator.
 - **Rate limiting** - Redis-backed limits (slowapi) shared across replicas, with proxy-aware client IP resolution that cannot be forged.
 - **Retry strategy** - tenacity with exponential backoff + jitter on all OpenAI and Meta Graph API calls; only transient failures are retried.
@@ -27,7 +28,7 @@ whatsapp-ai-bot/
 │   ├── db/              # engine, session, declarative base
 │   ├── models/          # User, Conversation, Message, AILog, ModelPricing, Document, DocumentChunk
 │   ├── repositories/    # data access layer (repository pattern)
-│   ├── services/        # chat, conversation, prompts, retrieval, ingestion, admin, analytics, pricing, reply
+│   ├── services/        # chat, conversation, prompts, retrieval, ingestion, handoff, admin, analytics, pricing, reply
 │   ├── schemas/         # Pydantic request/response models
 │   ├── integrations/    # whatsapp.py, openai.py, embeddings.py
 │   ├── routers/         # webhook, admin, health, metrics, events (WebSocket)
@@ -37,9 +38,9 @@ whatsapp-ai-bot/
 │   ├── utils/           # tiktoken token counting & history trimming
 │   ├── main.py          # app factory
 │   └── config.py        # pydantic-settings configuration
-├── alembic/versions/    # 0000 baseline -> 0001 knowledge -> 0002 pricing -> 0003 search/concurrency
+├── alembic/versions/    # 0000 baseline -> 0001 knowledge -> 0002 pricing -> 0003 search/concurrency -> 0004 handoff
 ├── dashboard/           # React + Vite admin SPA
-├── docs/                # RAG, PRICING, DASHBOARD, DEPLOYMENT, SECRETS
+├── docs/                # RAG, PRICING, HANDOFF, DASHBOARD, DEPLOYMENT, SECRETS
 ├── knowledge/           # your PDFs (gitignored)
 ├── monitoring/          # Prometheus config + Grafana dashboard
 ├── nginx/nginx.conf
@@ -109,6 +110,25 @@ so a document cannot close its own container, and the response rules state
 that nothing inside it is an instruction. If retrieval finds nothing above the
 similarity floor, the prompt says so explicitly and the model is told to admit
 it does not know rather than estimate a price.
+
+## Human handoff
+
+A conversation is answered either by the bot or by a person, tracked in
+`conversations.mode` (`bot` / `human`):
+
+- A customer who writes "I want to speak to a representative", "can someone
+  call me?" or the Arabic equivalents is switched to `human`, gets one
+  acknowledgement, and is then left to a person.
+- An operator can press **Take Over** on any conversation, and **Resume AI**
+  to give it back.
+- While a conversation is `human`, inbound messages are saved, marked read and
+  pushed to the dashboard, but **no** OpenAI call is made and nothing is sent.
+
+Ownership is a separate column from `status` on purpose: `status = 'active'` is
+what the partial unique index and `active_for_user` use to find a customer's
+thread, so overloading it would split a handed-off customer's history in two
+and let the bot start answering in the new half. Full reasoning, the detection
+limits and the API in [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Background processing
 
@@ -232,7 +252,8 @@ In production the six credentials in `REQUIRED_IN_PRODUCTION` must come from a
 real secret backend; the app refuses to boot with placeholder values.
 
 The live dashboard stream needs no configuration of its own: it uses
-`REDIS_URL` and `ADMIN_API_KEY`.
+`REDIS_URL` and `ADMIN_API_KEY`. Handoff has no settings either - the phrases
+that trigger it are code, reviewed like code.
 
 ## API
 
@@ -248,6 +269,8 @@ The live dashboard stream needs no configuration of its own: it uses
 | `GET` | `/admin/conversations/{id}` | Conversation with messages |
 | `DELETE` | `/admin/conversations/{id}` | Delete a conversation |
 | `POST` | `/admin/conversations/{id}/reply` | Manual operator reply (`409` outside the 24h window) |
+| `POST` | `/admin/conversations/{id}/takeover` | Take over: the bot stops answering this conversation |
+| `POST` | `/admin/conversations/{id}/resume-ai` | Hand the conversation back to the bot |
 | `GET` | `/admin/stats` | Usage statistics |
 | `GET` | `/admin/search?q=` | Message body search |
 | `GET` | `/admin/analytics/overview?days=` | Headline KPIs and spend |
@@ -274,6 +297,8 @@ Admin endpoints require `X-API-Key: <ADMIN_API_KEY>`.
 0003_search_and_concurrency  pg_trgm GIN index on messages.content,
                              partial unique index: one active conversation
                              per customer
+0004_conversation_handoff    conversations.mode / assigned_operator /
+                             handoff_at - ownership, kept separate from status
 ```
 
 `alembic upgrade head` on an empty database produces the complete schema.
@@ -305,5 +330,6 @@ without Redis for the same reason.
 CRM integration (new module in `integrations/`), voice messages and image
 understanding (extend `chat_service`), appointment booking (tool calling is
 already wired into `integrations/openai.py`), semantic clustering of frequent
-questions (the embedding infrastructure exists), and message templates for
-replies outside the 24-hour window.
+questions (the embedding infrastructure exists), per-operator accounts with an
+operator id on replies and handoffs, a handoff SLA alert, and message templates
+for replies outside the 24-hour window.
