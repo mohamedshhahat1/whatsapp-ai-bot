@@ -14,6 +14,14 @@ if TYPE_CHECKING:
     from app.models.message import Message
     from app.models.user import User
 
+# Who is answering this conversation right now. Deliberately separate from
+# ``status``, which tracks lifecycle (active / archived) and is depended on by
+# the partial unique index uq_active_conversation_per_user. See
+# alembic/versions/0004_conversation_handoff.py for why merging the two would
+# split a customer's history in half.
+MODE_BOT = "bot"
+MODE_HUMAN = "human"
+
 
 class Conversation(Base):
     __tablename__ = "conversations"
@@ -23,6 +31,18 @@ class Conversation(Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    # ``server_default`` as well as ``default``: get_or_create_active inserts
+    # through pg_insert, which does not apply ORM-side defaults.
+    mode: Mapped[str] = mapped_column(
+        String(16), default=MODE_BOT, server_default=MODE_BOT, index=True
+    )
+    # Free text, not a foreign key: there is no operator account table yet, and
+    # inventing one here would be a bigger change than the handoff itself.
+    assigned_operator: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # When the CURRENT handoff started; cleared when the AI resumes.
+    handoff_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

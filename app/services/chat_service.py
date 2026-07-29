@@ -3,13 +3,15 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.core.events import conversation_activity, publish
+from app.core.events import conversation_activity, conversation_handoff, publish
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
+from app.models.conversation import MODE_HUMAN, Conversation
 from app.repositories.ai_log import AILogRepository
 from app.services.conversation_service import ConversationService
+from app.services.handoff import HANDOFF_ACK, wants_human
 from app.services.prompt_builder import PromptBuilder
 from app.services.retrieval import (
     DocumentRetriever,
@@ -61,6 +63,62 @@ class ChatService:
             conversation_activity(conversation_id=conversation_id, inbound=True),
             self._settings,
         )
+
+    async def _begin_handoff(self, wa_id: str, conversation: Conversation) -> None:
+        """Switch a conversation to a human at the customer's request.
+
+        No operator is assigned: nobody has claimed it yet. The dashboard shows
+        it as unassigned, and whoever presses Take Over becomes the owner.
+
+        One acknowledgement is sent. Going silent immediately would be the
+        worst outcome for someone who just asked for a person, and it is the
+        last thing the bot says on this conversation until the AI is resumed.
+        """
+        await self._conversations.conversations.set_mode(
+            conversation, MODE_HUMAN, operator=None
+        )
+        await self._whatsapp.send_text(wa_id, HANDOFF_ACK)
+        await self._conversations.save_outbound(conversation.id, HANDOFF_ACK)
+        await self._session.commit()
+        logger.info(
+            "handoff_requested_by_customer",
+            conversation_id=conversation.id,
+        )
+        await publish(
+            conversation_handoff(
+                conversation_id=conversation.id,
+                mode=MODE_HUMAN,
+                assigned_operator=None,
+                reason="customer_asked_for_a_human",
+            ),
+            self._settings,
+        )
+        await self._announce(conversation.id)
+
+    async def _handled_by_human(
+        self, wa_id: str, conversation: Conversation, text: str | None
+    ) -> bool:
+        """True when this message must not reach the model.
+
+        Called after the inbound message has been persisted and marked read,
+        and before any generation: a message is always stored and always
+        announced to the dashboard. Only the AI reply is skipped.
+        """
+        if conversation.mode == MODE_HUMAN:
+            await self._session.commit()
+            logger.info(
+                "message_left_for_operator",
+                conversation_id=conversation.id,
+                assigned_operator=conversation.assigned_operator,
+            )
+            await self._announce(conversation.id)
+            return True
+
+        if wants_human(text):
+            await self._begin_handoff(wa_id, conversation)
+            return True
+
+        return False
 
     async def _generate_and_send(
         self,
@@ -132,6 +190,9 @@ class ChatService:
         )
         await self._whatsapp.mark_as_read(wa_message_id)
 
+        if await self._handled_by_human(wa_id, conversation, text):
+            return
+
         history = await self._conversations.build_history(conversation.id)
         await self._generate_and_send(
             wa_id, name, conversation.id, history, retrieval_query=text
@@ -160,6 +221,10 @@ class ChatService:
         )
         await self._whatsapp.mark_as_read(wa_message_id)
 
+        # A photo of a damaged wall often carries the request in its caption.
+        if await self._handled_by_human(wa_id, conversation, caption):
+            return
+
         history = await self._conversations.build_history(conversation.id)
         history.append(
             {
@@ -185,6 +250,12 @@ class ChatService:
         await self._conversations.save_inbound(
             conversation.id, wa_message_id, type=type, content=f"[{type} received]"
         )
+
+        # While a human owns the conversation the bot says nothing at all --
+        # not even this. The operator can see the voice note in the transcript.
+        if await self._handled_by_human(wa_id, conversation, None):
+            return
+
         reply = "Sorry, I can't process that type of message yet. Please send text."
         await self._whatsapp.send_text(wa_id, reply)
         await self._conversations.save_outbound(conversation.id, reply)

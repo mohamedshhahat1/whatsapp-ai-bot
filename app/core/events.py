@@ -27,6 +27,7 @@ logger = get_logger(__name__)
 CHANNEL = "dashboard:events"
 
 ACTIVITY = "conversation.activity"
+HANDOFF = "conversation.handoff"
 
 
 def conversation_activity(*, conversation_id: int, inbound: bool) -> dict[str, Any]:
@@ -40,6 +41,34 @@ def conversation_activity(*, conversation_id: int, inbound: bool) -> dict[str, A
         "type": ACTIVITY,
         "conversation_id": conversation_id,
         "inbound": inbound,
+        "at": datetime.now(UTC).isoformat(),
+    }
+
+
+def conversation_handoff(
+    *,
+    conversation_id: int,
+    mode: str,
+    assigned_operator: str | None,
+    reason: str,
+) -> dict[str, Any]:
+    """Build the event announcing that ownership of a conversation changed.
+
+    Separate from the activity event rather than a field on it, so that a
+    dashboard showing the conversation can distinguish "a message arrived"
+    from "the bot has stopped answering this" -- and so the activity payload
+    stays exactly four keys wide.
+
+    ``assigned_operator`` is a staff name, not customer data. It is on the bus
+    because a second operator's screen has to show who already owns the
+    conversation; without it, two people answer the same customer.
+    """
+    return {
+        "type": HANDOFF,
+        "conversation_id": conversation_id,
+        "mode": mode,
+        "assigned_operator": assigned_operator,
+        "reason": reason,
         "at": datetime.now(UTC).isoformat(),
     }
 
@@ -68,6 +97,4 @@ async def publish(event: dict[str, Any], settings: Settings | None = None) -> No
         finally:
             await client.aclose()
     except Exception as exc:
-        logger.warning(
-            "event_publish_failed", type=event.get("type"), error=str(exc)
-        )
+        logger.warning("event_publish_failed", type=event.get("type"), error=str(exc))

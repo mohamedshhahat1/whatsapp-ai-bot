@@ -20,7 +20,11 @@ from app.schemas.analytics import (
     MessageHitRead,
     TopQuestionRead,
 )
-from app.schemas.conversation import ConversationDetail, ConversationRead
+from app.schemas.conversation import (
+    ConversationDetail,
+    ConversationRead,
+    HandoffRequest,
+)
 from app.schemas.knowledge import KnowledgeDocumentRead, KnowledgeSearchHit
 from app.schemas.pricing import ModelCostRead, ModelPricingCreate, ModelPricingRead
 from app.schemas.user import UserRead
@@ -82,6 +86,41 @@ async def delete_conversation(
 
 
 @router.post(
+    "/conversations/{conversation_id}/takeover", response_model=ConversationRead
+)
+@limiter.limit(ADMIN_LIMIT)
+async def take_over_conversation(
+    request: Request,
+    conversation_id: int,
+    payload: HandoffRequest | None = None,
+    service: AdminService = Depends(get_admin_service),
+) -> ConversationRead:
+    """Take a conversation over. From here the bot stops answering it.
+
+    The body is optional: an operator name is a label for other operators, not
+    a credential, and omitting it still stops the bot.
+    """
+    conversation = await service.take_over(
+        conversation_id, operator=payload.operator if payload else None
+    )
+    return ConversationRead.model_validate(conversation)
+
+
+@router.post(
+    "/conversations/{conversation_id}/resume-ai", response_model=ConversationRead
+)
+@limiter.limit(ADMIN_LIMIT)
+async def resume_ai(
+    request: Request,
+    conversation_id: int,
+    service: AdminService = Depends(get_admin_service),
+) -> ConversationRead:
+    """Hand the conversation back to the bot."""
+    conversation = await service.resume_ai(conversation_id)
+    return ConversationRead.model_validate(conversation)
+
+
+@router.post(
     "/conversations/{conversation_id}/reply", response_model=ManualReplyResponse
 )
 @limiter.limit(ADMIN_LIMIT)
@@ -91,7 +130,12 @@ async def send_manual_reply(
     payload: ManualReplyRequest,
     service: ReplyService = Depends(get_reply_service),
 ) -> ManualReplyResponse:
-    """Let a human operator take over and reply directly to the customer."""
+    """Let a human operator take over and reply directly to the customer.
+
+    Sending a reply does NOT stop the bot on its own: use /takeover for that.
+    Coupling them would mean a single clarifying message silences the assistant
+    permanently without the operator choosing to.
+    """
     message = await service.send_manual_reply(conversation_id, payload.text)
     return ManualReplyResponse(
         message_id=message.id,
