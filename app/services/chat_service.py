@@ -12,6 +12,7 @@ from app.models.conversation import MODE_HUMAN, Conversation
 from app.repositories.ai_log import AILogRepository
 from app.services.conversation_service import ConversationService
 from app.services.handoff import HANDOFF_ACK, wants_human
+from app.services.persona import NOT_UNDERSTOOD, WELCOME, is_unintelligible
 from app.services.prompt_builder import PromptBuilder
 from app.services.retrieval import (
     DocumentRetriever,
@@ -64,6 +65,30 @@ class ChatService:
             self._settings,
         )
 
+    async def _is_first_customer_message(self, conversation_id: int) -> bool:
+        """True when the message just stored is the customer's first one here.
+
+        Counted in the database rather than inferred by the model. The welcome
+        is approved copy that must appear exactly once, and a model holding
+        twenty turns of history will eventually send it twice or not at all.
+        """
+        sent = await self._conversations.messages.count_inbound(conversation_id)
+        return sent == 1
+
+    async def _send_fixed(self, wa_id: str, conversation_id: int, text: str) -> None:
+        """Send company copy that needs no model call, and persist it.
+
+        Used for the opening welcome when there is nothing to answer, and for
+        unsupported message types.
+        """
+        result = await self._whatsapp.send_text(wa_id, text)
+        out_id = (result.get("messages") or [{}])[0].get("id")
+        await self._conversations.save_outbound(
+            conversation_id, text, wa_message_id=out_id
+        )
+        await self._session.commit()
+        await self._announce(conversation_id)
+
     async def _begin_handoff(self, wa_id: str, conversation: Conversation) -> None:
         """Switch a conversation to a human at the customer's request.
 
@@ -73,6 +98,9 @@ class ChatService:
         One acknowledgement is sent. Going silent immediately would be the
         worst outcome for someone who just asked for a person, and it is the
         last thing the bot says on this conversation until the AI is resumed.
+        The welcome is deliberately NOT prepended here, even on a first
+        message: a service menu inviting questions would contradict a message
+        that says a colleague is taking over.
         """
         await self._conversations.conversations.set_mode(
             conversation, MODE_HUMAN, operator=None
@@ -127,8 +155,14 @@ class ChatService:
         conversation_id: int,
         history: list[dict],
         retrieval_query: str | None,
+        welcome: bool = False,
     ) -> None:
-        """Build layered instructions, generate a reply, send and persist it."""
+        """Build layered instructions, generate a reply, send and persist it.
+
+        ``welcome`` prepends the approved welcome to whatever the model
+        produces, including the fallback reply: a customer whose very first
+        message arrives while OpenAI is down should still be greeted properly.
+        """
         documents: list[RetrievedDocument] = []
         retrieval_attempted = bool(retrieval_query)
         if retrieval_query:
@@ -146,6 +180,7 @@ class ChatService:
             user_name=name,
             documents=documents,
             retrieval_attempted=retrieval_attempted,
+            is_first_message=welcome,
         )
 
         reply_text = FALLBACK_REPLY
@@ -167,6 +202,9 @@ class ChatService:
                 conversation_id=conversation_id,
                 error=str(exc),
             )
+
+        if welcome:
+            reply_text = f"{WELCOME}\n\n{reply_text}"
 
         send_result = await self._whatsapp.send_text(wa_id, reply_text)
         out_id = (send_result.get("messages") or [{}])[0].get("id")
@@ -193,9 +231,25 @@ class ChatService:
         if await self._handled_by_human(wa_id, conversation, text):
             return
 
+        first = await self._is_first_customer_message(conversation.id)
+
+        # ".", "؟" or a lone emoji as an opening message: there is nothing to
+        # answer, so the welcome and the clarification line are sent as they
+        # are and the model is not called at all.
+        if first and is_unintelligible(text):
+            await self._send_fixed(
+                wa_id, conversation.id, f"{WELCOME}\n\n{NOT_UNDERSTOOD}"
+            )
+            return
+
         history = await self._conversations.build_history(conversation.id)
         await self._generate_and_send(
-            wa_id, name, conversation.id, history, retrieval_query=text
+            wa_id,
+            name,
+            conversation.id,
+            history,
+            retrieval_query=text,
+            welcome=first,
         )
 
     async def handle_media_message(
@@ -207,7 +261,12 @@ class ChatService:
         media_id: str | None,
         caption: str | None,
     ) -> None:
-        """Persist inbound media (image/document) and respond via the model."""
+        """Persist inbound media (image/document) and respond via the model.
+
+        The file itself is never sent to the model: only the fact that one
+        arrived, plus its caption. The persona is explicit that it cannot see
+        images, so it acknowledges and asks instead of describing.
+        """
         if await self._conversations.messages.exists_by_wa_id(wa_message_id):
             return
 
@@ -225,6 +284,8 @@ class ChatService:
         if await self._handled_by_human(wa_id, conversation, caption):
             return
 
+        first = await self._is_first_customer_message(conversation.id)
+
         history = await self._conversations.build_history(conversation.id)
         history.append(
             {
@@ -232,12 +293,19 @@ class ChatService:
                 "content": (
                     f"(The user sent a {type}"
                     + (f' with caption: "{caption}")' if caption else ")")
-                    + " Acknowledge it briefly and ask how you can help."
+                    + " You cannot see its contents. Confirm that it arrived,"
+                    + " do not describe or guess what is in it, and ask what"
+                    + " they would like done."
                 ),
             }
         )
         await self._generate_and_send(
-            wa_id, name, conversation.id, history, retrieval_query=caption
+            wa_id,
+            name,
+            conversation.id,
+            history,
+            retrieval_query=caption,
+            welcome=first,
         )
 
     async def handle_unsupported_message(
@@ -256,11 +324,11 @@ class ChatService:
         if await self._handled_by_human(wa_id, conversation, None):
             return
 
+        first = await self._is_first_customer_message(conversation.id)
         reply = "Sorry, I can't process that type of message yet. Please send text."
-        await self._whatsapp.send_text(wa_id, reply)
-        await self._conversations.save_outbound(conversation.id, reply)
-        await self._session.commit()
-        await self._announce(conversation.id)
+        if first:
+            reply = f"{WELCOME}\n\n{reply}"
+        await self._send_fixed(wa_id, conversation.id, reply)
 
     async def handle_status_update(self, wa_message_id: str, status: str) -> None:
         """Record delivery/read/failed status updates for outbound messages.

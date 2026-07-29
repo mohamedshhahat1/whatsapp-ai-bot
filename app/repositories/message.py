@@ -67,6 +67,23 @@ class MessageRepository(BaseRepository):
             )
         )
 
+    async def count_inbound(self, conversation_id: int) -> int:
+        """How many messages the customer has sent in this conversation.
+
+        Used to decide whether the message just stored is their first, which is
+        what makes the welcome deterministic: the model cannot be trusted to
+        notice, and the welcome must appear exactly once.
+        """
+        return int(
+            await self.session.scalar(
+                select(func.count(Message.id)).where(
+                    Message.conversation_id == conversation_id,
+                    Message.direction == "inbound",
+                )
+            )
+            or 0
+        )
+
     async def count(self) -> int:
         return int(await self.session.scalar(select(func.count(Message.id))) or 0)
 

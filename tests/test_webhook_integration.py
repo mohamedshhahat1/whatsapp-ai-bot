@@ -3,6 +3,9 @@
 This is the path every customer message takes. OpenAI and WhatsApp are the
 only things faked; the session, repositories, prompt builder and dedupe logic
 are all real, running against the migrated database.
+
+Note that these payloads are each a customer's FIRST message, so the approved
+welcome is prepended to the reply by ChatService. See tests/test_persona.py.
 """
 
 from typing import Any
@@ -13,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.integrations.openai import AIResult
+from app.services.persona import WELCOME
 from app.services.webhook_processor import process_webhook_payload
 from tests.conftest import new_wa_id, purge
 
@@ -99,6 +103,7 @@ async def _rows(session: AsyncSession, wa_id: str) -> list[tuple[str, str]]:
 async def test_message_is_stored_answered_and_replied_to(db: AsyncSession) -> None:
     wa_id = new_wa_id()
     question = "What time do you open?"
+    expected = f"{WELCOME}\n\n{REPLY}"
     whatsapp = FakeWhatsApp()
     ai = FakeOpenAI()
 
@@ -114,10 +119,10 @@ async def test_message_is_stored_answered_and_replied_to(db: AsyncSession) -> No
         # The customer exists, with one conversation holding both messages.
         stored = await _rows(db, wa_id)
         assert ("inbound", question) in stored
-        assert ("outbound", REPLY) in stored
+        assert ("outbound", expected) in stored
 
         # The reply actually went out, to the right number.
-        assert whatsapp.sent == [(wa_id, REPLY)]
+        assert whatsapp.sent == [(wa_id, expected)]
         assert whatsapp.read == [f"wamid.in.{wa_id}"]
 
         # The call was logged with its token usage, for the cost dashboard.
