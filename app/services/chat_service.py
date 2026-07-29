@@ -3,6 +3,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.core.events import conversation_activity, publish
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
 from app.integrations.openai import OpenAIClient
@@ -45,6 +46,21 @@ class ChatService:
         # Celery worker both get RAG without duplicating the wiring, while the
         # parameter keeps the retriever injectable for tests.
         self._retriever = retriever or build_retriever(session, settings)
+
+    async def _announce(self, conversation_id: int) -> None:
+        """Tell connected dashboards that a customer turn landed.
+
+        Called only after the transaction has committed. The dashboard reacts
+        by refetching through the admin API, so announcing uncommitted work
+        would point the operator at rows that do not exist yet -- and if the
+        transaction rolled back and Celery retried the delivery, the
+        notification would already have been sent for a message that never
+        existed.
+        """
+        await publish(
+            conversation_activity(conversation_id=conversation_id, inbound=True),
+            self._settings,
+        )
 
     async def _generate_and_send(
         self,
@@ -100,6 +116,7 @@ class ChatService:
             conversation_id, reply_text, wa_message_id=out_id
         )
         await self._session.commit()
+        await self._announce(conversation_id)
 
     async def handle_text_message(
         self, wa_id: str, name: str | None, wa_message_id: str, text: str
@@ -172,8 +189,15 @@ class ChatService:
         await self._whatsapp.send_text(wa_id, reply)
         await self._conversations.save_outbound(conversation.id, reply)
         await self._session.commit()
+        await self._announce(conversation.id)
 
     async def handle_status_update(self, wa_message_id: str, status: str) -> None:
-        """Record delivery/read/failed status updates for outbound messages."""
+        """Record delivery/read/failed status updates for outbound messages.
+
+        Deliberately not announced to the dashboard. Every outbound message
+        produces sent/delivered/read callbacks, which would triple the event
+        volume to move a label the operator is not waiting on. The next real
+        activity refetch picks the status up.
+        """
         await self._conversations.messages.update_status_by_wa_id(wa_message_id, status)
         await self._session.commit()

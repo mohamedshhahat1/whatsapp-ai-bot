@@ -15,9 +15,11 @@ interface State<T> {
 // Small data-fetching hook. A dedicated query library would be overkill for a
 // handful of read-only screens.
 //
-// Pass pollMs to auto refresh. Polling is deliberately plain HTTP: the admin
-// screens are read-mostly and single-operator, so a WebSocket would add a
-// second transport, its own reconnect logic and a stateful server for no gain.
+// Pass pollMs to auto refresh. The conversation screens now pass 0 while the
+// WebSocket event stream is connected (see events.tsx) and fall back to an
+// interval when it drops, so polling is the degradation path rather than the
+// normal one. The analytics screens still poll: their figures are aggregates
+// over days, so a per-message push would buy nothing.
 export function useAsync<T>(
   loader: () => Promise<T>,
   deps: unknown[] = [],
@@ -30,8 +32,9 @@ export function useAsync<T>(
     refreshing: false,
   })
 
-  // Guards against out-of-order responses: with polling, a slow request can
-  // resolve after a newer one and would otherwise overwrite fresh data.
+  // Guards against out-of-order responses: with polling or a burst of events,
+  // a slow request can resolve after a newer one and would otherwise
+  // overwrite fresh data.
   const requestId = useRef(0)
 
   const run = useCallback(() => {

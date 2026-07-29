@@ -4,6 +4,8 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import Settings, get_settings
+from app.core.events import conversation_activity, publish
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
 from app.integrations.whatsapp import WhatsAppClient
@@ -32,9 +34,15 @@ class OutsideServiceWindowError(ConflictError):
 
 
 class ReplyService:
-    def __init__(self, session: AsyncSession, whatsapp: WhatsAppClient) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        whatsapp: WhatsAppClient,
+        settings: Settings | None = None,
+    ) -> None:
         self._session = session
         self._whatsapp = whatsapp
+        self._settings = settings or get_settings()
         self._conversations = ConversationRepository(session)
         self._messages = MessageRepository(session)
 
@@ -83,5 +91,12 @@ class ReplyService:
             "manual_reply_sent",
             conversation_id=conversation.id,
             wa_message_id=wa_message_id,
+        )
+        # inbound=False: this refreshes any dashboard showing the conversation
+        # (including a second operator's) without yanking anyone's attention
+        # to it, since no customer is waiting on it.
+        await publish(
+            conversation_activity(conversation_id=conversation.id, inbound=False),
+            self._settings,
         )
         return message

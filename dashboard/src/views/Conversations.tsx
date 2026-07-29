@@ -2,18 +2,38 @@ import { useState } from "react"
 
 import { ApiError, api } from "../api"
 import { Empty, Loader, Refreshing, useAsync } from "../components/Async"
+import { useEvents, useEventsStatus } from "../events"
 import { datetime } from "../format"
 
-// An operator watching a live conversation needs new customer messages to
-// appear on their own; the list can lag a little longer.
-const DETAIL_POLL_MS = 10_000
-const LIST_POLL_MS = 30_000
+// Polling is now the fallback, not the mechanism: these intervals apply only
+// while the event stream is down, so a Redis outage makes the dashboard slower
+// rather than blind.
+const DETAIL_FALLBACK_POLL_MS = 10_000
+const LIST_FALLBACK_POLL_MS = 30_000
+
+interface Props {
+  openId: number | null
+  onOpen: (id: number) => void
+  follow: boolean
+  onFollowChange: (value: boolean) => void
+}
 
 function ConversationView({ id }: { id: number }) {
-  const detail = useAsync(() => api.conversation(id), [id], DETAIL_POLL_MS)
+  const { connected } = useEventsStatus()
+  const detail = useAsync(
+    () => api.conversation(id),
+    [id],
+    connected ? 0 : DETAIL_FALLBACK_POLL_MS,
+  )
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEvents((event) => {
+    if (event.type !== "conversation.activity") return
+    if (event.conversation_id !== id) return
+    detail.reload()
+  })
 
   async function send() {
     if (!text.trim()) return
@@ -22,6 +42,8 @@ function ConversationView({ id }: { id: number }) {
     try {
       await api.reply(id, text.trim())
       setText("")
+      // The server also publishes an event, but reloading here means the sent
+      // message appears even if the stream is down.
       detail.reload()
     } catch (exception) {
       setError(
@@ -91,15 +113,38 @@ function ConversationView({ id }: { id: number }) {
   )
 }
 
-export default function Conversations() {
-  const conversations = useAsync(() => api.conversations(50), [], LIST_POLL_MS)
-  const [selected, setSelected] = useState<number | null>(null)
+export default function Conversations({
+  openId,
+  onOpen,
+  follow,
+  onFollowChange,
+}: Props) {
+  const { connected } = useEventsStatus()
+  const conversations = useAsync(
+    () => api.conversations(50),
+    [],
+    connected ? 0 : LIST_FALLBACK_POLL_MS,
+  )
+
+  useEvents((event) => {
+    if (event.type !== "conversation.activity") return
+    // Any activity can reorder the list or add a row to it.
+    conversations.reload()
+  })
 
   return (
     <>
       <div className="page-header">
         <h1>Conversations</h1>
         <div className="row">
+          <label className="muted" style={{ fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={follow}
+              onChange={(event) => onFollowChange(event.target.checked)}
+            />{" "}
+            Open new customer messages automatically
+          </label>
           <Refreshing active={conversations.refreshing} />
           <button onClick={conversations.reload}>Refresh</button>
         </div>
@@ -124,8 +169,10 @@ export default function Conversations() {
                 {conversations.data.map((conversation) => (
                   <tr
                     key={conversation.id}
-                    className="clickable"
-                    onClick={() => setSelected(conversation.id)}
+                    className={
+                      "clickable" + (conversation.id === openId ? " active" : "")
+                    }
+                    onClick={() => onOpen(conversation.id)}
                   >
                     <td>#{conversation.id}</td>
                     <td>user {conversation.user_id}</td>
@@ -143,7 +190,7 @@ export default function Conversations() {
         </Loader>
       </div>
 
-      {selected !== null && <ConversationView id={selected} />}
+      {openId !== null && <ConversationView id={openId} />}
     </>
   )
 }

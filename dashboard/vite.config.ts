@@ -16,6 +16,9 @@ export default defineConfig({
     proxy: {
       "/admin": "http://localhost:8000",
       "/health": "http://localhost:8000",
+      // ws: true is required -- without it Vite proxies the upgrade request as
+      // plain HTTP and the event stream silently never connects in dev.
+      "/ws": { target: "ws://localhost:8000", ws: true },
     },
   },
 })

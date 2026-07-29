@@ -1,6 +1,7 @@
 import { useState } from "react"
 
 import { clearApiKey, getApiKey, setApiKey } from "./api"
+import { EventsProvider, LiveIndicator, useEvents } from "./events"
 import Conversations from "./views/Conversations"
 import Customers from "./views/Customers"
 import Knowledge from "./views/Knowledge"
@@ -57,11 +58,21 @@ function Login({ onSubmit }: { onSubmit: () => void }) {
   )
 }
 
-export default function App() {
-  const [authed, setAuthed] = useState(Boolean(getApiKey()))
+function Shell({ onSignOut }: { onSignOut: () => void }) {
   const [view, setView] = useState<View>("overview")
+  // Which conversation the transcript pane is showing. Lifted out of the
+  // Conversations view so an incoming message can open one from anywhere.
+  const [openConversation, setOpenConversation] = useState<number | null>(null)
+  const [follow, setFollow] = useState(true)
 
-  if (!authed) return <Login onSubmit={() => setAuthed(true)} />
+  useEvents((event) => {
+    // Only a customer-initiated turn pulls the operator's attention. The bot
+    // answering, or an operator's own reply, must not steal focus.
+    if (event.type !== "conversation.activity" || !event.inbound) return
+    if (!follow || event.conversation_id === undefined) return
+    setOpenConversation(event.conversation_id)
+    setView("conversations")
+  })
 
   return (
     <div className="layout">
@@ -79,13 +90,8 @@ export default function App() {
           </button>
         ))}
         <div className="sidebar-footer">
-          <button
-            className="nav-item"
-            onClick={() => {
-              clearApiKey()
-              setAuthed(false)
-            }}
-          >
+          <LiveIndicator />
+          <button className="nav-item" onClick={onSignOut}>
             Sign out
           </button>
         </div>
@@ -93,11 +99,36 @@ export default function App() {
       <main className="content">
         {view === "overview" && <Overview />}
         {view === "customers" && <Customers />}
-        {view === "conversations" && <Conversations />}
+        {view === "conversations" && (
+          <Conversations
+            openId={openConversation}
+            onOpen={setOpenConversation}
+            follow={follow}
+            onFollowChange={setFollow}
+          />
+        )}
         {view === "search" && <Search />}
         {view === "knowledge" && <Knowledge />}
         {view === "pricing" && <Pricing />}
       </main>
     </div>
+  )
+}
+
+export default function App() {
+  const [authed, setAuthed] = useState(Boolean(getApiKey()))
+
+  if (!authed) return <Login onSubmit={() => setAuthed(true)} />
+
+  // The provider owns the socket, so it must sit above anything that listens.
+  return (
+    <EventsProvider>
+      <Shell
+        onSignOut={() => {
+          clearApiKey()
+          setAuthed(false)
+        }}
+      />
+    </EventsProvider>
   )
 }
