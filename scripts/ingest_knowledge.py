@@ -8,6 +8,10 @@ Usage:
 
 Inside Docker:
     docker compose exec app python scripts/ingest_knowledge.py
+
+Files that still contain the [[TODO]] marker are reported as skipped and are
+not indexed. That is not an error: it means a knowledge_templates/ document
+has not been filled in yet.
 """
 
 import argparse
@@ -86,13 +90,19 @@ async def main() -> int:
         if result.error:
             detail = result.error
             failures += 1
+        elif result.note:
+            detail = result.note
         print(f" {icon} {result.source:<40} {result.status:<10} {detail}")
 
     indexed = sum(1 for r in results if r.status == "indexed")
     chunks = sum(r.chunks for r in results if r.status == "indexed")
+    skipped = sum(1 for r in results if r.status == "skipped")
     print("-" * 62)
     print(f"{indexed} document(s) indexed, {chunks} chunk(s) embedded, "
           f"{failures} failure(s)")
+    if skipped:
+        print(f"{skipped} document(s) skipped: still contain [[TODO]] "
+              f"placeholders and were not indexed.")
 
     await engine.dispose()
     return 1 if failures else 0

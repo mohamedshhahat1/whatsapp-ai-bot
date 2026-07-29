@@ -3,6 +3,10 @@
 Run through ``scripts/ingest_knowledge.py``. Ingestion is idempotent: each
 file's sha256 is stored, so re-running only re-embeds documents that actually
 changed (embeddings cost money per token).
+
+Documents that still contain the ``[[TODO]]`` marker are skipped rather than
+indexed -- see ``app/services/knowledge_guard.py`` for why an unfinished
+template is worse than a missing one.
 """
 
 import hashlib
@@ -16,6 +20,7 @@ from app.core.chunking import TextChunk, chunk_text
 from app.core.logging import get_logger
 from app.integrations.embeddings import EmbeddingClient
 from app.repositories.document import ChunkInput, DocumentRepository
+from app.services import knowledge_guard
 
 logger = get_logger(__name__)
 
@@ -27,9 +32,12 @@ class IngestionResult:
     """Outcome for a single file."""
 
     source: str
-    status: str  # indexed | unchanged | skipped | failed
+    status: str  # indexed | unchanged | skipped | removed | failed
     chunks: int = 0
     error: str | None = None
+    # Explanation for a deliberate skip. Kept separate from ``error`` so that
+    # an unfinished template does not count as a pipeline failure.
+    note: str | None = None
 
 
 def file_hash(path: Path) -> str:
@@ -99,6 +107,22 @@ class KnowledgeIngestionService:
                     "failed",
                     error="no extractable text (scanned PDF? needs OCR)",
                 )
+
+            # An unfinished document must never become a retrievable chunk.
+            # If a filled version was indexed earlier, drop it: leaving the old
+            # text in the store would keep answering customers from a document
+            # somebody has since taken back into editing.
+            full_text = "\n".join(text for _, text in pages)
+            if knowledge_guard.is_unfilled(full_text):
+                note = knowledge_guard.describe(full_text)
+                if existing:
+                    await self._documents.delete_by_source(source)
+                    await self._session.commit()
+                    note = f"{note}; removed from the index"
+                logger.warning(
+                    "document_skipped_unfilled", source=source, detail=note
+                )
+                return IngestionResult(source, "skipped", note=note)
 
             pieces: list[tuple[int | None, TextChunk]] = []
             for page_number, text in pages:
