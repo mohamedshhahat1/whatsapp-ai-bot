@@ -1,23 +1,16 @@
-import { FormEvent, useEffect, useState } from "react"
+import { FormEvent, useState } from "react"
 
-import { ApiError, ModelCost, ModelPricing, api } from "../api"
+import { ApiError, api } from "../api"
+import { Empty, Loader, useAsync } from "../components/Async"
+import { date, money, number } from "../format"
 import "./pricing.css"
 
-function formatDate(value: string): string {
-  return new Date(value).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  })
-}
-
-function money(value: number): string {
-  return "$" + value.toFixed(value < 1 ? 4 : 2)
-}
-
 export default function Pricing() {
-  const [rows, setRows] = useState<ModelPricing[]>([])
-  const [models, setModels] = useState<ModelCost[]>([])
+  // Prices are configuration, not a live feed, so this page does not poll --
+  // an operator editing a form should not have rows move underneath them.
+  const pricing = useAsync(() => api.pricing(), [])
+  const models = useAsync(() => api.models(30), [])
+
   const [error, setError] = useState("")
   const [saving, setSaving] = useState(false)
 
@@ -27,22 +20,10 @@ export default function Pricing() {
   const [from, setFrom] = useState("")
   const [note, setNote] = useState("")
 
-  async function load() {
-    try {
-      const [pricing, breakdown] = await Promise.all([
-        api.pricing(),
-        api.models(30),
-      ])
-      setRows(pricing)
-      setModels(breakdown)
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Failed to load pricing")
-    }
+  function reloadAll() {
+    pricing.reload()
+    models.reload()
   }
-
-  useEffect(() => {
-    void load()
-  }, [])
 
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -63,7 +44,7 @@ export default function Pricing() {
       setOutput("")
       setFrom("")
       setNote("")
-      await load()
+      reloadAll()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to save price")
     } finally {
@@ -82,14 +63,15 @@ export default function Pricing() {
     }
     try {
       await api.deletePricing(id)
-      await load()
+      reloadAll()
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Failed to delete")
     }
   }
 
   // Group by model so each model's history reads as a timeline.
-  const byModel = new Map<string, ModelPricing[]>()
+  const byModel = new Map<string, typeof rowsType>()
+  const rows = pricing.data ?? []
   for (const row of rows) {
     const list = byModel.get(row.model) ?? []
     list.push(row)
@@ -169,73 +151,79 @@ export default function Pricing() {
 
       <div className="panel">
         <h2>Price history</h2>
-        {byModel.size === 0 && <p className="muted">No prices recorded yet.</p>}
-        {[...byModel.entries()].map(([name, history]) => (
-          <div key={name} className="pricing-group">
-            <h3>{name}</h3>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Effective from</th>
-                  <th>Input / 1M</th>
-                  <th>Output / 1M</th>
-                  <th>Note</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((row, index) => (
-                  <tr key={row.id}>
-                    <td>
-                      {formatDate(row.effective_from)}
-                      {index === 0 && <span className="badge">current</span>}
-                    </td>
-                    <td>{money(row.input_price_per_1m)}</td>
-                    <td>{money(row.output_price_per_1m)}</td>
-                    <td className="muted">{row.note ?? ""}</td>
-                    <td>
-                      <button
-                        className="link danger"
-                        onClick={() => void remove(row.id)}
-                      >
-                        Delete
-                      </button>
-                    </td>
+        <Loader loading={pricing.loading} error={pricing.error}>
+          {byModel.size === 0 && <Empty>No prices recorded yet.</Empty>}
+          {[...byModel.entries()].map(([name, history]) => (
+            <div key={name} className="pricing-group">
+              <h3>{name}</h3>
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Effective from</th>
+                    <th>Input / 1M</th>
+                    <th>Output / 1M</th>
+                    <th>Note</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ))}
+                </thead>
+                <tbody>
+                  {history.map((row, index) => (
+                    <tr key={row.id}>
+                      <td>
+                        {date(row.effective_from)}
+                        {index === 0 && <span className="badge">current</span>}
+                      </td>
+                      <td>{money(row.input_price_per_1m)}</td>
+                      <td>{money(row.output_price_per_1m)}</td>
+                      <td className="muted">{row.note ?? ""}</td>
+                      <td>
+                        <button
+                          className="link danger"
+                          onClick={() => void remove(row.id)}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </Loader>
       </div>
 
       <div className="panel">
         <h2>Spend by model, last 30 days</h2>
-        {models.length === 0 && <p className="muted">No AI calls recorded.</p>}
-        {models.length > 0 && (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Model</th>
-                <th>Calls</th>
-                <th>Input tokens</th>
-                <th>Output tokens</th>
-                <th>Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {models.map((row) => (
-                <tr key={row.model}>
-                  <td>{row.model}</td>
-                  <td>{row.requests.toLocaleString()}</td>
-                  <td>{row.prompt_tokens.toLocaleString()}</td>
-                  <td>{row.completion_tokens.toLocaleString()}</td>
-                  <td>{money(row.cost_usd)}</td>
+        <Loader loading={models.loading} error={models.error}>
+          {models.data && models.data.length === 0 && (
+            <Empty>No AI calls recorded.</Empty>
+          )}
+          {models.data && models.data.length > 0 && (
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Model</th>
+                  <th>Calls</th>
+                  <th>Input tokens</th>
+                  <th>Output tokens</th>
+                  <th>Cost</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody>
+                {models.data.map((row) => (
+                  <tr key={row.model}>
+                    <td>{row.model}</td>
+                    <td>{number(row.requests)}</td>
+                    <td>{number(row.prompt_tokens)}</td>
+                    <td>{number(row.completion_tokens)}</td>
+                    <td>{money(row.cost_usd)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Loader>
       </div>
     </div>
   )

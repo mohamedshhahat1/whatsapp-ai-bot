@@ -1,11 +1,16 @@
 import { useState } from "react"
 
 import { ApiError, api } from "../api"
-import { Loader, useAsync } from "../components/Async"
+import { Empty, Loader, Refreshing, useAsync } from "../components/Async"
 import { datetime } from "../format"
 
+// An operator watching a live conversation needs new customer messages to
+// appear on their own; the list can lag a little longer.
+const DETAIL_POLL_MS = 10_000
+const LIST_POLL_MS = 30_000
+
 function ConversationView({ id }: { id: number }) {
-  const detail = useAsync(() => api.conversation(id), [id])
+  const detail = useAsync(() => api.conversation(id), [id], DETAIL_POLL_MS)
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -31,7 +36,10 @@ function ConversationView({ id }: { id: number }) {
 
   return (
     <div className="panel">
-      <h2>Conversation #{id}</h2>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <h2>Conversation #{id}</h2>
+        <Refreshing active={detail.refreshing} />
+      </div>
       <Loader loading={detail.loading} error={detail.error}>
         {detail.data && (
           <>
@@ -49,7 +57,7 @@ function ConversationView({ id }: { id: number }) {
                 </div>
               ))}
               {detail.data.messages.length === 0 && (
-                <p className="muted">No messages.</p>
+                <Empty>No messages.</Empty>
               )}
             </div>
 
@@ -72,7 +80,8 @@ function ConversationView({ id }: { id: number }) {
               </div>
               <p className="muted" style={{ fontSize: 12 }}>
                 Free-form replies are only delivered within 24 hours of the
-                customer's last message.
+                customer's last message. Outside that window the API returns
+                409 and the message is not sent.
               </p>
             </div>
           </>
@@ -83,20 +92,23 @@ function ConversationView({ id }: { id: number }) {
 }
 
 export default function Conversations() {
-  const conversations = useAsync(() => api.conversations(50), [])
+  const conversations = useAsync(() => api.conversations(50), [], LIST_POLL_MS)
   const [selected, setSelected] = useState<number | null>(null)
 
   return (
     <>
       <div className="page-header">
         <h1>Conversations</h1>
-        <button onClick={conversations.reload}>Refresh</button>
+        <div className="row">
+          <Refreshing active={conversations.refreshing} />
+          <button onClick={conversations.reload}>Refresh</button>
+        </div>
       </div>
 
       <div className="panel">
         <Loader loading={conversations.loading} error={conversations.error}>
           {conversations.data && conversations.data.length === 0 && (
-            <p className="muted">No conversations yet.</p>
+            <Empty>No conversations yet.</Empty>
           )}
           {conversations.data && conversations.data.length > 0 && (
             <table>

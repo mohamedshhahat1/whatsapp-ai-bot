@@ -1,21 +1,26 @@
 import { api } from "../api"
-import { Loader, useAsync } from "../components/Async"
+import { Empty, Loader, Refreshing, useAsync } from "../components/Async"
 import { datetime, number } from "../format"
 
+const POLL_MS = 60_000
+
 export default function Customers() {
-  const customers = useAsync(() => api.customers(100), [])
+  const customers = useAsync(() => api.customers(100), [], POLL_MS)
 
   return (
     <>
       <div className="page-header">
         <h1>Customers</h1>
-        <button onClick={customers.reload}>Refresh</button>
+        <div className="row">
+          <Refreshing active={customers.refreshing} />
+          <button onClick={customers.reload}>Refresh</button>
+        </div>
       </div>
 
       <div className="panel">
         <Loader loading={customers.loading} error={customers.error}>
           {customers.data && customers.data.length === 0 && (
-            <p className="muted">No customers yet.</p>
+            <Empty>No customers yet.</Empty>
           )}
           {customers.data && customers.data.length > 0 && (
             <table>

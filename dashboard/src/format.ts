@@ -20,6 +20,16 @@ export function datetime(value: string | null): string {
   return new Date(value).toLocaleString()
 }
 
+// Date without a time, for price periods where the time of day is noise.
+export function date(value: string | null): string {
+  if (!value) return "-"
+  return new Date(value).toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  })
+}
+
 export function percent(value: number): string {
   return (value * 100).toFixed(1) + "%"
 }

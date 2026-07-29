@@ -64,9 +64,16 @@ export interface CostBreakdown {
 export interface Overview {
   period_days: number
   since: string
+  // Lifetime.
   total_users: number
   total_conversations: number
   total_messages: number
+  // Scoped to period_days. Cost figures are window-scoped too, so these are
+  // the only correct denominators to combine them with.
+  new_users: number
+  new_conversations: number
+  active_conversations: number
+  messages_in_period: number
   ai_requests: number
   ai_errors: number
   error_rate: number

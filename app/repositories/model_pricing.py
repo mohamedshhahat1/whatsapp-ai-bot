@@ -10,6 +10,13 @@ from app.repositories.base import BaseRepository
 
 
 class ModelPricingRepository(BaseRepository):
+    """CRUD for price periods.
+
+    Resolving which price applied to a given call is deliberately not here:
+    doing it per row would be an N+1 against ai_logs, so the analytics queries
+    resolve it in SQL with a LATERAL join (app/repositories/analytics.py).
+    """
+
     async def list(self) -> list[ModelPricing]:
         """All price rows, newest period first."""
         result = await self.session.scalars(
@@ -21,18 +28,6 @@ class ModelPricingRepository(BaseRepository):
 
     async def get(self, pricing_id: int) -> ModelPricing | None:
         return await self.session.get(ModelPricing, pricing_id)
-
-    async def effective_at(self, model: str, at: datetime) -> ModelPricing | None:
-        """The price in force for a model at a given instant."""
-        return await self.session.scalar(
-            select(ModelPricing)
-            .where(
-                ModelPricing.model == model,
-                ModelPricing.effective_from <= at,
-            )
-            .order_by(ModelPricing.effective_from.desc())
-            .limit(1)
-        )
 
     async def add(
         self,

@@ -1,48 +1,78 @@
 import type { ReactNode } from "react"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 import { ApiError } from "../api"
 
 interface State<T> {
   data: T | null
   error: string | null
+  // No data has ever arrived: the caller should render a placeholder.
   loading: boolean
+  // A background refresh is in flight while data is already on screen.
+  refreshing: boolean
 }
 
 // Small data-fetching hook. A dedicated query library would be overkill for a
 // handful of read-only screens.
+//
+// Pass pollMs to auto refresh. Polling is deliberately plain HTTP: the admin
+// screens are read-mostly and single-operator, so a WebSocket would add a
+// second transport, its own reconnect logic and a stateful server for no gain.
 export function useAsync<T>(
   loader: () => Promise<T>,
   deps: unknown[] = [],
+  pollMs = 0,
 ): State<T> & { reload: () => void } {
   const [state, setState] = useState<State<T>>({
     data: null,
     error: null,
     loading: true,
+    refreshing: false,
   })
 
+  // Guards against out-of-order responses: with polling, a slow request can
+  // resolve after a newer one and would otherwise overwrite fresh data.
+  const requestId = useRef(0)
+
   const run = useCallback(() => {
-    let cancelled = false
-    setState((previous) => ({ ...previous, loading: true, error: null }))
+    const id = ++requestId.current
+    setState((previous) =>
+      previous.data === null
+        ? { ...previous, loading: true, error: null }
+        : { ...previous, refreshing: true },
+    )
     loader()
       .then((data) => {
-        if (!cancelled) setState({ data, error: null, loading: false })
+        if (id !== requestId.current) return
+        setState({ data, error: null, loading: false, refreshing: false })
       })
       .catch((error: unknown) => {
-        if (cancelled) return
+        if (id !== requestId.current) return
         const message =
           error instanceof ApiError
             ? `${error.status}: ${error.message}`
             : String(error)
-        setState({ data: null, error: message, loading: false })
+        // Keep whatever is already on screen. A single failed poll should
+        // surface an error, not wipe a working dashboard.
+        setState((previous) => ({
+          data: previous.data,
+          error: message,
+          loading: false,
+          refreshing: false,
+        }))
       })
-    return () => {
-      cancelled = true
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps)
 
-  useEffect(run, [run])
+  useEffect(() => {
+    run()
+  }, [run])
+
+  useEffect(() => {
+    if (pollMs <= 0) return
+    const timer = window.setInterval(run, pollMs)
+    return () => window.clearInterval(timer)
+  }, [run, pollMs])
 
   return { ...state, reload: run }
 }
@@ -59,6 +89,23 @@ export function Loader({
   if (loading) return <p className="muted">Loading...</p>
   if (error) return <p className="error">{error}</p>
   return <>{children}</>
+}
+
+// Empty states were being written inline as <p className="muted"> in every
+// view; this keeps them consistent.
+export function Empty({ children }: { children: ReactNode }) {
+  return <p className="muted">{children}</p>
+}
+
+// "Updating..." next to a page title, so an auto refresh is visible without
+// the content jumping.
+export function Refreshing({ active }: { active: boolean }) {
+  if (!active) return null
+  return (
+    <span className="muted" style={{ fontSize: 12 }}>
+      Updating...
+    </span>
+  )
 }
 
 export function Card({
