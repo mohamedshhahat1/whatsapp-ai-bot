@@ -14,8 +14,9 @@ os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("USE_TASK_QUEUE", "false")
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
+from typing import TypeVar
 from uuid import uuid4
 
 import pytest
@@ -28,6 +29,8 @@ from app.db.session import SessionLocal, engine
 from app.main import app
 from app.repositories.conversation import ConversationRepository
 from app.repositories.user import UserRepository
+
+T = TypeVar("T")
 
 # Deleting a customer by hand rather than relying on cascades: the FKs are
 # plain references, so the children have to go first.
@@ -86,6 +89,25 @@ def database_reachable() -> bool:
     return asyncio.run(check())
 
 
+def run_db(operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
+    """Run one database operation from synchronous test code.
+
+    A synchronous test that also uses TestClient cannot share a pool with the
+    application: TestClient runs the app in its own event loop on another
+    thread, and asyncpg connections belong to the loop that opened them. Each
+    call therefore gets a fresh pool and disposes it on the way out.
+    """
+
+    async def runner() -> T:
+        try:
+            async with SessionLocal() as session:
+                return await operation(session)
+        finally:
+            await engine.dispose()
+
+    return asyncio.run(runner())
+
+
 @pytest.fixture
 def requires_database() -> None:
     """Skip a synchronous test when no database is configured."""
@@ -101,6 +123,9 @@ async def db() -> AsyncIterator[AsyncSession]:
     these tests exercise the actual schema, indexes and ON CONFLICT clauses.
     The engine is disposed afterwards because pytest-asyncio gives each test
     its own event loop, and an asyncpg pool cannot be reused across loops.
+
+    Do not combine this fixture with TestClient in one test; use ``run_db``
+    from a synchronous test instead.
     """
     if not database_reachable():
         pytest.skip("No database reachable at DATABASE_URL")
@@ -133,6 +158,18 @@ async def purge(session: AsyncSession, wa_id: str) -> None:
     await session.commit()
 
 
+async def create_customer(session: AsyncSession, wa_id: str) -> Customer:
+    """Create a customer with an open conversation, through the repositories."""
+    user = await UserRepository(session).get_or_create(wa_id=wa_id, name="Test User")
+    conversation = await ConversationRepository(session).get_or_create_active(user.id)
+    await session.commit()
+    return Customer(
+        wa_id=wa_id,
+        user_id=user.id,
+        conversation_id=conversation.id,
+    )
+
+
 def new_wa_id() -> str:
     """A unique WhatsApp id, so tests never collide on the unique index."""
     return "test-" + uuid4().hex[:12]
@@ -140,15 +177,21 @@ def new_wa_id() -> str:
 
 @pytest.fixture
 async def customer(db: AsyncSession) -> AsyncIterator[Customer]:
+    """A customer for async tests, sharing the ``db`` session."""
     wa_id = new_wa_id()
-    user = await UserRepository(db).get_or_create(wa_id=wa_id, name="Test Customer")
-    conversation = await ConversationRepository(db).get_or_create_active(user.id)
-    await db.commit()
+    created = await create_customer(db, wa_id)
     try:
-        yield Customer(
-            wa_id=wa_id,
-            user_id=user.id,
-            conversation_id=conversation.id,
-        )
+        yield created
     finally:
         await purge(db, wa_id)
+
+
+@pytest.fixture
+def sync_customer(requires_database: None) -> Iterator[Customer]:
+    """A customer for synchronous tests that drive the API with TestClient."""
+    wa_id = new_wa_id()
+    created = run_db(lambda session: create_customer(session, wa_id))
+    try:
+        yield created
+    finally:
+        run_db(lambda session: purge(session, wa_id))

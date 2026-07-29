@@ -11,8 +11,6 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tests.conftest import REPOSITORY_ROOT_MARKER  # noqa: F401  (see below)
-
 CORE_TABLES = ("users", "conversations", "messages", "ai_logs")
 
 
