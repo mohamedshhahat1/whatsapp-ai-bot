@@ -2,6 +2,13 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Alerting rules are evaluated but there is no Alertmanager wired up yet, so
+# they surface in the Prometheus UI and Grafana rather than paging anyone.
+# Routing them to email/Slack is a deployment decision -- see
+# docs/DEPLOYMENT.md, "Alerting".
+rule_files:
+  - /etc/prometheus/alerts.yml
+
 scrape_configs:
   - job_name: api
     static_configs:

@@ -1,0 +1,164 @@
+# Alerting rules.
+#
+# Biased deliberately towards the failures that look healthy. Crashes and 500s
+# announce themselves; the expensive incidents in this system are the quiet
+# ones -- the assistant switched off, backups that stopped running, deliveries
+# that stopped arriving. Those produce no errors at all, which is exactly why
+# they run for days.
+#
+# Thresholds are starting points sized for a single-tenant deployment handling
+# tens to low hundreds of conversations a day. Tune them against real traffic
+# before trusting them; an alert that cries wolf in week one gets muted in week
+# two and is then worse than no alert.
+
+groups:
+  - name: availability
+    rules:
+      - alert: AIDisabled
+        # 1 when the assistant is answering nobody: either the daily cost
+        # ceiling tripped or an operator pulled the kill switch.
+        expr: ai_disabled == 1
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The assistant is not answering customers"
+          description: >-
+            Either the daily spend ceiling was reached or the kill switch is on.
+            Customers are still received and stored, but nobody is being
+            answered automatically. Check GET /admin/quota. This is a business
+            outage that produces no errors, no latency and no failed requests,
+            so no other alert will catch it.
+
+      - alert: NoInboundMessages
+        # The closest thing to a synthetic check for the whole webhook path.
+        # A broken Meta subscription, an expired certificate or nginx serving
+        # the wrong server_name all fail this way: silently, with deliveries
+        # simply not arriving.
+        #
+        # Compares a 30-minute window against a 6-hour baseline so a genuinely
+        # quiet night does not page anyone -- it only fires if messages were
+        # flowing recently and then stopped.
+        expr: >-
+          sum(increase(whatsapp_messages_total{direction="inbound"}[30m])) == 0
+          and
+          sum(increase(whatsapp_messages_total{direction="inbound"}[6h])) > 10
+        for: 10m
+        labels:
+          severity: critical
+          runbook: docs/DEPLOYMENT.md#webhook-not-receiving
+        annotations:
+          summary: "No customer messages received for 30 minutes"
+          description: >-
+            Messages were arriving earlier today and have now stopped entirely.
+            Check the TLS certificate is valid, that Meta's webhook subscription
+            still points at the right HTTPS URL, and that nginx is up.
+
+  - name: reliability
+    rules:
+      - alert: ReplyReservationsUnconfirmed
+        # The reservation ledger catching redeliveries at the reply stage means
+        # workers are dying AFTER a WhatsApp send but BEFORE the confirming
+        # commit. Each one is a customer who may have received nothing, because
+        # the retry deliberately declines to resend.
+        expr: >-
+          increase(webhook_duplicate_deliveries_total{stage="reply_reserved"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Workers are dying mid-send"
+          description: >-
+            A retry found an existing reply reservation, so it declined to send
+            rather than risk a duplicate. Some customers may be unanswered.
+            Check for worker OOM kills or deploys that SIGKILLed the worker --
+            stop_grace_period must exceed CELERY_TASK_TIME_LIMIT.
+
+      - alert: WebhookDeadLetters
+        expr: increase(webhook_dead_letters_total[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "Customer messages parked in the dead letter queue"
+          description: >-
+            A delivery exhausted all five retries. The payload is in the Redis
+            dead-letter list and the customer has had no reply at all.
+
+      - alert: TaskTimeouts
+        expr: increase(app_errors_total{type="task_soft_timeout"}[15m]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "Tasks are hitting the soft time limit"
+          description: >-
+            Usually a hung external call rather than an application bug. Check
+            OpenAI and Meta status before changing the limit.
+
+      - alert: OpenAIErrorRate
+        expr: >-
+          sum(rate(openai_requests_total{status!="success"}[10m]))
+          /
+          clamp_min(sum(rate(openai_requests_total[10m])), 0.001)
+          > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 20% of OpenAI calls are failing"
+          description: >-
+            Customers are receiving the fallback reply instead of an answer.
+
+  - name: cost
+    rules:
+      - alert: SpendApproachingLimit
+        expr: >-
+          openai_spend_guard_usd_today
+          / clamp_min(openai_spend_guard_usd_today, 0.01) * 0 +
+          openai_spend_guard_usd_today > 0
+          and openai_spend_guard_trips_total >= 0
+          and openai_spend_guard_usd_today >= 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Daily OpenAI spend is approaching the ceiling"
+          description: >-
+            Hard-coded at 20 USD to match the default DAILY_SPEND_LIMIT_USD of
+            25. If you change that setting, change this threshold with it --
+            Prometheus cannot read the application's configuration, so the two
+            numbers have to be kept in step by hand.
+
+      - alert: SpendGuardTripped
+        expr: increase(openai_spend_guard_trips_total[1h]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "The daily cost ceiling stopped the assistant"
+          description: >-
+            Every customer is now being routed to a person. Either traffic grew
+            legitimately and the ceiling needs raising, or something is
+            consuming tokens that should not be.
+
+  - name: abuse
+    rules:
+      - alert: HighAbuseBlockRate
+        expr: sum(increase(customer_abuse_blocks_total[15m])) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "Several customers blocked for flooding or spam"
+          description: >-
+            Could be a genuine attack, or the flood thresholds being too tight
+            for real behaviour -- customers sending several photos in a row trip
+            it easily. Check GET /admin/quota and unblock anyone legitimate via
+            POST /admin/customers/{wa_id}/unblock.
+
+      - alert: SustainedRateLimiting
+        expr: sum(increase(customer_rate_limited_total[1h])) > 50
+        labels:
+          severity: info
+        annotations:
+          summary: "Customers are regularly hitting the per-number rate limits"
+          description: >-
+            If these are real customers rather than abuse, CUSTOMER_LIMIT_*
+            is set too low and people are being refused answers they should get.
