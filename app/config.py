@@ -78,15 +78,73 @@ class Settings(BaseSettings):
     celery_broker_url: str = ""
     celery_result_backend: str = ""
 
+    # How long the broker waits for an ack before handing a delivery to another
+    # worker. Must exceed the slowest realistic task: an inbound message costs
+    # an embedding call plus a completion plus two WhatsApp calls, and a
+    # redelivery while the first attempt is still running is how one customer
+    # message becomes two replies. 15 minutes is deliberately generous --
+    # celery_task_time_limit below kills a genuinely stuck task long before it.
+    celery_visibility_timeout: int = 900
+    # Raises SoftTimeLimitExceeded inside the task, so cleanup still runs.
+    celery_task_soft_time_limit: int = 240
+    # Hard kill. The gap between the two is the cleanup budget.
+    celery_task_time_limit: int = 300
+
+    # How long a generated completion stays replayable so a retried delivery
+    # is not billed twice (app/core/idempotency.py). A day comfortably outlaps
+    # Meta's redelivery window.
+    reply_idempotency_ttl_seconds: int = 86400
+
     # Rate limiting (limit strings use the `limits` notation, e.g. "60/minute")
     rate_limit_enabled: bool = True
-    rate_limit_webhook: str = "600/minute"
+    # A flood ceiling for the webhook endpoint as a whole, NOT per customer.
+    # Every delivery arrives from Meta's addresses, so this is one shared
+    # bucket by construction and can only ever be a crude DoS backstop. Real
+    # isolation is per-wa_id, below. Keep it well above peak: throttling here
+    # rejects Meta's POST and drops other customers' messages with it.
+    rate_limit_webhook: str = "6000/minute"
     rate_limit_admin: str = "60/minute"
     # Number of reverse proxies in front of the app that append to
     # X-Forwarded-For. Only the last N entries are trustworthy; everything to
     # the left of them is client-supplied. Set to 0 when the app is exposed
     # directly with no proxy.
     trusted_proxy_hops: int = 1
+
+    # Per-customer quotas (app/core/quota.py) ---------------------------------
+    # Keyed on wa_id, enforced in the worker before any paid call. This is the
+    # limit that actually isolates one customer from another.
+    customer_rate_limit_enabled: bool = True
+    # A person types a handful of messages a minute. Well above human pace so
+    # an excited customer sending four short lines in a row is never touched.
+    customer_limit_per_minute: int = 12
+    customer_limit_per_hour: int = 120
+    customer_limit_per_day: int = 400
+
+    # Flood protection: a burst tighter than any human can type.
+    flood_burst_messages: int = 5
+    flood_burst_seconds: int = 10
+
+    # Spam: the same text over and over. A frustrated customer repeating
+    # themselves twice is normal; five identical messages is a script or a
+    # stuck client.
+    duplicate_message_limit: int = 5
+    duplicate_message_window_seconds: int = 300
+
+    # How long a customer stays blocked after tripping flood or spam
+    # detection. Long enough to break a loop, short enough that a real person
+    # who got carried away is not locked out of the business for the day.
+    abuse_block_seconds: int = 900
+
+    # OpenAI spend protection -------------------------------------------------
+    # The circuit breaker that stops a runaway bill. Checked before every
+    # completion; past the ceiling the model is off for everyone and customers
+    # get approved copy pointing at a human.
+    spend_guard_enabled: bool = True
+    daily_spend_limit_usd: float = 25.0
+    daily_token_limit: int = 5_000_000
+    # Warn once at this fraction of either ceiling, so there is time to react
+    # before the bot goes quiet.
+    spend_alert_threshold: float = 0.8
 
     # Outbound retries (tenacity, exponential backoff with jitter)
     retry_max_attempts: int = 3
