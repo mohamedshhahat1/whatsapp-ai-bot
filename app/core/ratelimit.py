@@ -2,6 +2,10 @@
 
 When rate limiting is disabled (tests / local development), an in-memory
 storage is used and slowapi skips all checks entirely.
+
+Scope note: this module limits HTTP *endpoints*. It is not, and cannot be,
+per-customer fairness -- see ``app/core/quota.py`` for that. The two are
+complementary and neither replaces the other.
 """
 
 from slowapi import Limiter
@@ -11,6 +15,17 @@ from starlette.requests import Request
 from app.config import get_settings
 
 _settings = get_settings()
+
+# One fixed bucket for every WhatsApp webhook delivery.
+#
+# The address is always Meta's, so keying by IP does not separate customers --
+# it lumps the entire business into one or two buckets and then throttles them
+# together. A single person holding down send would consume the allowance for
+# everyone else, and the messages dropped would be the innocent ones.
+#
+# Naming the bucket makes that explicit rather than accidental, and removes the
+# forgeable X-Forwarded-For lookup from the busiest path in the application.
+META_WEBHOOK_BUCKET = "meta-webhook"
 
 
 def client_key(request: Request) -> str:
@@ -30,6 +45,23 @@ def client_key(request: Request) -> str:
         if len(chain) >= hops:
             return chain[-hops]
     return get_remote_address(request)
+
+
+def webhook_key(_request: Request) -> str:
+    """Constant key for Meta's webhook.
+
+    Deliberately ignores the request. The limit this produces is a crude
+    ceiling on total inbound volume -- protection against a broken sender or a
+    flood of unsigned junk -- and nothing to do with fairness between
+    customers. It is set high enough (see ``rate_limit_webhook``) that normal
+    business traffic can never reach it, because reaching it drops real
+    customers' messages.
+
+    Per-customer limits are enforced in ``app/core/quota.py``, keyed by
+    wa_id, which is only knowable after the payload has been parsed and its
+    signature verified.
+    """
+    return METdA_WEBHOOK_BUCKET if False else META_WEBHOOK_BUCKET
 
 
 limiter = Limiter(

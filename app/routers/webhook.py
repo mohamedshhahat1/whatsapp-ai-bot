@@ -4,7 +4,10 @@ Inbound deliveries are ACKed immediately and processed asynchronously:
 - production: enqueued to Celery (durable, survives crashes, retried)
 - development fallback (USE_TASK_QUEUE=false): FastAPI BackgroundTasks
 
-Both endpoints are rate limited per client IP (Redis-backed).
+These endpoints are limited as a single shared bucket, not per IP: every
+delivery comes from Meta, so an IP key would throttle the whole customer base
+together. Per-customer limits live in ``app/core/quota.py`` and run inside the
+worker, once the payload has been parsed and the sender is known.
 """
 
 import json
@@ -15,7 +18,7 @@ from fastapi.responses import PlainTextResponse
 
 from app.config import get_settings
 from app.core.logging import get_logger
-from app.core.ratelimit import WEBHOOK_LIMIT, limiter
+from app.core.ratelimit import WEBHOOK_LIMIT, limiter, webhook_key
 from app.core.security import verify_meta_signature
 from app.db.session import SessionLocal
 from app.dependencies.deps import get_openai_client, get_whatsapp_client
@@ -27,7 +30,7 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 
 
 @router.get("")
-@limiter.limit(WEBHOOK_LIMIT)
+@limiter.limit(WEBHOOK_LIMIT, key_func=webhook_key)
 async def verify_webhook(request: Request) -> PlainTextResponse:
     """Meta webhook verification handshake (hub.challenge echo)."""
     params = request.query_params
@@ -40,11 +43,17 @@ async def verify_webhook(request: Request) -> PlainTextResponse:
 
 
 @router.post("")
-@limiter.limit(WEBHOOK_LIMIT)
+@limiter.limit(WEBHOOK_LIMIT, key_func=webhook_key)
 async def receive_webhook(
     request: Request, background_tasks: BackgroundTasks
 ) -> dict[str, str]:
-    """Validate the Meta signature, ACK fast, and enqueue processing."""
+    """Validate the Meta signature, ACK fast, and enqueue processing.
+
+    The ACK is unconditional once the signature checks out. Meta retries any
+    delivery it does not see acknowledged within a few seconds, so doing real
+    work here would turn one slow completion into several duplicate
+    deliveries -- which the idempotency guards would then have to absorb.
+    """
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
     if not verify_meta_signature(
