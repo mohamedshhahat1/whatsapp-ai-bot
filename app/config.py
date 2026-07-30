@@ -139,12 +139,14 @@ class Settings(BaseSettings):
     max_context_messages: int = 20
     max_context_tokens: int = 6000
 
-    # WhatsApp Cloud API
-    whatsapp_token: str = ""
-    whatsapp_phone_number_id: str = ""
-    whatsapp_verify_token: str = "change-me"
-    whatsapp_app_secret: str = ""
-    whatsapp_api_version: str = "v21.0"
+    # Sales (see app/services/price_policy.py and docs/PRICING_POLICY.md).
+    # The bot never states a price. Every pricing question is redirected to a
+    # person, and this is the number it offers. Leave it empty and the bot asks
+    # the customer for their number instead -- it will never invent one.
+    # This is contact information, not a credential: it is safe in .env and is
+    # deliberately not listed in REQUIRED_IN_PRODUCTION, because an unset
+    # number degrades gracefully rather than breaking the conversation.
+    sales_phone: str = ""
 
     # Admin API
     admin_api_key: str = "change-me"

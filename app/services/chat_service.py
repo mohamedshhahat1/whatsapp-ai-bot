@@ -10,6 +10,7 @@ from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.models.conversation import MODE_HUMAN, Conversation
 from app.repositories.ai_log import AILogRepository
+from app.services import price_policy
 from app.services.conversation_service import ConversationService
 from app.services.handoff import HANDOFF_ACK, wants_human
 from app.services.persona import NOT_UNDERSTOOD, WELCOME, is_unintelligible
@@ -89,7 +90,13 @@ class ChatService:
         await self._session.commit()
         await self._announce(conversation_id)
 
-    async def _begin_handoff(self, wa_id: str, conversation: Conversation) -> None:
+    async def _begin_handoff(
+        self,
+        wa_id: str,
+        conversation: Conversation,
+        ack: str = HANDOFF_ACK,
+        reason: str = "customer_asked_for_a_human",
+    ) -> None:
         """Switch a conversation to a human at the customer's request.
 
         No operator is assigned: nobody has claimed it yet. The dashboard shows
@@ -101,23 +108,29 @@ class ChatService:
         The welcome is deliberately NOT prepended here, even on a first
         message: a service menu inviting questions would contradict a message
         that says a colleague is taking over.
+
+        ``ack`` and ``reason`` vary because there are two ways in. Someone who
+        typed 'employee' wants any person; someone who has asked the price
+        three times wants the Sales Manager specifically, and telling them a
+        generic colleague will reply invites a fourth ask.
         """
         await self._conversations.conversations.set_mode(
             conversation, MODE_HUMAN, operator=None
         )
-        await self._whatsapp.send_text(wa_id, HANDOFF_ACK)
-        await self._conversations.save_outbound(conversation.id, HANDOFF_ACK)
+        await self._whatsapp.send_text(wa_id, ack)
+        await self._conversations.save_outbound(conversation.id, ack)
         await self._session.commit()
         logger.info(
             "handoff_requested_by_customer",
             conversation_id=conversation.id,
+            reason=reason,
         )
         await publish(
             conversation_handoff(
                 conversation_id=conversation.id,
                 mode=MODE_HUMAN,
                 assigned_operator=None,
-                reason="customer_asked_for_a_human",
+                reason=reason,
             ),
             self._settings,
         )
@@ -148,6 +161,22 @@ class ChatService:
 
         return False
 
+    def _price_pressure(self, text: str | None, history: list[dict]) -> bool:
+        """True when the customer has raised money too many times to continue.
+
+        The current message must itself be about money -- otherwise a customer
+        who asked twice, got a good answer about materials, and then asked a
+        third unrelated question would be silently handed to sales.
+
+        The count is taken over the history window the model sees, not the
+        whole conversation. Someone who asked about price last month and twice
+        today is not applying pressure, and the window makes the threshold
+        mean "in this conversation" rather than "ever".
+        """
+        if not price_policy.asks_about_price(text):
+            return False
+        return price_policy.count_price_asks(history) >= price_policy.INSIST_THRESHOLD
+
     async def _generate_and_send(
         self,
         wa_id: str,
@@ -173,7 +202,7 @@ class ChatService:
             except Exception:
                 # Retrieval must never break the conversation. The prompt is
                 # still told a search happened and returned nothing, so the
-                # model declines to quote prices rather than inventing them.
+                # model declines to answer from memory rather than inventing.
                 logger.error("retrieval_failed", exc_info=True)
 
         instructions = self._prompts.build_instructions(
@@ -202,6 +231,20 @@ class ChatService:
                 conversation_id=conversation_id,
                 error=str(exc),
             )
+
+        # The last gate before a customer sees anything. A reply carrying a
+        # figure is discarded whole rather than edited: a sentence with its
+        # number stripped out reads as evasive and often leaves the amount
+        # implied by what surrounds it. Approved copy is the only version that
+        # cannot leak. Logged at warning level because a hit here means the
+        # three layers in front of it did not hold, which is worth knowing.
+        if price_policy.mentions_amount(reply_text, self._settings.sales_phone):
+            logger.warning(
+                "price_leak_blocked",
+                conversation_id=conversation_id,
+                reply_length=len(reply_text),
+            )
+            reply_text = price_policy.deflection(self._settings.sales_phone)
 
         if welcome:
             reply_text = f"{WELCOME}\n\n{reply_text}"
@@ -243,6 +286,24 @@ class ChatService:
             return
 
         history = await self._conversations.build_history(conversation.id)
+
+        # A customer who will not accept "a colleague will quote you" is not
+        # going to accept it on the fourth attempt either, and every further
+        # deflection reads as stonewalling. Hand them to sales instead.
+        if self._price_pressure(text, history):
+            logger.info(
+                "price_pressure_handoff",
+                conversation_id=conversation.id,
+                asks=price_policy.count_price_asks(history),
+            )
+            await self._begin_handoff(
+                wa_id,
+                conversation,
+                ack=price_policy.sales_handoff_ack(self._settings.sales_phone),
+                reason=price_policy.SALES_HANDOFF_REASON,
+            )
+            return
+
         await self._generate_and_send(
             wa_id,
             name,
