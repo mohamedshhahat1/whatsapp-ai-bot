@@ -2,6 +2,8 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.config import Settings, get_settings
+from app.core import quota
 from app.core.ratelimit import ADMIN_LIMIT, limiter
 from app.dependencies.deps import (
     get_admin_service,
@@ -27,6 +29,12 @@ from app.schemas.conversation import (
 )
 from app.schemas.knowledge import KnowledgeDocumentRead, KnowledgeSearchHit
 from app.schemas.pricing import ModelCostRead, ModelPricingCreate, ModelPricingRead
+from app.schemas.quota import (
+    AiToggleRequest,
+    AiToggleResponse,
+    QuotaStatsRead,
+    UnblockResponse,
+)
 from app.schemas.user import UserRead
 from app.services.admin_service import AdminService
 from app.services.analytics_service import AnalyticsService
@@ -221,6 +229,91 @@ async def analytics_customers(
 ) -> list[CustomerActivityRead]:
     """Conversation and message counts per customer."""
     return await service.customers(offset=offset, limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# Quota, abuse and spend protection.
+#
+# These read and write Redis rather than the database: the counters they
+# expose are the live state of the circuit breaker, and a breaker whose
+# position nobody can see will trip unannounced in the middle of a working day.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/quota", response_model=QuotaStatsRead)
+@limiter.limit(ADMIN_LIMIT)
+async def quota_stats(
+    request: Request,
+    settings: Settings = Depends(get_settings),
+) -> QuotaStatsRead:
+    """Today's spend position and the state of every protection.
+
+    Returns ``available: false`` rather than zeros when Redis cannot be
+    reached. Zeros would be a lie in the most dangerous direction: they render
+    as a reassuring empty chart at precisely the moment the guard has failed
+    open and is protecting nothing.
+    """
+    return QuotaStatsRead.model_validate(await quota.usage_snapshot(settings))
+
+
+@router.post("/ai-toggle", response_model=AiToggleResponse)
+@limiter.limit(ADMIN_LIMIT)
+async def toggle_ai(
+    request: Request,
+    payload: AiToggleRequest,
+    settings: Settings = Depends(get_settings),
+) -> AiToggleResponse:
+    """Stop or resume automated replies for everyone.
+
+    Deliberately independent of the spend ceiling. An operator who has just
+    shipped a bad knowledge base, or spotted a prompt regression, needs the
+    model off now -- not after editing configuration and waiting for a
+    redeploy.
+
+    Messages keep arriving, are still stored, and still appear in the
+    dashboard. Only the automated answer stops; customers are routed to a
+    person. The switch survives restarts because it lives in Redis, so a
+    container recycling does not quietly re-enable the assistant.
+    """
+    try:
+        await quota.set_ai_disabled(payload.disabled, settings)
+    except Exception as exc:
+        # Unlike the read path, this one must not fail open silently: an
+        # operator who believes they have stopped the bot, and has not, will
+        # act on that belief.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not reach Redis to change the AI switch: {exc}",
+        ) from exc
+    return AiToggleResponse(ai_disabled=payload.disabled)
+
+
+@router.post("/customers/{wa_id}/unblock", response_model=UnblockResponse)
+@limiter.limit(ADMIN_LIMIT)
+async def unblock_customer(
+    request: Request,
+    wa_id: str,
+    settings: Settings = Depends(get_settings),
+) -> UnblockResponse:
+    """Lift an abuse block immediately.
+
+    Flood and spam detection are heuristics, and a genuine customer sending
+    six photos of a damaged ceiling in ten seconds looks identical to a script.
+    Without this an operator would have to tell a paying customer to wait
+    fifteen minutes, and the real-world response to that is to turn the
+    detector off entirely.
+
+    Idempotent: unblocking someone who is not blocked returns
+    ``was_blocked: false`` rather than an error.
+    """
+    try:
+        was_blocked = await quota.unblock(wa_id, settings)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not reach Redis to unblock this customer: {exc}",
+        ) from exc
+    return UnblockResponse(wa_id=wa_id, was_blocked=was_blocked)
 
 
 @router.get("/pricing", response_model=list[ModelPricingRead])

@@ -61,7 +61,7 @@ def webhook_key(_request: Request) -> str:
     wa_id, which is only knowable after the payload has been parsed and its
     signature verified.
     """
-    return METdA_WEBHOOK_BUCKET if False else META_WEBHOOK_BUCKET
+    return META_WEBHOOK_BUCKET
 
 
 limiter = Limiter(
