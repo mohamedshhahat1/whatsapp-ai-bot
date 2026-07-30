@@ -14,12 +14,13 @@ from typing import Any
 
 import redis
 from celery import Task
+from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.config import get_settings
 from app.core.logging import configure_logging, get_logger
-from app.core.metrics import WEBHOOK_DEAD_LETTERS_TOTAL
+from app.core.metrics import ERRORS_TOTAL, WEBHOOK_DEAD_LETTERS_TOTAL
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.services.webhook_processor import process_webhook_payload
@@ -95,9 +96,31 @@ def _dead_letter(payload: dict[str, Any], error: BaseException) -> None:
     retry_kwargs={"max_retries": MAX_RETRIES},
 )
 def process_webhook_event(self: Task, payload: dict[str, Any]) -> None:
-    """Durably process one webhook delivery with exponential-backoff retries."""
+    """Durably process one webhook delivery with exponential-backoff retries.
+
+    Retrying is safe because processing is idempotent end to end: the inbound
+    message is claimed with ON CONFLICT DO NOTHING, the completion is cached
+    against the inbound id so a replay is not re-billed, and the outbound row
+    is reserved under a unique constraint before the WhatsApp call. A retry
+    that lands after a successful send finds all three and does nothing.
+    """
     try:
         asyncio.run(_run(payload))
+    except SoftTimeLimitExceeded as exc:
+        # The task overran its soft limit. This is a retry-worthy condition,
+        # not a bug in the payload: usually a hung external call. Counted
+        # separately because a rising rate means OpenAI or Meta is degraded,
+        # which looks nothing like an application error.
+        ERRORS_TOTAL.labels(type="task_soft_timeout").inc()
+        logger.error(
+            "webhook_task_timeout",
+            retries=self.request.retries,
+            soft_limit_seconds=settings.celery_task_soft_time_limit,
+        )
+        if self.request.retries >= MAX_RETRIES:
+            WEBHOOK_DEAD_LETTERS_TOTAL.inc()
+            _dead_letter(payload, exc)
+        raise
     except Exception as exc:
         if self.request.retries >= MAX_RETRIES:
             WEBHOOK_DEAD_LETTERS_TOTAL.inc()

@@ -1,9 +1,19 @@
-"""Celery application configured for durable, at-least-once processing."""
+"""Celery application configured for durable, at-least-once processing.
+
+The guarantee this aims for is: a customer message that reaches the broker is
+eventually processed exactly once, even if workers are killed at the worst
+possible moment. At-least-once comes from the broker settings here;
+exactly-once comes from the idempotency in ChatService, because no broker can
+provide it for work that has external side effects.
+"""
 
 from celery import Celery
-from celery.signals import worker_ready
+from celery.signals import worker_ready, worker_shutdown
 
 from app.config import get_settings
+from app.core.logging import get_logger
+
+logger = get_logger(__name__)
 
 settings = get_settings()
 
@@ -28,6 +38,51 @@ celery_app.conf.update(
     broker_connection_retry_on_startup=True,
     task_default_queue="webhooks",
     result_expires=3600,
+    # --- Redelivery window ------------------------------------------------
+    # Redis is not AMQP: there is no broker-side ack, so kombu emulates one.
+    # A delivery that is not completed within visibility_timeout is handed to
+    # another worker -- while the first one is still running it.
+    #
+    # With task_acks_late that window is the entire duration of the task, and
+    # the kombu default is one hour. Setting it explicitly, and well above the
+    # hard time limit below, makes the overlap unreachable: a task is killed at
+    # 300s, so it can never still be running when the 900s redelivery fires.
+    #
+    # This must stay greater than task_time_limit. Inverting them means every
+    # slow message is processed twice and answered twice.
+    broker_transport_options={
+        "visibility_timeout": settings.celery_visibility_timeout,
+    },
+    # Applies the same window to retries scheduled with countdown/ETA, which
+    # otherwise use their own default and can be redelivered while pending.
+    result_backend_transport_options={
+        "visibility_timeout": settings.celery_visibility_timeout,
+    },
+    # --- Time limits --------------------------------------------------------
+    # Without these a wedged socket holds a worker thread forever. Eight of
+    # them and the worker is alive, answering its healthcheck, and processing
+    # nothing -- the failure mode that looks healthy on every dashboard.
+    #
+    # The soft limit raises SoftTimeLimitExceeded inside the task so cleanup
+    # runs and the delivery can be retried properly. The hard limit kills the
+    # thread outright; the gap between them is the cleanup budget.
+    task_soft_time_limit=settings.celery_task_soft_time_limit,
+    task_time_limit=settings.celery_task_time_limit,
+    # --- Shutdown -----------------------------------------------------------
+    # On SIGTERM, stop taking new work and let in-flight tasks finish. This is
+    # what makes a deploy safe: with acks_late, a task killed mid-flight is
+    # redelivered, and redelivery after a WhatsApp send is how one customer
+    # message becomes two replies. The reservation in ChatService catches that
+    # if it happens; finishing cleanly means it does not have to.
+    #
+    # The compose stop_grace_period must exceed task_time_limit, or Docker
+    # SIGKILLs before Celery can drain and the protection is theatre.
+    worker_cancel_long_running_tasks_on_connection_loss=False,
+    # Emit task events so `celery events` and Flower can see what a worker was
+    # doing when it died. Cheap, and the alternative during an incident is
+    # guessing.
+    worker_send_task_events=True,
+    task_send_sent_event=True,
 )
 
 
@@ -42,3 +97,15 @@ def _start_metrics_server(**_kwargs: object) -> None:
         from prometheus_client import start_http_server
 
         start_http_server(settings.worker_metrics_port)
+
+
+@worker_shutdown.connect
+def _log_shutdown(**_kwargs: object) -> None:
+    """Mark the end of a clean drain.
+
+    Its absence from the logs is the signal worth having: a worker that stopped
+    without this line was killed rather than drained, which means whatever it
+    was processing will be redelivered. During a deploy that distinguishes a
+    healthy rollout from one that answered some customers twice.
+    """
+    logger.info("worker_shutdown_complete")
