@@ -27,6 +27,15 @@ offered, so every customer agreeing to anything else would be silenced too.
 Instead the offer names ``HANDOFF_KEYWORD`` and the customer sends that one
 word. Nobody writes a message consisting solely of "employee" unless they want
 one.
+
+Two questions, not one
+----------------------
+``wants_human`` asks whether to stop the bot. ``is_sales_lead`` asks whether
+the person waiting is about to spend money. They are separate because the
+answers differ: a complaint and a request for a quotation both need a human,
+but only one of them should jump the queue. Collapsing them would mark every
+handoff a lead, and a lead queue that contains everything is the same as no
+lead queue.
 """
 
 import re
@@ -145,6 +154,44 @@ HANDOFF_ACK = (
     "Someone will reply here shortly."
 )
 
+# --- Sales leads -------------------------------------------------------------
+# A handoff that is worth interrupting an operator for. Three shapes:
+# asking for the sales side by name, asking to be contacted, or asking to
+# speak to a person about buying something.
+
+# el-mabee'aat - sales
+_SALES = "\u0627\u0644\u0645\u0628\u064a\u0639\u0627\u062a|\u0645\u0628\u064a\u0639\u0627\u062a"
+
+_SALES_LEAD_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        # "the sales manager", "the sales department", "sales team"
+        f"{_MODEER}\\s+{_SALES}",
+        _SALES,
+        r"\bsales\s+(manager|team|department|rep\w*|person)\b",
+        r"\bcontact\s+(the\s+)?sales\b",
+        # a callback request -- the customer is handing over their time
+        r"\b(call|phone|ring)\s+me\b",
+        r"\bsomeone\s+(call|contact|phone|reach)\b",
+        r"\bcontact\s+me\b",
+        r"\bget\s+back\s+to\s+me\b",
+        _CALL_ME,
+        # ettesel beya / ettesloo beya - call me
+        "\u0627\u062a\u0635\u0644\\s*\u0628\u064a\u0627|"
+        "\u0627\u062a\u0635\u0644\u0648\\s*\u0628\u064a\u0627",
+        # tawasal / tawasaloo ma'aya - get in touch with me
+        "\u062a\u0648\u0627\u0635\u0644.{0,6}\u0645\u0639\u0627\u064a\u0627|"
+        "\u062a\u0648\u0627\u0635\u0644.{0,6}\u0645\u0639\u064a",
+        # rakmi / rakam telifoni - my number
+        "\u0631\u0642\u0645\u064a|\u0631\u0642\u0645 \u062a\u0644\u064a\u0641\u0648\u0646\u064a",
+        # wanting to talk to a person, which in this business is a buyer
+        r"\b(speak|talk)\w*\s+(to|with)\s+(a|an|the)?\s*"
+        r"(someone|somebody|person|human|representative|rep)\b",
+        # aayez atkallem ma'a hadd - I want to speak to someone
+        "\u0623\u062a\u0643\u0644\u0645|\u0627\u062a\u0643\u0644\u0645",
+    )
+)
+
 
 def _is_standalone_request(text: str) -> bool:
     """True when the entire message is one person word and nothing else."""
@@ -162,3 +209,21 @@ def wants_human(text: str | None) -> bool:
     if _is_standalone_request(text):
         return True
     return any(pattern.search(text) for pattern in _PATTERNS)
+
+
+def is_sales_lead(text: str | None) -> bool:
+    """True when the person asking for a human is probably about to buy.
+
+    Only meaningful once a handoff has been decided; this answers *which kind*
+    it is, not whether one should happen.
+
+    A false positive costs an operator a glance at a conversation that turns
+    out to be a complaint. A false negative buries a customer who asked to be
+    called back in a list sorted by last activity, where they are found when
+    somebody scrolls -- which for a lead means found too late. So this leans
+    inclusive, unlike ``wants_human``, where the cost of a false positive is
+    a bot that goes silent on somebody who wanted it.
+    """
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _SALES_LEAD_PATTERNS)

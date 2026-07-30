@@ -8,11 +8,11 @@ from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
-from app.models.conversation import MODE_HUMAN, Conversation
+from app.models.conversation import MODE_HUMAN, TAG_SALES_LEAD, Conversation
 from app.repositories.ai_log import AILogRepository
 from app.services import price_policy
 from app.services.conversation_service import ConversationService
-from app.services.handoff import HANDOFF_ACK, wants_human
+from app.services.handoff import HANDOFF_ACK, is_sales_lead, wants_human
 from app.services.persona import NOT_UNDERSTOOD, WELCOME, is_unintelligible
 from app.services.prompt_builder import PromptBuilder
 from app.services.retrieval import (
@@ -96,6 +96,7 @@ class ChatService:
         conversation: Conversation,
         ack: str = HANDOFF_ACK,
         reason: str = "customer_asked_for_a_human",
+        tag: str | None = None,
     ) -> None:
         """Switch a conversation to a human at the customer's request.
 
@@ -109,13 +110,16 @@ class ChatService:
         message: a service menu inviting questions would contradict a message
         that says a colleague is taking over.
 
-        ``ack`` and ``reason`` vary because there are two ways in. Someone who
-        typed 'employee' wants any person; someone who has asked the price
-        three times wants the Sales Manager specifically, and telling them a
-        generic colleague will reply invites a fourth ask.
+        ``ack``, ``reason`` and ``tag`` vary because there are several ways in.
+        Someone who typed 'employee' wants any person; someone haggling over a
+        figure wants the Sales Manager specifically, and telling them a generic
+        colleague will reply invites another round of it.
+
+        ``tag`` also rides the published event, so a dashboard can raise a
+        louder alert for a lead without fetching the row first.
         """
         await self._conversations.conversations.set_mode(
-            conversation, MODE_HUMAN, operator=None
+            conversation, MODE_HUMAN, operator=None, tag=tag
         )
         await self._whatsapp.send_text(wa_id, ack)
         await self._conversations.save_outbound(conversation.id, ack)
@@ -124,6 +128,7 @@ class ChatService:
             "handoff_requested_by_customer",
             conversation_id=conversation.id,
             reason=reason,
+            tag=tag,
         )
         await publish(
             conversation_handoff(
@@ -131,6 +136,7 @@ class ChatService:
                 mode=MODE_HUMAN,
                 assigned_operator=None,
                 reason=reason,
+                tag=conversation.tag,
             ),
             self._settings,
         )
@@ -155,27 +161,44 @@ class ChatService:
             await self._announce(conversation.id)
             return True
 
+        # Negotiation is checked before wants_human because it is the more
+        # specific reading of a message that could match both, and it needs
+        # the sales acknowledgement rather than the generic one.
+        #
+        # There is nothing useful a bot can do once a number is on the table.
+        # Agreeing is a commitment it cannot make, refusing is a negotiation it
+        # cannot conduct, and deflecting again reads as stonewalling to someone
+        # who has already been told once. So this escalates on the first such
+        # message rather than counting them -- a customer who says "ok, do it
+        # for 1500" has made an offer, and making them repeat it twice more to
+        # earn a human is how a live lead goes cold.
+        if price_policy.is_negotiating(text):
+            logger.info(
+                "negotiation_handoff",
+                conversation_id=conversation.id,
+            )
+            await self._begin_handoff(
+                wa_id,
+                conversation,
+                ack=price_policy.sales_handoff_ack(self._settings.sales_phone),
+                reason=price_policy.SALES_HANDOFF_REASON,
+                tag=TAG_SALES_LEAD,
+            )
+            return True
+
         if wants_human(text):
-            await self._begin_handoff(wa_id, conversation)
+            # Asking for the Sales Manager, or to be called back, is a lead.
+            # Asking for 'an employee' with no other signal is not, and
+            # tagging it anyway would fill the lead queue with everything and
+            # make the top of the operator list meaningless.
+            await self._begin_handoff(
+                wa_id,
+                conversation,
+                tag=TAG_SALES_LEAD if is_sales_lead(text) else None,
+            )
             return True
 
         return False
-
-    def _price_pressure(self, text: str | None, history: list[dict]) -> bool:
-        """True when the customer has raised money too many times to continue.
-
-        The current message must itself be about money -- otherwise a customer
-        who asked twice, got a good answer about materials, and then asked a
-        third unrelated question would be silently handed to sales.
-
-        The count is taken over the history window the model sees, not the
-        whole conversation. Someone who asked about price last month and twice
-        today is not applying pressure, and the window makes the threshold
-        mean "in this conversation" rather than "ever".
-        """
-        if not price_policy.asks_about_price(text):
-            return False
-        return price_policy.count_price_asks(history) >= price_policy.INSIST_THRESHOLD
 
     async def _generate_and_send(
         self,
@@ -237,7 +260,7 @@ class ChatService:
         # number stripped out reads as evasive and often leaves the amount
         # implied by what surrounds it. Approved copy is the only version that
         # cannot leak. Logged at warning level because a hit here means the
-        # three layers in front of it did not hold, which is worth knowing.
+        # layers in front of it did not hold, which is worth knowing.
         if price_policy.mentions_amount(reply_text, self._settings.sales_phone):
             logger.warning(
                 "price_leak_blocked",
@@ -276,8 +299,8 @@ class ChatService:
 
         first = await self._is_first_customer_message(conversation.id)
 
-        # ".", "؟" or a lone emoji as an opening message: there is nothing to
-        # answer, so the welcome and the clarification line are sent as they
+        # ".", "\u061f" or a lone emoji as an opening message: there is nothing
+        # to answer, so the welcome and the clarification line are sent as they
         # are and the model is not called at all.
         if first and is_unintelligible(text):
             await self._send_fixed(
@@ -287,23 +310,11 @@ class ChatService:
 
         history = await self._conversations.build_history(conversation.id)
 
-        # A customer who will not accept "a colleague will quote you" is not
-        # going to accept it on the fourth attempt either, and every further
-        # deflection reads as stonewalling. Hand them to sales instead.
-        if self._price_pressure(text, history):
-            logger.info(
-                "price_pressure_handoff",
-                conversation_id=conversation.id,
-                asks=price_policy.count_price_asks(history),
-            )
-            await self._begin_handoff(
-                wa_id,
-                conversation,
-                ack=price_policy.sales_handoff_ack(self._settings.sales_phone),
-                reason=price_policy.SALES_HANDOFF_REASON,
-            )
-            return
-
+        # A plain price question is NOT escalated. It is the most common
+        # opening message in the business, and handing every one of them to a
+        # person would put a human on the other end of nearly every new
+        # conversation. The model answers it with the deflection, which asks
+        # for the area and unit type the Sales Manager needs anyway.
         await self._generate_and_send(
             wa_id,
             name,
@@ -341,7 +352,9 @@ class ChatService:
         )
         await self._whatsapp.mark_as_read(wa_message_id)
 
-        # A photo of a damaged wall often carries the request in its caption.
+        # A photo of a damaged wall often carries the request in its caption --
+        # including the negotiation. "Do it for 1500" under a picture of a
+        # living room is the same offer it would be on its own.
         if await self._handled_by_human(wa_id, conversation, caption):
             return
 
