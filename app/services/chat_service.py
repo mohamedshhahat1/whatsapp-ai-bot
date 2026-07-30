@@ -10,7 +10,7 @@ from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.models.conversation import MODE_HUMAN, TAG_SALES_LEAD, Conversation
 from app.repositories.ai_log import AILogRepository
-from app.services import price_policy
+from app.services import intent, price_policy
 from app.services.conversation_service import ConversationService
 from app.services.handoff import HANDOFF_ACK, is_sales_lead, wants_human
 from app.services.persona import NOT_UNDERSTOOD, WELCOME, is_unintelligible
@@ -79,8 +79,8 @@ class ChatService:
     async def _send_fixed(self, wa_id: str, conversation_id: int, text: str) -> None:
         """Send company copy that needs no model call, and persist it.
 
-        Used for the opening welcome when there is nothing to answer, and for
-        unsupported message types.
+        Used for the opening welcome when there is nothing to answer, for
+        out-of-scope questions, and for unsupported message types.
         """
         result = await self._whatsapp.send_text(wa_id, text)
         out_id = (result.get("messages") or [{}])[0].get("id")
@@ -208,12 +208,17 @@ class ChatService:
         history: list[dict],
         retrieval_query: str | None,
         welcome: bool = False,
+        general_question: bool = False,
     ) -> None:
         """Build layered instructions, generate a reply, send and persist it.
 
         ``welcome`` prepends the approved welcome to whatever the model
         produces, including the fallback reply: a customer whose very first
         message arrives while OpenAI is down should still be greeted properly.
+
+        ``general_question`` means the scope check decided no company document
+        was needed, so ``retrieval_query`` is None by design rather than by
+        accident. The prompt is told which of the two it is.
         """
         documents: list[RetrievedDocument] = []
         retrieval_attempted = bool(retrieval_query)
@@ -233,6 +238,7 @@ class ChatService:
             documents=documents,
             retrieval_attempted=retrieval_attempted,
             is_first_message=welcome,
+            general_question=general_question,
         )
 
         reply_text = FALLBACK_REPLY
@@ -308,6 +314,23 @@ class ChatService:
             )
             return
 
+        # Scope check, after every gate that could need a human. Ordering
+        # matters: a customer asking for a person, or naming a figure, must
+        # never be answered with a lecture about what the bot can discuss.
+        scope = intent.classify(text)
+
+        if scope == intent.OUT:
+            # No OpenAI call and no embedding call. The reply is fixed copy,
+            # which also makes the refusal identical every time -- a model
+            # improvising this would eventually argue about French politics
+            # for a paragraph before declining.
+            logger.info("out_of_scope_message", conversation_id=conversation.id)
+            reply = intent.out_of_scope_reply(self._settings.company_name)
+            if first:
+                reply = f"{WELCOME}\n\n{reply}"
+            await self._send_fixed(wa_id, conversation.id, reply)
+            return
+
         history = await self._conversations.build_history(conversation.id)
 
         # A plain price question is NOT escalated. It is the most common
@@ -315,13 +338,18 @@ class ChatService:
         # person would put a human on the other end of nearly every new
         # conversation. The model answers it with the deflection, which asks
         # for the area and unit type the Sales Manager needs anyway.
+        #
+        # A general trade question skips retrieval: searching company
+        # documents for "what is drywall" spends an embedding call to return
+        # chunks that will not clear the similarity floor anyway.
         await self._generate_and_send(
             wa_id,
             name,
             conversation.id,
             history,
-            retrieval_query=text,
+            retrieval_query=text if scope == intent.COMPANY else None,
             welcome=first,
+            general_question=scope == intent.DOMAIN,
         )
 
     async def handle_media_message(
@@ -338,6 +366,11 @@ class ChatService:
         The file itself is never sent to the model: only the fact that one
         arrived, plus its caption. The persona is explicit that it cannot see
         images, so it acknowledges and asks instead of describing.
+
+        The scope check is deliberately NOT applied here. A photo has to be
+        acknowledged whatever its caption says, and refusing one because the
+        caption looked off-topic would leave a customer staring at an
+        unanswered picture of their own wall.
         """
         if await self._conversations.messages.exists_by_wa_id(wa_message_id):
             return

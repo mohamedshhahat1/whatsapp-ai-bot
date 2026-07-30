@@ -49,8 +49,12 @@ General facts are the last category. "What is gypsum board", "which comes
 first, wiring or plaster" and "how long does paint take to dry" are answerable
 without any company document, and refusing them because no PDF matched makes
 the bot useless at exactly the moment a customer is trying to understand their
-own project. So the no-match layer below separates the cases explicitly rather
-than refusing everything.
+own project. Two different layers cover this:
+
+* ``retrieval_attempted`` with no documents -- we searched and found nothing.
+* ``general_question`` -- ``intent.classify`` decided beforehand that no
+  company document was needed, so none was searched. See
+  ``app/services/intent.py``.
 
 Prompt injection
 ----------------
@@ -120,6 +124,7 @@ class PromptBuilder:
         documents: list[RetrievedDocument] | None = None,
         retrieval_attempted: bool = False,
         is_first_message: bool = False,
+        general_question: bool = False,
     ) -> str:
         """Compose the full instruction block for one generation.
 
@@ -127,6 +132,13 @@ class PromptBuilder:
         and nothing cleared the similarity floor" from "there was nothing to
         search for". Only the first case warrants telling the model that the
         knowledge base has no answer, which is what stops it inventing one.
+
+        ``general_question`` is the third case: the scope check decided this
+        was about finishing work in general, not about this company, so no
+        search was run. The model needs to know that explicitly -- otherwise
+        the absence of a retrieved-knowledge section reads as "you have no
+        constraints here", which is how a general question about drywall turns
+        into an invented claim about what this company installs.
 
         ``is_first_message`` is decided by counting the customer's messages in
         the database, not by asking the model to notice. See
@@ -185,6 +197,25 @@ class PromptBuilder:
                 "that it is general information rather than a commitment from "
                 "the company."
             )
+        elif general_question:
+            sections.append(
+                "# General question\n"
+                "This message was classified as a general question about "
+                "finishing and contracting work rather than a question about "
+                "this company, so the knowledge base was NOT searched and you "
+                "have no company documents for this turn.\n"
+                "Answer it from your own knowledge of the trade: materials, "
+                "techniques, the usual order of work, standard terminology and "
+                "normal industry practice. Be genuinely useful and brief.\n"
+                "Say nothing about what THIS company specifically offers, "
+                "charges, guarantees, stocks or has built. You have no source "
+                "for any of that here, and a general answer presented as a "
+                "company commitment is the failure this layer exists to "
+                "prevent. Where the distinction could be misread, mark your "
+                "answer as general practice.\n"
+                "If the customer then asks how the company does it, say you "
+                "will check, and offer to pass the question to a colleague."
+            )
 
         context_lines = [
             "Channel: WhatsApp",
@@ -226,6 +257,10 @@ class PromptBuilder:
             "- Do not announce that you are an AI, a bot or a program. If the "
             "customer asks directly, answer honestly and briefly; never claim "
             "to be a human being and never pretend to be a named employee.\n"
+            "- Stay within this company's business: its services, and finishing "
+            "and contracting work generally. If the customer asks about "
+            "something unrelated, do not answer it -- say briefly what you can "
+            "help with instead, and do not lecture them about it.\n"
             "- If the customer is angry or complaining: apologise once, without "
             "excuses or blame, do not argue, then either fix the problem or "
             "offer a colleague straight away. Never promise compensation, a "
