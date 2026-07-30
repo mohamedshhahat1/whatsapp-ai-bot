@@ -51,17 +51,23 @@ def conversation_handoff(
     mode: str,
     assigned_operator: str | None,
     reason: str,
+    tag: str | None = None,
 ) -> dict[str, Any]:
     """Build the event announcing that ownership of a conversation changed.
 
     Separate from the activity event rather than a field on it, so that a
     dashboard showing the conversation can distinguish "a message arrived"
-    from "the bot has stopped answering this" -- and so the activity payload
-    stays exactly four keys wide.
+    from "the bot has stopped answering this".
 
     ``assigned_operator`` is a staff name, not customer data. It is on the bus
     because a second operator's screen has to show who already owns the
     conversation; without it, two people answer the same customer.
+
+    ``tag`` is here so a dashboard can alert differently for a sales lead
+    without a round trip. It is a fixed vocabulary word, not customer data --
+    the rule that no phone number, name or message body goes on the bus still
+    holds. A dashboard that has not been taught the tag ignores an unknown
+    string and shows an ordinary handoff, which is the correct degradation.
     """
     return {
         "type": HANDOFF,
@@ -69,6 +75,7 @@ def conversation_handoff(
         "mode": mode,
         "assigned_operator": assigned_operator,
         "reason": reason,
+        "tag": tag,
         "at": datetime.now(UTC).isoformat(),
     }
 

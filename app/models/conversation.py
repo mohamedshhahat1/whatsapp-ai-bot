@@ -22,6 +22,16 @@ if TYPE_CHECKING:
 MODE_BOT = "bot"
 MODE_HUMAN = "human"
 
+# Why this conversation needs a person. Separate from ``mode`` (who is
+# answering) and from the handoff ``reason`` in the logs (what triggered it):
+# the tag is the part an operator sorts and filters on, so it has to be a
+# small, stable vocabulary rather than a free-form sentence.
+#
+# A customer who names a figure, asks for a discount, asks for the Sales
+# Manager or asks to be called back is somebody about to spend money. That is
+# worth putting at the top of the list; a routine question is not.
+TAG_SALES_LEAD = "sales_lead"
+
 
 class Conversation(Base):
     __tablename__ = "conversations"
@@ -36,6 +46,11 @@ class Conversation(Base):
     mode: Mapped[str] = mapped_column(
         String(16), default=MODE_BOT, server_default=MODE_BOT, index=True
     )
+    # Why a person is needed. Sticky on purpose: it is not cleared when the AI
+    # resumes, because it records what this conversation turned out to be, not
+    # who happens to be answering it right now. Reporting on how many leads
+    # arrived last week needs the former.
+    tag: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
     # Free text, not a foreign key: there is no operator account table yet, and
     # inventing one here would be a bigger change than the handoff itself.
     assigned_operator: Mapped[str | None] = mapped_column(String(64), nullable=True)

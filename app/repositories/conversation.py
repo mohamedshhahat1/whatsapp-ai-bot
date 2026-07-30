@@ -2,13 +2,34 @@
 
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import ConflictError
-from app.models.conversation import MODE_HUMAN, Conversation
+from app.models.conversation import MODE_HUMAN, TAG_SALES_LEAD, Conversation
 from app.repositories.base import BaseRepository
+
+# A sales lead nobody has claimed yet sorts above everything else. All three
+# conditions matter:
+#
+#   tag                -- only leads jump the queue
+#   mode = human       -- a conversation the AI has resumed is handled
+#   no operator        -- once someone presses Take Over it is theirs, and
+#                         leaving it pinned would keep drawing other operators
+#                         to a row that is already being answered
+#
+# Without the last two the row would stay at the top of every operator's
+# screen forever, which trains people to ignore the top of the list.
+_UNCLAIMED_LEAD_FIRST = case(
+    (
+        (Conversation.tag == TAG_SALES_LEAD)
+        & (Conversation.mode == MODE_HUMAN)
+        & (Conversation.assigned_operator.is_(None)),
+        0,
+    ),
+    else_=1,
+)
 
 
 class ConversationRepository(BaseRepository):
@@ -80,6 +101,7 @@ class ConversationRepository(BaseRepository):
         conversation: Conversation,
         mode: str,
         operator: str | None = None,
+        tag: str | None = None,
     ) -> Conversation:
         """Switch who answers this conversation.
 
@@ -88,11 +110,20 @@ class ConversationRepository(BaseRepository):
         is an audit log -- the transitions are in the structured logs, and a
         real history would need its own table.
 
+        ``tag`` behaves differently from both: it is only ever set, never
+        cleared. A conversation that produced a sales lead produced one, even
+        after the AI takes it back, and clearing it would make the lead vanish
+        from tomorrow's report. Passing ``None`` leaves any existing tag alone
+        rather than erasing it, so an ordinary later handoff cannot silently
+        downgrade a conversation that was already classified.
+
         Does not commit: the caller owns the transaction boundary, because a
         handoff triggered by an inbound message must be committed together with
         that message.
         """
         conversation.mode = mode
+        if tag is not None:
+            conversation.tag = tag
         if mode == MODE_HUMAN:
             conversation.assigned_operator = operator
             conversation.handoff_at = datetime.now(UTC)
@@ -103,9 +134,17 @@ class ConversationRepository(BaseRepository):
         return conversation
 
     async def list(self, offset: int = 0, limit: int = 50) -> list[Conversation]:
+        """Conversations for the operator list.
+
+        Unclaimed sales leads first, then everything else by recency. Sorting
+        here rather than in the dashboard means every client -- the web UI, a
+        future mobile view, anyone reading the admin API -- gets the same
+        order, and that pagination stays correct: ordering a page after it has
+        been fetched only sorts the fifty rows that happened to be on it.
+        """
         result = await self.session.scalars(
             select(Conversation)
-            .order_by(Conversation.updated_at.desc())
+            .order_by(_UNCLAIMED_LEAD_FIRST, Conversation.updated_at.desc())
             .offset(offset)
             .limit(limit)
         )
@@ -116,3 +155,16 @@ class ConversationRepository(BaseRepository):
 
     async def count(self) -> int:
         return int(await self.session.scalar(select(func.count(Conversation.id))) or 0)
+
+    async def count_unclaimed_leads(self) -> int:
+        """Open sales leads with nobody on them -- the dashboard badge."""
+        return int(
+            await self.session.scalar(
+                select(func.count(Conversation.id)).where(
+                    Conversation.tag == TAG_SALES_LEAD,
+                    Conversation.mode == MODE_HUMAN,
+                    Conversation.assigned_operator.is_(None),
+                )
+            )
+            or 0
+        )
