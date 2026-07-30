@@ -1,6 +1,8 @@
 # Production stack: no .env file -- every credential is a Docker secret.
 #
-#   ./scripts/init-secrets.sh          # create ./secrets/* once
+#   ./scripts/init-secrets.sh                       # create ./secrets/* once
+#   export DOMAIN=bot.example.com CERTBOT_EMAIL=ops@example.com
+#   ./scripts/init-letsencrypt.sh                   # obtain the certificate
 #   docker compose -f docker-compose.prod.yml up -d
 #
 # Secrets are mounted read-only at /run/secrets/<name>; pydantic-settings loads
@@ -10,6 +12,10 @@
 #
 # Schema upgrades run in the one-shot `migrate` service before app and worker
 # start; no manual `alembic upgrade head` step is required on deploy.
+#
+# DOMAIN is required. nginx renders its config from it and Let's Encrypt
+# issues against it, so a stack started without it would serve a certificate
+# for the wrong name -- failing loudly here beats failing at the TLS handshake.
 
 x-app-environment: &app-environment
   ENVIRONMENT: production
@@ -27,6 +33,25 @@ x-app-environment: &app-environment
   WHATSAPP_API_VERSION: v21.0
   RAG_ENABLED: "true"
   KNOWLEDGE_DIR: /app/knowledge
+  # --- Per-customer quotas and spend protection (app/core/quota.py) --------
+  # The webhook endpoint limit is a crude DoS backstop only: every delivery
+  # arrives from Meta's addresses, so it is one shared bucket by construction
+  # and throttling it drops other customers' messages too. Real isolation is
+  # per-wa_id, below.
+  CUSTOMER_RATE_LIMIT_ENABLED: "true"
+  CUSTOMER_LIMIT_PER_MINUTE: "12"
+  CUSTOMER_LIMIT_PER_HOUR: "120"
+  CUSTOMER_LIMIT_PER_DAY: "400"
+  # The cost ceiling. Set DAILY_SPEND_LIMIT_USD to a number you would be
+  # content to lose to a scripted flood -- past it the assistant stops
+  # answering everyone and customers are routed to a person.
+  SPEND_GUARD_ENABLED: "true"
+  DAILY_SPEND_LIMIT_USD: "${DAILY_SPEND_LIMIT_USD:-25}"
+  DAILY_TOKEN_LIMIT: "${DAILY_TOKEN_LIMIT:-5000000}"
+  # Must stay below the worker's stop_grace_period.
+  CELERY_TASK_TIME_LIMIT: "300"
+  CELERY_TASK_SOFT_TIME_LIMIT: "240"
+  CELERY_VISIBILITY_TIMEOUT: "900"
 
 x-app-secrets: &app-secrets
   - database_url
@@ -58,6 +83,9 @@ services:
     expose:
       - "8000"
     ports:
+      # Loopback only. Public traffic reaches the app through nginx over TLS;
+      # binding 0.0.0.0 here would expose an unencrypted copy of the entire
+      # API alongside the HTTPS one and quietly undo the TLS work.
       - "127.0.0.1:8000:8000"
     depends_on:
       db:
@@ -76,6 +104,9 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    # Long enough for in-flight HTTP requests to finish. The API hands webhook
+    # work to the queue, so its requests are short.
+    stop_grace_period: 30s
     restart: unless-stopped
 
   worker:
@@ -98,6 +129,15 @@ services:
       timeout: 15s
       retries: 3
       start_period: 40s
+    # THE deploy-safety setting. On SIGTERM Celery stops accepting work and
+    # drains what it is holding; Docker's default 10s SIGKILLs it long before
+    # a task that is mid-completion can finish. With task_acks_late that kill
+    # means redelivery, and redelivery after a WhatsApp send is a duplicate
+    # reply and a second OpenAI charge.
+    #
+    # Must exceed CELERY_TASK_TIME_LIMIT (300s) so even a task being killed by
+    # its own hard limit has time to unwind. Keep the two in step.
+    stop_grace_period: 330s
     restart: unless-stopped
 
   db:
@@ -116,6 +156,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    # Postgres needs to finish its shutdown checkpoint. Killed mid-checkpoint
+    # it recovers on next start, but recovery is slower than a clean stop and
+    # happens while customers are waiting.
+    stop_grace_period: 60s
     restart: unless-stopped
 
   redis:
@@ -130,10 +174,50 @@ services:
       retries: 5
     restart: unless-stopped
 
+  backup:
+    # postgres:16 rather than the pgvector image: this only needs client tools,
+    # and the major version MUST match the server -- pg_dump refuses to dump a
+    # server newer than itself. Bump both together.
+    image: postgres:16-alpine
+    entrypoint: ["/scripts/backup-scheduler.sh"]
+    environment:
+      PGHOST: db
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGDATABASE: whatsapp_ai_bot
+      PGPASSWORD_FILE: /run/secrets/postgres_password
+      BACKUP_DIR: /backups
+      BACKUP_HOUR: "${BACKUP_HOUR:-2}"
+      RETAIN_DAILY: "${RETAIN_DAILY:-14}"
+      RETAIN_WEEKLY: "${RETAIN_WEEKLY:-8}"
+      RETAIN_MONTHLY: "${RETAIN_MONTHLY:-12}"
+      RESTORE_DRILL_ENABLED: "${RESTORE_DRILL_ENABLED:-true}"
+      RESTORE_DRILL_DAYS: "${RESTORE_DRILL_DAYS:-7}"
+      BACKUP_MAX_AGE_HOURS: "${BACKUP_MAX_AGE_HOURS:-30}"
+    secrets:
+      - postgres_password
+    volumes:
+      - ./scripts:/scripts:ro
+      - backups:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Checks the AGE OF THE LAST SUCCESS, not whether the process is alive.
+      # A backup container running happily while producing nothing for three
+      # days is the failure that matters, and liveness cannot see it.
+      test: ["CMD", "/scripts/backup-healthcheck.sh"]
+      interval: 15m
+      timeout: 30s
+      retries: 2
+      start_period: 2m
+    restart: unless-stopped
+
   prometheus:
     image: prom/prometheus:latest
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
       - promdata:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
@@ -162,14 +246,59 @@ services:
     restart: unless-stopped
 
   nginx:
-    image: nginx:alpine
+    # Pinned. `nginx:alpine` floats across major versions, and a routine
+    # `docker compose pull` on an unattended host should not be able to change
+    # the TLS terminator's major version.
+    image: nginx:1.27-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set, e.g. export DOMAIN=bot.example.com}
+      # The image runs envsubst over everything in templates/. Without this
+      # filter it would also substitute nginx's own runtime variables --
+      # $host, $remote_addr, $proxy_add_x_forwarded_for -- replacing them with
+      # empty strings. The result starts cleanly and proxies nonsense, which
+      # is the worst kind of broken. Restrict substitution to DOMAIN only.
+      NGINX_ENVSUBST_FILTER: "DOMAIN"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/tls.conf:/etc/nginx/tls.conf:ro
+      - ./nginx/security-headers.conf:/etc/nginx/security-headers.conf:ro
+      - certbot-conf:/etc/letsencrypt:ro
+      - certbot-www:/var/www/certbot
     ports:
       - "80:80"
+      - "443:443"
     depends_on:
       app:
         condition: service_healthy
+    # Reload every 6 hours so a certificate renewed by certbot is actually
+    # served. nginx reads its certificates once at startup: without this, a
+    # renewal succeeds, the old certificate keeps being served, and the
+    # problem surfaces 90 days later as an expiry outage. `nginx -g daemon off`
+    # stays in the foreground as PID 1 so signals and `docker stop` behave.
+    command: >-
+      /bin/sh -c "while :; do sleep 6h & wait $${!}; nginx -s reload; done & 
+      exec nginx -g 'daemon off;'"
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  certbot:
+    image: certbot/certbot:latest
+    volumes:
+      - certbot-conf:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    # Attempts renewal every 12 hours. Let's Encrypt asks for twice-daily
+    # checks with a random delay so renewals spread across their fleet rather
+    # than stampeding on the hour; `renew` is a no-op until a certificate is
+    # inside its 30-day window, so this costs nothing the rest of the time.
+    #
+    # Renewal uses the webroot that nginx serves at
+    # /.well-known/acme-challenge/, so no downtime and no port juggling.
+    entrypoint: >-
+      /bin/sh -c "trap exit TERM; while :; do
+      certbot renew --webroot -w /var/www/certbot --quiet;
+      sleep 12h & wait $${!}; done"
+    depends_on:
+      - nginx
     restart: unless-stopped
 
 secrets:
@@ -197,3 +326,12 @@ volumes:
   redisdata:
   promdata:
   grafanadata:
+  # Certificates and ACME account keys. Survives `docker compose down`;
+  # `down -v` destroys them and forces reissue against Let's Encrypt's rate
+  # limits (5 duplicate certificates per week).
+  certbot-conf:
+  # ACME HTTP-01 challenge files, written by certbot and served by nginx.
+  certbot-www:
+  # Database dumps. On the same host as the database it protects -- copy them
+  # off the box as well. See docs/BACKUP_RESTORE.md, "Off-site copies".
+  backups:
