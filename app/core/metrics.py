@@ -4,13 +4,19 @@ The API exposes them at ``GET /metrics``; the worker starts its own metrics
 HTTP server (see ``app/workers/celery_app.py``) since message processing --
 and therefore most OpenAI/message metrics -- happens in the worker process.
 
-Note there is no spend metric here. Cost is a function of tokens and the price
-in force at the time, which lives in the model_pricing table; the dashboard
-derives it there. A counter fed from Settings prices would be a second,
-silently diverging answer to the same question.
+On cost: there is deliberately no *billing* metric here. Spend is a function
+of tokens and the price in force at the time, which lives in the model_pricing
+table; the dashboard derives it there. A counter fed from Settings prices
+would be a second, silently diverging answer to the same question.
+
+``DAILY_SPEND_USD`` below is not that number and must not be read as it. It is
+the spend *guard's* own running total (see ``app/core/quota.py``): approximate,
+computed from Settings prices, reset daily, and used only to decide whether the
+model is allowed to run. It is exported because a circuit breaker whose
+position nobody can see will trip unannounced.
 """
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 MESSAGES_TOTAL = Counter(
     "whatsapp_messages_total",
@@ -58,4 +64,62 @@ HTTP_REQUEST_SECONDS = Histogram(
     "http_request_duration_seconds",
     "HTTP request latency in seconds",
     ["method", "path"],
+)
+
+# --- Per-customer quotas and abuse protection (app/core/quota.py) -----------
+
+CUSTOMER_RATE_LIMITED_TOTAL = Counter(
+    "customer_rate_limited_total",
+    "Inbound messages not answered because the customer exceeded a rate window",
+    ["window"],  # minute | hour | day
+)
+
+CUSTOMER_ABUSE_BLOCKS_TOTAL = Counter(
+    "customer_abuse_blocks_total",
+    "Customers temporarily blocked by flood or spam detection",
+    ["reason"],  # flooding | spamming
+)
+
+# --- Spend circuit breaker ---------------------------------------------------
+
+DAILY_SPEND_USD = Gauge(
+    "openai_spend_guard_usd_today",
+    (
+        "Approximate OpenAI spend today as measured by the spend guard. "
+        "Uses Settings fallback prices, NOT the model_pricing table -- this is "
+        "the circuit breaker's input, not the billing figure."
+    ),
+)
+
+SPEND_GUARD_TRIPS_TOTAL = Counter(
+    "openai_spend_guard_trips_total",
+    "Times the daily cost ceiling stopped the model from being called",
+    ["kind"],  # usd | tokens
+)
+
+AI_DISABLED = Gauge(
+    "ai_disabled",
+    (
+        "1 when the assistant is not answering: either the spend ceiling was "
+        "reached or an operator pulled the kill switch. Alert on this."
+    ),
+)
+
+# Explicit zero at import time. An unset gauge is absent from /metrics
+# entirely, and an alert on a missing series behaves differently from one on a
+# series reading 0 -- the difference between "healthy" and "not scraped yet"
+# should not be a guess.
+AI_DISABLED.set(0)
+DAILY_SPEND_USD.set(0)
+
+# --- Reliability -------------------------------------------------------------
+
+DUPLICATE_DELIVERIES_TOTAL = Counter(
+    "webhook_duplicate_deliveries_total",
+    (
+        "Redeliveries stopped by the idempotency guards, by the stage that "
+        "caught them. A rising 'reply_reserved' count means workers are dying "
+        "mid-send."
+    ),
+    ["stage"],  # inbound_claim | reply_reserved | generation_cache
 )
