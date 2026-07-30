@@ -16,6 +16,11 @@ class ConversationRead(BaseModel):
     # for the whole time a human operator owns it.
     status: str
     mode: str
+    # Why a person is needed -- currently only "sales_lead" or nothing. The
+    # operator list sorts unclaimed leads to the top, so the dashboard needs
+    # this to render the badge that explains the ordering. A list that
+    # reorders itself with no visible reason looks like a bug.
+    tag: str | None = None
     assigned_operator: str | None = None
     handoff_at: datetime | None = None
     created_at: datetime
