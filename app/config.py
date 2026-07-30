@@ -135,6 +135,10 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     system_prompt: str = "You are a helpful WhatsApp assistant for our business."
     company_info: str = ""
+    # Used only in fixed copy the bot sends without a model call -- currently
+    # the out-of-scope redirect (see app/services/intent.py). Unset is safe:
+    # the copy falls back to "our services" rather than printing a blank.
+    company_name: str = ""
     max_output_tokens: int = 512
     max_context_messages: int = 20
     max_context_tokens: int = 6000
