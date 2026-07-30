@@ -30,6 +30,35 @@ class ConversationService:
         conversation = await self.conversations.get_or_create_active(user.id)
         return user, conversation
 
+    async def claim_inbound(
+        self,
+        conversation_id: int,
+        wa_message_id: str,
+        type: str = "text",
+        content: str | None = None,
+        media_id: str | None = None,
+    ) -> int | None:
+        """Store an inbound message, or report that it was already stored.
+
+        Returns the row id on success and ``None`` when this delivery has been
+        seen before -- see ``MessageRepository.claim_inbound`` for why the
+        check and the insert have to be the same statement.
+
+        The metric is incremented only on a genuine claim. Counting
+        redeliveries would inflate inbound volume by however aggressively Meta
+        happened to retry, which is not a fact about the business.
+        """
+        message_id = await self.messages.claim_inbound(
+            conversation_id=conversation_id,
+            wa_message_id=wa_message_id,
+            type=type,
+            content=content,
+            media_id=media_id,
+        )
+        if message_id is not None:
+            MESSAGES_TOTAL.labels(direction="inbound", type=type).inc()
+        return message_id
+
     async def save_inbound(
         self,
         conversation_id: int,
@@ -38,6 +67,12 @@ class ConversationService:
         content: str | None = None,
         media_id: str | None = None,
     ) -> Message:
+        """Unconditionally store an inbound message.
+
+        Retained for callers that have already established the message is new,
+        and for tests. The webhook path uses :meth:`claim_inbound` instead,
+        which is safe against concurrent redelivery.
+        """
         MESSAGES_TOTAL.labels(direction="inbound", type=type).inc()
         return await self.messages.create(
             conversation_id=conversation_id,
@@ -48,6 +83,31 @@ class ConversationService:
             media_id=media_id,
         )
 
+    async def reserve_reply(
+        self,
+        conversation_id: int,
+        reply_to_wa_message_id: str,
+        content: str,
+        type: str = "text",
+    ) -> int | None:
+        """Book the right to answer one inbound message.
+
+        ``None`` means another attempt already holds it and this caller must
+        not send. The outbound metric is incremented here rather than after the
+        send: the reservation is the point at which we commit to a reply
+        existing, and a send whose outcome is unknown still counts as one
+        attempt to answer the customer.
+        """
+        message_id = await self.messages.reserve_reply(
+            conversation_id=conversation_id,
+            reply_to_wa_message_id=reply_to_wa_message_id,
+            content=content,
+            type=type,
+        )
+        if message_id is not None:
+            MESSAGES_TOTAL.labels(direction="outbound", type=type).inc()
+        return message_id
+
     async def save_outbound(
         self,
         conversation_id: int,
@@ -55,6 +115,11 @@ class ConversationService:
         wa_message_id: str | None = None,
         type: str = "text",
     ) -> Message:
+        """Record an outbound message that has already been sent.
+
+        Used by the dashboard's manual reply path, where an operator is
+        watching the result and no retry will ever replay the send.
+        """
         MESSAGES_TOTAL.labels(direction="outbound", type=type).inc()
         return await self.messages.create(
             conversation_id=conversation_id,

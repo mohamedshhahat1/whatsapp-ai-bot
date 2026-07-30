@@ -1,14 +1,54 @@
-"""Chat orchestration: inbound message -> prompt -> AI reply -> outbound send."""
+"""Chat orchestration: inbound message -> prompt -> AI reply -> outbound send.
+
+The shape of this module is dictated by one fact: two of the four systems it
+talks to cannot be rolled back. OpenAI charges for a completion whether or not
+we keep it, and WhatsApp's send endpoint has no idempotency key, so once a
+request leaves the process we can never afterwards learn whether the customer
+saw it.
+
+So the work is split into four short transactions with the slow, irreversible
+parts strictly between them:
+
+    1. CLAIM    (txn)  atomically take ownership of the inbound message
+    2. READ     (txn)  load conversation state, then release the connection
+    3. GENERATE        embedding, vector search, completion -- no txn held
+    4. RESERVE  (txn)  write a pending outbound row and commit it
+    5. SEND            the WhatsApp call
+    6. CONFIRM  (txn)  record that it went
+
+The previous design held a single transaction across all of it. That pinned a
+Postgres connection for the several seconds a completion takes, hid the
+customer's message from the dashboard until the reply had been sent, and made
+the inbound message itself non-durable: a worker killed during generation
+rolled it back, and the customer's words were gone.
+
+Stage 4 is the load-bearing one. Committing the intention to reply *before*
+sending means a crash mid-send leaves evidence in the database, and the
+retried delivery finds it and declines. The trade is explicit and deliberate:
+a rare unanswered message in exchange for never sending two. A customer who
+gets no reply sends "?" and gets one; a customer who gets two different
+answers about their quotation stops trusting the business, and every duplicate
+is a second OpenAI charge.
+"""
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.core import quota
 from app.core.events import conversation_activity, conversation_handoff, publish
 from app.core.exceptions import ExternalServiceError
+from app.core.idempotency import (
+    CachedGeneration,
+    clear_generation,
+    get_cached_generation,
+    store_generation,
+)
 from app.core.logging import get_logger
+from app.core.metrics import DUPLICATE_DELIVERIES_TOTAL
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.models.conversation import MODE_HUMAN, TAG_SALES_LEAD, Conversation
+from app.models.message import STATUS_SENT, STATUS_UNCONFIRMED
 from app.repositories.ai_log import AILogRepository
 from app.services import intent, price_policy
 from app.services.conversation_service import ConversationService
@@ -51,15 +91,41 @@ class ChatService:
         # parameter keeps the retriever injectable for tests.
         self._retriever = retriever or build_retriever(session, settings)
 
+    # -----------------------------------------------------------------
+    # Transaction helpers
+    # -----------------------------------------------------------------
+
+    async def _release(self) -> None:
+        """End the current read transaction and hand the connection back.
+
+        SQLAlchemy opens a transaction on the first statement and holds the
+        connection until it is committed or rolled back -- including for pure
+        reads. Without this, the snapshot taken while loading history would
+        stay open across the OpenAI call, which is the exact problem this
+        module was restructured to remove.
+
+        Rollback rather than commit because nothing was written. It is also
+        what clears the failed-transaction state after an error, so the next
+        stage can still run its own work.
+        """
+        await self._session.rollback()
+
+    # -----------------------------------------------------------------
+    # Notifications
+    # -----------------------------------------------------------------
+
     async def _announce(self, conversation_id: int) -> None:
         """Tell connected dashboards that a customer turn landed.
 
-        Called only after the transaction has committed. The dashboard reacts
-        by refetching through the admin API, so announcing uncommitted work
-        would point the operator at rows that do not exist yet -- and if the
-        transaction rolled back and Celery retried the delivery, the
-        notification would already have been sent for a message that never
-        existed.
+        Called only after the relevant transaction has committed. The dashboard
+        reacts by refetching through the admin API, so announcing uncommitted
+        work would point the operator at rows that do not exist yet.
+
+        Now fired immediately after the inbound message is committed rather
+        than after the reply is sent. An operator watching a customer type
+        should see it arrive, not learn about it several seconds later once the
+        bot has already answered -- and if generation fails entirely, the
+        message must still show up.
         """
         await publish(
             conversation_activity(conversation_id=conversation_id, inbound=True),
@@ -76,19 +142,104 @@ class ChatService:
         sent = await self._conversations.messages.count_inbound(conversation_id)
         return sent == 1
 
-    async def _send_fixed(self, wa_id: str, conversation_id: int, text: str) -> None:
+    # -----------------------------------------------------------------
+    # Sending
+    # -----------------------------------------------------------------
+
+    async def _send_once(
+        self,
+        wa_id: str,
+        conversation_id: int,
+        text: str,
+        reply_to: str | None,
+    ) -> bool:
+        """Send exactly one message in answer to one inbound message.
+
+        Returns True if this call sent it, False if someone else already had.
+
+        This is the reserve -> send -> confirm sequence, and every outbound
+        path goes through it so that fixed copy, handoff acknowledgements and
+        model replies are all equally safe to retry. A welcome sent twice is a
+        smaller problem than a duplicated quotation, but it is still a bug, and
+        having one path means there is one place to reason about.
+
+        ``reply_to`` is None only for sends that are not answers to an inbound
+        message. Those cannot be deduplicated -- there is no key to deduplicate
+        against -- so they fall back to send-then-record.
+        """
+        if reply_to is None:
+            result = await self._whatsapp.send_text(wa_id, text)
+            out_id = (result.get("messages") or [{}])[0].get("id")
+            await self._conversations.save_outbound(
+                conversation_id, text, wa_message_id=out_id
+            )
+            await self._session.commit()
+            return True
+
+        # --- Stage: RESERVE ------------------------------------------------
+        # Committed before the send, on purpose. This row is the only durable
+        # record that a send may have happened.
+        reserved_id = await self._conversations.reserve_reply(
+            conversation_id, reply_to, text
+        )
+        if reserved_id is None:
+            await self._session.rollback()
+            DUPLICATE_DELIVERIES_TOTAL.labels(stage="reply_reserved").inc()
+            logger.info(
+                "reply_already_reserved",
+                conversation_id=conversation_id,
+                reply_to=reply_to,
+            )
+            return False
+        await self._session.commit()
+
+        # --- Stage: SEND ---------------------------------------------------
+        try:
+            result = await self._whatsapp.send_text(wa_id, text)
+        except ExternalServiceError as exc:
+            # The reservation is deliberately NOT released.
+            #
+            # WhatsAppClient already retries transient failures with backoff,
+            # so by the time this escapes the request has been attempted
+            # several times and we genuinely cannot tell whether one of them
+            # was delivered. Freeing the reservation would let the Celery retry
+            # send again, which is how a customer receives the same answer
+            # twice. Leaving it marks the reply unconfirmed and stops there.
+            await self._conversations.messages.confirm_reply(
+                reserved_id, None, status=STATUS_UNCONFIRMED
+            )
+            await self._session.commit()
+            logger.error(
+                "reply_send_unconfirmed",
+                conversation_id=conversation_id,
+                reply_to=reply_to,
+                error=str(exc),
+            )
+            return False
+
+        # --- Stage: CONFIRM ------------------------------------------------
+        out_id = (result.get("messages") or [{}])[0].get("id")
+        await self._conversations.messages.confirm_reply(
+            reserved_id, out_id, status=STATUS_SENT
+        )
+        await self._session.commit()
+        return True
+
+    async def _send_fixed(
+        self,
+        wa_id: str,
+        conversation_id: int,
+        text: str,
+        reply_to: str | None = None,
+    ) -> None:
         """Send company copy that needs no model call, and persist it.
 
         Used for the opening welcome when there is nothing to answer, for
-        out-of-scope questions, and for unsupported message types.
+        out-of-scope questions, for quota refusals and for unsupported message
+        types.
         """
-        result = await self._whatsapp.send_text(wa_id, text)
-        out_id = (result.get("messages") or [{}])[0].get("id")
-        await self._conversations.save_outbound(
-            conversation_id, text, wa_message_id=out_id
-        )
-        await self._session.commit()
-        await self._announce(conversation_id)
+        if await self._send_once(wa_id, conversation_id, text, reply_to):
+            await self._announce(conversation_id)
 
     async def _begin_handoff(
         self,
@@ -97,6 +248,7 @@ class ChatService:
         ack: str = HANDOFF_ACK,
         reason: str = "customer_asked_for_a_human",
         tag: str | None = None,
+        reply_to: str | None = None,
     ) -> None:
         """Switch a conversation to a human at the customer's request.
 
@@ -115,15 +267,16 @@ class ChatService:
         figure wants the Sales Manager specifically, and telling them a generic
         colleague will reply invites another round of it.
 
-        ``tag`` also rides the published event, so a dashboard can raise a
-        louder alert for a lead without fetching the row first.
+        The mode change is committed before the acknowledgement is sent. If the
+        send fails, the conversation is still handed over -- the operator sees
+        it and can pick it up. The reverse order would leave the bot answering
+        a customer who has been told a human is coming.
         """
         await self._conversations.conversations.set_mode(
             conversation, MODE_HUMAN, operator=None, tag=tag
         )
-        await self._whatsapp.send_text(wa_id, ack)
-        await self._conversations.save_outbound(conversation.id, ack)
         await self._session.commit()
+
         logger.info(
             "handoff_requested_by_customer",
             conversation_id=conversation.id,
@@ -140,25 +293,29 @@ class ChatService:
             ),
             self._settings,
         )
+
+        await self._send_once(wa_id, conversation.id, ack, reply_to)
         await self._announce(conversation.id)
 
     async def _handled_by_human(
-        self, wa_id: str, conversation: Conversation, text: str | None
+        self,
+        wa_id: str,
+        conversation: Conversation,
+        text: str | None,
+        reply_to: str | None = None,
     ) -> bool:
         """True when this message must not reach the model.
 
-        Called after the inbound message has been persisted and marked read,
-        and before any generation: a message is always stored and always
-        announced to the dashboard. Only the AI reply is skipped.
+        Called after the inbound message has been committed and announced, and
+        before any generation: a message is always stored and always shown to
+        operators. Only the AI reply is skipped.
         """
         if conversation.mode == MODE_HUMAN:
-            await self._session.commit()
             logger.info(
                 "message_left_for_operator",
                 conversation_id=conversation.id,
                 assigned_operator=conversation.assigned_operator,
             )
-            await self._announce(conversation.id)
             return True
 
         # Negotiation is checked before wants_human because it is the more
@@ -173,16 +330,14 @@ class ChatService:
         # for 1500" has made an offer, and making them repeat it twice more to
         # earn a human is how a live lead goes cold.
         if price_policy.is_negotiating(text):
-            logger.info(
-                "negotiation_handoff",
-                conversation_id=conversation.id,
-            )
+            logger.info("negotiation_handoff", conversation_id=conversation.id)
             await self._begin_handoff(
                 wa_id,
                 conversation,
                 ack=price_policy.sales_handoff_ack(self._settings.sales_phone),
                 reason=price_policy.SALES_HANDOFF_REASON,
                 tag=TAG_SALES_LEAD,
+                reply_to=reply_to,
             )
             return True
 
@@ -195,10 +350,56 @@ class ChatService:
                 wa_id,
                 conversation,
                 tag=TAG_SALES_LEAD if is_sales_lead(text) else None,
+                reply_to=reply_to,
             )
             return True
 
         return False
+
+    # -----------------------------------------------------------------
+    # Quota
+    # -----------------------------------------------------------------
+
+    async def _within_quota(
+        self,
+        wa_id: str,
+        conversation_id: int,
+        wa_message_id: str,
+        text: str | None,
+    ) -> bool:
+        """Check per-customer limits and the global spend guard.
+
+        Runs after the message is stored and before anything is paid for. The
+        ordering is the point: a throttled customer's messages still appear in
+        the operator's transcript, because we decline to *answer*, never to
+        *listen*.
+
+        A refusal is sent at most once per episode -- see ``QuotaDecision``.
+        Replying to every message of a flood would make the refusals the flood.
+        """
+        decision = await quota.check(wa_id, wa_message_id, text, self._settings)
+        if decision.allowed:
+            return True
+
+        logger.info(
+            "message_declined_by_quota",
+            conversation_id=conversation_id,
+            reason=decision.reason,
+            notified=decision.notify,
+        )
+
+        if decision.notify:
+            await self._send_fixed(
+                wa_id,
+                conversation_id,
+                quota.message_for(decision, self._settings.sales_phone),
+                reply_to=wa_message_id,
+            )
+        return False
+
+    # -----------------------------------------------------------------
+    # Generation
+    # -----------------------------------------------------------------
 
     async def _generate_and_send(
         self,
@@ -207,6 +408,7 @@ class ChatService:
         conversation_id: int,
         history: list[dict],
         retrieval_query: str | None,
+        reply_to: str | None = None,
         welcome: bool = False,
         general_question: bool = False,
     ) -> None:
@@ -219,47 +421,80 @@ class ChatService:
         ``general_question`` means the scope check decided no company document
         was needed, so ``retrieval_query`` is None by design rather than by
         accident. The prompt is told which of the two it is.
+
+        No transaction is open while the model is called. The AI log is written
+        in the same transaction as the reservation, so one commit records both
+        what we spent and what we are about to say.
         """
-        documents: list[RetrievedDocument] = []
-        retrieval_attempted = bool(retrieval_query)
-        if retrieval_query:
+        cached: CachedGeneration | None = None
+        if reply_to:
+            cached = await get_cached_generation(reply_to, self._settings)
+            if cached is not None:
+                DUPLICATE_DELIVERIES_TOTAL.labels(stage="generation_cache").inc()
+
+        error: str | None = None
+
+        if cached is not None:
+            # A previous attempt already paid for this answer. Reuse it rather
+            # than buying a second one that says almost the same thing.
+            reply_text = cached.text
+            generation = cached
+        else:
+            documents: list[RetrievedDocument] = []
+            retrieval_attempted = bool(retrieval_query)
+            if retrieval_query:
+                try:
+                    documents = await self._retriever.retrieve(
+                        retrieval_query, limit=self._settings.rag_top_k
+                    )
+                except Exception:
+                    # Retrieval must never break the conversation. The prompt is
+                    # still told a search happened and returned nothing, so the
+                    # model declines to answer from memory rather than inventing.
+                    logger.error("retrieval_failed", exc_info=True)
+
+            # Retrieval is the last database work before the completion: the
+            # embedding call is external and the vector search is a read. Let
+            # the connection go before the slowest call in the request.
+            await self._release()
+
+            instructions = self._prompts.build_instructions(
+                user_name=name,
+                documents=documents,
+                retrieval_attempted=retrieval_attempted,
+                is_first_message=welcome,
+                general_question=general_question,
+            )
+
+            reply_text = FALLBACK_REPLY
+            generation = None
             try:
-                documents = await self._retriever.retrieve(
-                    retrieval_query, limit=self._settings.rag_top_k
+                result = await self._ai.generate_reply(
+                    history, instructions=instructions
                 )
-            except Exception:
-                # Retrieval must never break the conversation. The prompt is
-                # still told a search happened and returned nothing, so the
-                # model declines to answer from memory rather than inventing.
-                logger.error("retrieval_failed", exc_info=True)
-
-        instructions = self._prompts.build_instructions(
-            user_name=name,
-            documents=documents,
-            retrieval_attempted=retrieval_attempted,
-            is_first_message=welcome,
-            general_question=general_question,
-        )
-
-        reply_text = FALLBACK_REPLY
-        try:
-            result = await self._ai.generate_reply(history, instructions=instructions)
-            reply_text = result.text or FALLBACK_REPLY
-            # Usage fields are optional in the API response; log 0 when absent.
-            await self._ai_logs.create(
-                model=result.model,
-                conversation_id=conversation_id,
-                prompt_tokens=result.prompt_tokens or 0,
-                completion_tokens=result.completion_tokens or 0,
-                total_tokens=result.total_tokens or 0,
-                latency_ms=result.latency_ms,
-            )
-        except ExternalServiceError as exc:
-            await self._ai_logs.create(
-                model=self._settings.openai_model,
-                conversation_id=conversation_id,
-                error=str(exc),
-            )
+                reply_text = result.text or FALLBACK_REPLY
+                # Usage fields are optional in the API response; log 0 when absent.
+                generation = CachedGeneration(
+                    text=reply_text,
+                    model=result.model,
+                    prompt_tokens=result.prompt_tokens or 0,
+                    completion_tokens=result.completion_tokens or 0,
+                    total_tokens=result.total_tokens or 0,
+                    latency_ms=result.latency_ms,
+                )
+                # Cached before any database write, because the window a crash
+                # opens is precisely the one where the write never happens and
+                # the completion has already been billed.
+                if reply_to:
+                    await store_generation(reply_to, generation, self._settings)
+                await quota.record_usage(
+                    prompt_tokens=generation.prompt_tokens,
+                    completion_tokens=generation.completion_tokens,
+                    model=generation.model,
+                    settings=self._settings,
+                )
+            except ExternalServiceError as exc:
+                error = str(exc)
 
         # The last gate before a customer sees anything. A reply carrying a
         # figure is discarded whole rather than edited: a sentence with its
@@ -278,31 +513,68 @@ class ChatService:
         if welcome:
             reply_text = f"{WELCOME}\n\n{reply_text}"
 
-        send_result = await self._whatsapp.send_text(wa_id, reply_text)
-        out_id = (send_result.get("messages") or [{}])[0].get("id")
-        await self._conversations.save_outbound(
-            conversation_id, reply_text, wa_message_id=out_id
-        )
-        await self._session.commit()
-        await self._announce(conversation_id)
+        # --- Stage: RESERVE (+ the AI log, in the same transaction) ---------
+        if generation is not None:
+            await self._ai_logs.create(
+                model=generation.model,
+                conversation_id=conversation_id,
+                prompt_tokens=generation.prompt_tokens,
+                completion_tokens=generation.completion_tokens,
+                total_tokens=generation.total_tokens,
+                latency_ms=generation.latency_ms,
+            )
+        elif error is not None:
+            await self._ai_logs.create(
+                model=self._settings.openai_model,
+                conversation_id=conversation_id,
+                error=error,
+            )
+
+        sent = await self._send_once(wa_id, conversation_id, reply_text, reply_to)
+
+        if sent:
+            # The reply is durably recorded, so the cached completion has done
+            # its job. Dropping it keeps Redis proportional to in-flight work.
+            if reply_to:
+                await clear_generation(reply_to, self._settings)
+            await self._announce(conversation_id)
+
+    # -----------------------------------------------------------------
+    # Entry points
+    # -----------------------------------------------------------------
 
     async def handle_text_message(
         self, wa_id: str, name: str | None, wa_message_id: str, text: str
     ) -> None:
         """Persist an inbound text, generate an AI reply, and send it back."""
-        if await self._conversations.messages.exists_by_wa_id(wa_message_id):
-            logger.info("duplicate_webhook_delivery", wa_message_id=wa_message_id)
-            return
-
+        # --- Stage: CLAIM ---------------------------------------------------
+        # One statement decides whether this delivery is ours to process. The
+        # old exists-then-insert let two concurrent redeliveries both pass.
         _, conversation = await self._conversations.get_context(wa_id, name)
-        await self._conversations.save_inbound(
+        claimed = await self._conversations.claim_inbound(
             conversation.id, wa_message_id, type="text", content=text
         )
+        if claimed is None:
+            await self._session.rollback()
+            DUPLICATE_DELIVERIES_TOTAL.labels(stage="inbound_claim").inc()
+            logger.info("duplicate_webhook_delivery", wa_message_id=wa_message_id)
+            return
+        await self._session.commit()
+
+        # The customer's message is now durable. Everything after this point
+        # can crash without losing it, and the operator can already see it.
+        await self._announce(conversation.id)
         await self._whatsapp.mark_as_read(wa_message_id)
 
-        if await self._handled_by_human(wa_id, conversation, text):
+        if await self._handled_by_human(
+            wa_id, conversation, text, reply_to=wa_message_id
+        ):
             return
 
+        if not await self._within_quota(wa_id, conversation.id, wa_message_id, text):
+            return
+
+        # --- Stage: READ ----------------------------------------------------
         first = await self._is_first_customer_message(conversation.id)
 
         # ".", "\u061f" or a lone emoji as an opening message: there is nothing
@@ -310,7 +582,10 @@ class ChatService:
         # are and the model is not called at all.
         if first and is_unintelligible(text):
             await self._send_fixed(
-                wa_id, conversation.id, f"{WELCOME}\n\n{NOT_UNDERSTOOD}"
+                wa_id,
+                conversation.id,
+                f"{WELCOME}\n\n{NOT_UNDERSTOOD}",
+                reply_to=wa_message_id,
             )
             return
 
@@ -328,7 +603,9 @@ class ChatService:
             reply = intent.out_of_scope_reply(self._settings.company_name)
             if first:
                 reply = f"{WELCOME}\n\n{reply}"
-            await self._send_fixed(wa_id, conversation.id, reply)
+            await self._send_fixed(
+                wa_id, conversation.id, reply, reply_to=wa_message_id
+            )
             return
 
         history = await self._conversations.build_history(conversation.id)
@@ -348,6 +625,7 @@ class ChatService:
             conversation.id,
             history,
             retrieval_query=text if scope == intent.COMPANY else None,
+            reply_to=wa_message_id,
             welcome=first,
             general_question=scope == intent.DOMAIN,
         )
@@ -372,23 +650,36 @@ class ChatService:
         caption looked off-topic would leave a customer staring at an
         unanswered picture of their own wall.
         """
-        if await self._conversations.messages.exists_by_wa_id(wa_message_id):
-            return
-
         _, conversation = await self._conversations.get_context(wa_id, name)
-        await self._conversations.save_inbound(
+        claimed = await self._conversations.claim_inbound(
             conversation.id,
             wa_message_id,
             type=type,
             content=caption or f"[{type} received]",
             media_id=media_id,
         )
+        if claimed is None:
+            await self._session.rollback()
+            DUPLICATE_DELIVERIES_TOTAL.labels(stage="inbound_claim").inc()
+            logger.info("duplicate_webhook_delivery", wa_message_id=wa_message_id)
+            return
+        await self._session.commit()
+
+        await self._announce(conversation.id)
         await self._whatsapp.mark_as_read(wa_message_id)
 
         # A photo of a damaged wall often carries the request in its caption --
         # including the negotiation. "Do it for 1500" under a picture of a
         # living room is the same offer it would be on its own.
-        if await self._handled_by_human(wa_id, conversation, caption):
+        if await self._handled_by_human(
+            wa_id, conversation, caption, reply_to=wa_message_id
+        ):
+            return
+
+        # Media costs the same completion as text, so it goes through the same
+        # quota gate. Sending twenty photos in a row is one of the cheaper ways
+        # to run up a bill.
+        if not await self._within_quota(wa_id, conversation.id, wa_message_id, caption):
             return
 
         first = await self._is_first_customer_message(conversation.id)
@@ -412,6 +703,7 @@ class ChatService:
             conversation.id,
             history,
             retrieval_query=caption,
+            reply_to=wa_message_id,
             welcome=first,
         )
 
@@ -419,23 +711,30 @@ class ChatService:
         self, wa_id: str, name: str | None, wa_message_id: str, type: str
     ) -> None:
         """Politely decline message types the bot does not handle yet."""
-        if await self._conversations.messages.exists_by_wa_id(wa_message_id):
-            return
         _, conversation = await self._conversations.get_context(wa_id, name)
-        await self._conversations.save_inbound(
+        claimed = await self._conversations.claim_inbound(
             conversation.id, wa_message_id, type=type, content=f"[{type} received]"
         )
+        if claimed is None:
+            await self._session.rollback()
+            DUPLICATE_DELIVERIES_TOTAL.labels(stage="inbound_claim").inc()
+            return
+        await self._session.commit()
+
+        await self._announce(conversation.id)
 
         # While a human owns the conversation the bot says nothing at all --
         # not even this. The operator can see the voice note in the transcript.
-        if await self._handled_by_human(wa_id, conversation, None):
+        if await self._handled_by_human(
+            wa_id, conversation, None, reply_to=wa_message_id
+        ):
             return
 
         first = await self._is_first_customer_message(conversation.id)
         reply = "Sorry, I can't process that type of message yet. Please send text."
         if first:
             reply = f"{WELCOME}\n\n{reply}"
-        await self._send_fixed(wa_id, conversation.id, reply)
+        await self._send_fixed(wa_id, conversation.id, reply, reply_to=wa_message_id)
 
     async def handle_status_update(self, wa_message_id: str, status: str) -> None:
         """Record delivery/read/failed status updates for outbound messages.
@@ -444,6 +743,10 @@ class ChatService:
         produces sent/delivered/read callbacks, which would triple the event
         volume to move a label the operator is not waiting on. The next real
         activity refetch picks the status up.
+
+        This is also how an ``unconfirmed`` reply resolves itself: if the send
+        did reach Meta, a status callback arrives carrying its id and the row
+        is updated to delivered.
         """
         await self._conversations.messages.update_status_by_wa_id(wa_message_id, status)
         await self._session.commit()
