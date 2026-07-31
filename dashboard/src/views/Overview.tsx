@@ -84,6 +84,13 @@ export default function Overview() {
               hint={`${number(overview.data.new_users)} new in period`}
             />
             <Card
+              label="Conversations"
+              value={number(overview.data.total_conversations)}
+              hint={`${number(
+                overview.data.new_conversations,
+              )} new in period`}
+            />
+            <Card
               label="Messages in period"
               value={number(overview.data.messages_in_period)}
               hint={`${number(overview.data.total_messages)} all time`}
@@ -151,30 +158,123 @@ export default function Overview() {
       </div>
 
       <div className="panel">
+        <h2>Model requests and latency</h2>
+        <p className="muted" style={{ fontSize: 13, marginTop: 0 }}>
+          Messages and requests diverge when the bot is off, when customers are
+          rate limited, or when a conversation is owned by a human.
+        </p>
+        <Loader loading={daily.loading} error={daily.error}>
+          {daily.data && daily.data.length === 0 && (
+            <Empty>No activity in this period yet.</Empty>
+          )}
+          {daily.data && daily.data.length > 0 && (
+            <ResponsiveContainer width="100%" height={240}>
+              <ComposedChart data={daily.data}>
+                <CartesianGrid stroke="#272c37" vertical={false} />
+                <XAxis dataKey="day" stroke="#939aab" fontSize={12} />
+                <YAxis yAxisId="left" stroke="#939aab" fontSize={12} />
+                <YAxis
+                  yAxisId="right"
+                  orientation="right"
+                  stroke="#939aab"
+                  fontSize={12}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "#1e222b",
+                    border: "1px solid #272c37",
+                    borderRadius: 8,
+                  }}
+                />
+                <Legend />
+                <Bar
+                  yAxisId="left"
+                  dataKey="requests"
+                  name="AI requests"
+                  fill="#1a9e4b"
+                  radius={[4, 4, 0, 0]}
+                />
+                <Line
+                  yAxisId="right"
+                  type="monotone"
+                  dataKey="avg_latency_ms"
+                  name="Avg latency (ms)"
+                  stroke="#939aab"
+                  dot={false}
+                  strokeWidth={2}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
+        </Loader>
+      </div>
+
+      <div className="panel">
+        <h2>Daily token breakdown</h2>
+        <Loader loading={daily.loading} error={daily.error}>
+          {daily.data && daily.data.length > 0 && (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th>Requests</th>
+                    <th>Prompt tokens</th>
+                    <th>Completion tokens</th>
+                    <th>Total tokens</th>
+                    <th>Avg latency</th>
+                    <th>Cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {daily.data.map((row) => (
+                    <tr key={row.day}>
+                      <td>{row.day}</td>
+                      <td>{number(row.requests)}</td>
+                      <td>{number(row.prompt_tokens)}</td>
+                      <td>{number(row.completion_tokens)}</td>
+                      <td>{number(row.total_tokens)}</td>
+                      <td className="muted">{ms(row.avg_latency_ms)}</td>
+                      <td>{money(row.cost_usd)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {daily.data && daily.data.length === 0 && (
+            <Empty>No activity in this period yet.</Empty>
+          )}
+        </Loader>
+      </div>
+
+      <div className="panel">
         <h2>Most frequently asked questions</h2>
         <Loader loading={questions.loading} error={questions.error}>
           {questions.data && questions.data.length === 0 && (
             <Empty>Not enough messages yet.</Empty>
           )}
           {questions.data && questions.data.length > 0 && (
-            <table>
-              <thead>
-                <tr>
-                  <th>Question</th>
-                  <th style={{ width: 90 }}>Times</th>
-                  <th style={{ width: 190 }}>Last asked</th>
-                </tr>
-              </thead>
-              <tbody>
-                {questions.data.map((question) => (
-                  <tr key={question.question}>
-                    <td>{question.question}</td>
-                    <td>{question.count}</td>
-                    <td className="muted">{datetime(question.last_asked)}</td>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Question</th>
+                    <th style={{ width: 90 }}>Times</th>
+                    <th style={{ width: 190 }}>Last asked</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {questions.data.map((question) => (
+                    <tr key={question.question}>
+                      <td>{question.question}</td>
+                      <td>{question.count}</td>
+                      <td className="muted">{datetime(question.last_asked)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Loader>
       </div>

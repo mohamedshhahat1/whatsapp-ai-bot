@@ -40,26 +40,28 @@ export default function Knowledge() {
             </p>
           )}
           {documents.data && documents.data.length > 0 && (
-            <table>
-              <thead>
-                <tr>
-                  <th>Title</th>
-                  <th>Source</th>
-                  <th>Chunks</th>
-                  <th>Updated</th>
-                </tr>
-              </thead>
-              <tbody>
-                {documents.data.map((document) => (
-                  <tr key={document.id}>
-                    <td>{document.title}</td>
-                    <td className="muted">{document.source}</td>
-                    <td>{number(document.chunk_count)}</td>
-                    <td className="muted">{datetime(document.updated_at)}</td>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Source</th>
+                    <th>Chunks</th>
+                    <th>Updated</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {documents.data.map((document) => (
+                    <tr key={document.id}>
+                      <td>{document.title}</td>
+                      <td className="muted">{document.source}</td>
+                      <td>{number(document.chunk_count)}</td>
+                      <td className="muted">{datetime(document.updated_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </Loader>
       </div>
@@ -78,11 +80,16 @@ export default function Knowledge() {
         >
           <input
             value={query}
-            placeholder="e.g. price per square metre for painting"
+            aria-label="Question to test retrieval with"
+            placeholder="e.g. what surface preparation is done before painting"
             onChange={(event) => setQuery(event.target.value)}
           />
           <button className="primary">Test</button>
         </form>
+        <p className="muted" style={{ fontSize: 12 }}>
+          Pricing questions are deliberately not answerable: the assistant
+          never quotes a figure and escalates to a person instead.
+        </p>
         {error && <p className="error">{error}</p>}
         {hits &&
           hits.map((hit, index) => (
