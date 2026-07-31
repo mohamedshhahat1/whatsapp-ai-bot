@@ -1,0 +1,83 @@
+{{/*
+Notification templates.
+
+The stock Alertmanager message is essentially an alert name and a link. At 3am
+that tells the person on call nothing they can act on, so every template here
+carries the description and the runbook path from the rule itself.
+
+Registered via the `templates:` key in alertmanager.yml.
+*/}}
+
+{{/* ---------------------------------------------------------------- Slack */}}
+
+{{ define "slack.title" -}}
+{{ if eq .Status "firing" }}[{{ .CommonLabels.severity | toUpper }}]{{ else }}[RESOLVED]{{ end }} {{ .CommonLabels.alertname }}{{ if .CommonLabels.service }} ({{ .CommonLabels.service }}){{ end }}
+{{- end }}
+
+{{ define "slack.text" -}}
+{{ range .Alerts -}}
+*{{ .Annotations.summary }}*
+{{ .Annotations.description }}
+
+{{ if .Labels.instance }}Instance: `{{ .Labels.instance }}`
+{{ end -}}
+{{ if .Labels.mountpoint }}Mount: `{{ .Labels.mountpoint }}`
+{{ end -}}
+{{ if .Labels.runbook }}Runbook: `{{ .Labels.runbook }}`
+{{ end -}}
+Started: {{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}
+{{ end }}
+{{- end }}
+
+{{/* ------------------------------------------------------------- Telegram */}}
+
+{{ define "telegram.message" -}}
+{{ if eq .Status "firing" }}\u26a0\ufe0f <b>{{ .CommonLabels.severity | toUpper }}</b>{{ else }}\u2705 <b>RESOLVED</b>{{ end }}
+{{ range .Alerts -}}
+<b>{{ .Labels.alertname }}</b>{{ if .Labels.service }} \u2014 {{ .Labels.service }}{{ end }}
+{{ .Annotations.summary }}
+
+{{ .Annotations.description }}
+{{ if .Labels.runbook }}
+Runbook: <code>{{ .Labels.runbook }}</code>
+{{ end -}}
+{{ end }}
+{{- end }}
+
+{{/* ---------------------------------------------------------------- Email */}}
+
+{{ define "email.subject" -}}
+{{ if eq .Status "firing" }}[{{ .CommonLabels.severity | toUpper }}]{{ else }}[RESOLVED]{{ end }} {{ .CommonLabels.alertname }} - whatsapp-ai-bot
+{{- end }}
+
+{{ define "email.body" -}}
+<html>
+<body style="font-family: -apple-system, Segoe UI, Roboto, sans-serif; color: #1a1a1a;">
+  <h2 style="margin-bottom: 4px;">
+    {{ if eq .Status "firing" }}Alert firing{{ else }}Alert resolved{{ end }}
+  </h2>
+  <p style="color: #666; margin-top: 0;">
+    Environment: {{ .CommonLabels.environment }}{{ if .CommonLabels.service }} &middot; Service: {{ .CommonLabels.service }}{{ end }}
+  </p>
+
+  {{ range .Alerts }}
+  <div style="border-left: 4px solid {{ if eq .Labels.severity "critical" }}#d13212{{ else if eq .Labels.severity "warning" }}#f0ad4e{{ else }}#0073bb{{ end }}; padding: 8px 16px; margin: 16px 0; background: #fafafa;">
+    <h3 style="margin: 0 0 8px 0;">{{ .Labels.alertname }}</h3>
+    <p style="margin: 0 0 8px 0;"><strong>{{ .Annotations.summary }}</strong></p>
+    <p style="margin: 0 0 8px 0;">{{ .Annotations.description }}</p>
+    <table style="font-size: 13px; color: #444; border-collapse: collapse;">
+      <tr><td style="padding-right: 12px;">Severity</td><td>{{ .Labels.severity }}</td></tr>
+      {{ if .Labels.instance }}<tr><td style="padding-right: 12px;">Instance</td><td><code>{{ .Labels.instance }}</code></td></tr>{{ end }}
+      {{ if .Labels.mountpoint }}<tr><td style="padding-right: 12px;">Mount</td><td><code>{{ .Labels.mountpoint }}</code></td></tr>{{ end }}
+      {{ if .Labels.runbook }}<tr><td style="padding-right: 12px;">Runbook</td><td><code>{{ .Labels.runbook }}</code></td></tr>{{ end }}
+      <tr><td style="padding-right: 12px;">Started</td><td>{{ .StartsAt.Format "2006-01-02 15:04:05 UTC" }}</td></tr>
+    </table>
+  </div>
+  {{ end }}
+
+  <p style="font-size: 12px; color: #888;">
+    Sent by Alertmanager. Full alert documentation is in docs/ALERTING.md.
+  </p>
+</body>
+</html>
+{{- end }}
