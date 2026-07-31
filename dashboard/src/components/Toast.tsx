@@ -77,7 +77,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
                 aria-label="Dismiss notification"
                 onClick={() => dismiss(toast.id)}
               >
-                \u00d7
+                {"\u00d7"}
               </button>
             </div>
             {toast.actionLabel && (
