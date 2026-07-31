@@ -1,10 +1,16 @@
 import { useState } from "react"
 
-import { ApiError, api } from "../api"
+import { ApiError, PAGE_SIZE, api } from "../api"
 import type { MessageHit } from "../api"
 import { datetime } from "../format"
 
-export default function Search() {
+interface Props {
+  // Every hit carries conversation_id and clicking one used to do nothing,
+  // which made search a read-only dead end.
+  onOpenConversation: (id: number) => void
+}
+
+export default function Search({ onOpenConversation }: Props) {
   const [query, setQuery] = useState("")
   const [hits, setHits] = useState<MessageHit[] | null>(null)
   const [loading, setLoading] = useState(false)
@@ -42,41 +48,70 @@ export default function Search() {
           <input
             value={query}
             placeholder="Search all customer and bot messages..."
+            aria-label="Search messages"
             onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                setQuery("")
+                setHits(null)
+              }
+            }}
           />
           <button className="primary" disabled={loading}>
             {loading ? "Searching..." : "Search"}
           </button>
         </form>
+        <p className="muted" style={{ fontSize: 12, marginBottom: 0 }}>
+          At least two characters. Press Escape to clear. Results are capped at
+          the newest {PAGE_SIZE} matches - the search endpoint does not page.
+        </p>
         {error && <p className="error">{error}</p>}
       </div>
 
       {hits && (
         <div className="panel">
           <h2>{hits.length} result(s)</h2>
+          {hits.length === 0 && (
+            <p className="muted">No message matched that text.</p>
+          )}
           {hits.length > 0 && (
-            <table>
-              <thead>
-                <tr>
-                  <th>When</th>
-                  <th>Customer</th>
-                  <th>Direction</th>
-                  <th>Message</th>
-                </tr>
-              </thead>
-              <tbody>
-                {hits.map((hit) => (
-                  <tr key={hit.message_id}>
-                    <td className="muted">{datetime(hit.created_at)}</td>
-                    <td>{hit.name || hit.wa_id}</td>
-                    <td>
-                      <span className="badge">{hit.direction}</span>
-                    </td>
-                    <td>{hit.content}</td>
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>When</th>
+                    <th>Customer</th>
+                    <th>Direction</th>
+                    <th>Message</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {hits.map((hit) => (
+                    <tr
+                      key={hit.message_id}
+                      className="clickable"
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Open conversation ${hit.conversation_id}`}
+                      onClick={() => onOpenConversation(hit.conversation_id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault()
+                          onOpenConversation(hit.conversation_id)
+                        }
+                      }}
+                    >
+                      <td className="muted">{datetime(hit.created_at)}</td>
+                      <td>{hit.name || hit.wa_id}</td>
+                      <td>
+                        <span className="badge">{hit.direction}</span>
+                      </td>
+                      <td>{hit.content}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
       )}
