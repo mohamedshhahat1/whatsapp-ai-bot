@@ -47,12 +47,12 @@ logger = get_logger(__name__)
 
 # Key namespace. Everything is prefixed so a shared Redis stays legible and
 # `redis-cli --scan --pattern 'quota:*'` shows the whole subsystem.
-_MESSAGES = "quota:msgs:"      # sorted set, one member per message, 24h of history
-_DUPLICATE = "quota:dup:"      # counter per (customer, message body)
-_BLOCKED = "quota:blocked:"    # presence = temporarily blocked
-_SPEND = "quota:spend:"        # daily USD, float
-_TOKENS = "quota:tokens:"      # daily tokens, int
-_ALERTED = "quota:alerted:"    # de-duplicates alerts within a day
+_MESSAGES = "quota:msgs:"  # sorted set, one member per message, 24h of history
+_DUPLICATE = "quota:dup:"  # counter per (customer, message body)
+_BLOCKED = "quota:blocked:"  # presence = temporarily blocked
+_SPEND = "quota:spend:"  # daily USD, float
+_TOKENS = "quota:tokens:"  # daily tokens, int
+_ALERTED = "quota:alerted:"  # de-duplicates alerts within a day
 _KILL_SWITCH = "quota:ai:disabled"  # set by an operator, cleared by an operator
 
 # Reasons, used for metrics labels, logs and choosing the customer-facing copy.
@@ -206,7 +206,9 @@ async def check(
         return await _check_customer(client, wa_id, wa_message_id, text, settings)
     except Exception as exc:
         # Fail open, loudly.
-        logger.warning("quota_check_failed", wa_id_hash=_fingerprint(wa_id), error=str(exc))
+        logger.warning(
+            "quota_check_failed", wa_id_hash=_fingerprint(wa_id), error=str(exc)
+        )
         return ALLOWED
     finally:
         try:
@@ -227,9 +229,7 @@ async def _check_spend(client: Any, settings: Settings) -> QuotaDecision:
 
     if killed:
         AI_DISABLED.set(1)
-        return QuotaDecision(
-            allowed=False, reason=AI_DISABLED_MANUALLY, notify=True
-        )
+        return QuotaDecision(allowed=False, reason=AI_DISABLED_MANUALLY, notify=True)
 
     spend = float(spend_raw or 0.0)
     tokens = int(tokens_raw or 0)
@@ -448,9 +448,7 @@ async def record_usage(
         logger.warning("spend_record_failed", model=model, error=str(exc))
 
 
-async def _alert_once(
-    client: Any, marker: str, event: str, **fields: object
-) -> None:
+async def _alert_once(client: Any, marker: str, event: str, **fields: object) -> None:
     """Emit an alert-worthy log line at most once per day per marker.
 
     Without the marker, breaching the ceiling logs an alert for every
