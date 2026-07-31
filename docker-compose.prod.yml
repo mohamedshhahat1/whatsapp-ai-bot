@@ -16,6 +16,13 @@
 # DOMAIN is required. nginx renders its config from it and Let's Encrypt
 # issues against it, so a stack started without it would serve a certificate
 # for the wrong name -- failing loudly here beats failing at the TLS handshake.
+#
+# ALERTING CREDENTIALS are the one exception to the secrets rule. Alertmanager
+# has no environment expansion of its own and only supports *_file for some
+# fields, so its config is rendered by envsubst at start-up from shell
+# environment variables. Put them in a root-owned 0600 env file and source it
+# before `docker compose up`; be aware they are visible via `docker inspect`
+# on the alertmanager-config init container. See docs/ALERTING.md.
 
 x-app-environment: &app-environment
   ENVIRONMENT: production
@@ -194,8 +201,38 @@ services:
       RESTORE_DRILL_ENABLED: "${RESTORE_DRILL_ENABLED:-true}"
       RESTORE_DRILL_DAYS: "${RESTORE_DRILL_DAYS:-7}"
       BACKUP_MAX_AGE_HOURS: "${BACKUP_MAX_AGE_HOURS:-30}"
+      # --- Off-site replication (docs/OFFSITE_BACKUP.md) -------------------
+      # Default 'none' keeps the stack working unchanged for anyone who has
+      # not configured a provider yet; backup.sh logs a warning on every run
+      # rather than failing.
+      BACKUP_REMOTE_PROVIDER: "${BACKUP_REMOTE_PROVIDER:-none}"
+      BACKUP_REMOTE_BUCKET: "${BACKUP_REMOTE_BUCKET:-}"
+      BACKUP_REMOTE_PREFIX: "${BACKUP_REMOTE_PREFIX:-whatsapp-ai-bot}"
+      BACKUP_REMOTE_MAX_AGE_HOURS: "${BACKUP_REMOTE_MAX_AGE_HOURS:-30}"
+      BACKUP_REMOTE_RETRY_ATTEMPTS: "${BACKUP_REMOTE_RETRY_ATTEMPTS:-5}"
+      RETAIN_REMOTE_DAILY: "${RETAIN_REMOTE_DAILY:-30}"
+      RETAIN_REMOTE_WEEKLY: "${RETAIN_REMOTE_WEEKLY:-12}"
+      RETAIN_REMOTE_MONTHLY: "${RETAIN_REMOTE_MONTHLY:-24}"
+      BACKUP_S3_REGION: "${BACKUP_S3_REGION:-us-east-1}"
+      BACKUP_S3_ENDPOINT: "${BACKUP_S3_ENDPOINT:-}"
+      BACKUP_S3_STORAGE_CLASS: "${BACKUP_S3_STORAGE_CLASS:-}"
+      BACKUP_GCS_PROJECT: "${BACKUP_GCS_PROJECT:-}"
+      BACKUP_AZURE_ACCOUNT: "${BACKUP_AZURE_ACCOUNT:-}"
+      # Credentials are read from Docker secrets via their _FILE variants.
+      BACKUP_S3_ACCESS_KEY_ID_FILE: /run/secrets/backup_s3_access_key_id
+      BACKUP_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/backup_s3_secret_access_key
+      BACKUP_GCS_CREDENTIALS_FILE: /run/secrets/backup_gcs_credentials
+      BACKUP_AZURE_SAS_TOKEN_FILE: /run/secrets/backup_azure_sas_token
+      BACKUP_ENCRYPTION_PASSPHRASE_FILE: /run/secrets/backup_encryption_passphrase
+      BACKUP_AGE_RECIPIENT: "${BACKUP_AGE_RECIPIENT:-}"
+      BACKUP_METRICS_DIR: /backups/metrics
     secrets:
       - postgres_password
+      - backup_s3_access_key_id
+      - backup_s3_secret_access_key
+      - backup_gcs_credentials
+      - backup_azure_sas_token
+      - backup_encryption_passphrase
     volumes:
       - ./scripts:/scripts:ro
       - backups:/backups
@@ -213,17 +250,164 @@ services:
       start_period: 2m
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # Monitoring
+  # ---------------------------------------------------------------------------
+
   prometheus:
     image: prom/prometheus:latest
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-targets:/etc/prometheus/targets:ro
       - promdata:/prometheus
     ports:
       - "127.0.0.1:9090:9090"
     depends_on:
-      - app
-      - worker
+      prometheus-targets-init:
+        condition: service_completed_successfully
+      app:
+        condition: service_started
+      worker:
+        condition: service_started
+    restart: unless-stopped
+
+  prometheus-targets-init:
+    # Prometheus does NOT expand environment variables in its config file, so
+    # the public probe target cannot be written inline -- ${DOMAIN} would be
+    # scraped literally. Rendering a file_sd target file is the supported way
+    # to get a deployment-specific value in.
+    #
+    # nginx:1.27-alpine purely because it already ships envsubst and is already
+    # being pulled for the nginx service.
+    image: nginx:1.27-alpine
+    environment:
+      DOMAIN: ${DOMAIN:?DOMAIN must be set, e.g. export DOMAIN=bot.example.com}
+    volumes:
+      - prometheus-targets:/out
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        printf '[{"targets":["https://%s/health"],"labels":{"probe":"public-health"}}]' "$$DOMAIN" > /out/blackbox.json
+        echo "rendered blackbox targets for $$DOMAIN"
+    restart: "no"
+
+  alertmanager:
+    image: prom/alertmanager:latest
+    volumes:
+      - alertmanager-config:/etc/alertmanager
+      - ./monitoring/templates:/etc/alertmanager/templates:ro
+      - alertmanagerdata:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      # Required for silence links in notifications to be clickable.
+      - --web.external-url=http://127.0.0.1:9093
+    ports:
+      # Loopback only. The silence UI has no authentication of its own, and an
+      # exposed Alertmanager lets anyone silence every alert you have.
+      - "127.0.0.1:9093:9093"
+    depends_on:
+      alertmanager-config:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  alertmanager-config:
+    # Renders alertmanager.yml.tmpl. Alertmanager cannot expand environment
+    # variables itself and a Slack webhook URL cannot live in git.
+    #
+    # The envsubst variable list is EXPLICIT and must stay that way. A bare
+    # `envsubst` also substitutes $labels and $value inside the Go notification
+    # templates, silently emptying them -- producing alerts that arrive with no
+    # detail in them, discovered during the first real incident.
+    image: nginx:1.27-alpine
+    environment:
+      ALERT_SMTP_HOST: "${ALERT_SMTP_HOST:-}"
+      ALERT_SMTP_PORT: "${ALERT_SMTP_PORT:-587}"
+      ALERT_SMTP_USER: "${ALERT_SMTP_USER:-}"
+      ALERT_SMTP_PASSWORD: "${ALERT_SMTP_PASSWORD:-}"
+      ALERT_EMAIL_FROM: "${ALERT_EMAIL_FROM:-}"
+      ALERT_EMAIL_TO: "${ALERT_EMAIL_TO:-}"
+      ALERT_SLACK_WEBHOOK_URL: "${ALERT_SLACK_WEBHOOK_URL:-}"
+      ALERT_SLACK_CHANNEL: "${ALERT_SLACK_CHANNEL:-#alerts}"
+      ALERT_SLACK_CHANNEL_BACKUP: "${ALERT_SLACK_CHANNEL_BACKUP:-${ALERT_SLACK_CHANNEL:-#alerts}}"
+      ALERT_SLACK_CHANNEL_COST: "${ALERT_SLACK_CHANNEL_COST:-${ALERT_SLACK_CHANNEL:-#alerts}}"
+      ALERT_TELEGRAM_BOT_TOKEN: "${ALERT_TELEGRAM_BOT_TOKEN:-}"
+      ALERT_TELEGRAM_CHAT_ID: "${ALERT_TELEGRAM_CHAT_ID:-0}"
+    volumes:
+      - ./monitoring/alertmanager.yml.tmpl:/tmpl/alertmanager.yml.tmpl:ro
+      - alertmanager-config:/out
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        envsubst '$$ALERT_SMTP_HOST $$ALERT_SMTP_PORT $$ALERT_SMTP_USER $$ALERT_SMTP_PASSWORD $$ALERT_EMAIL_FROM $$ALERT_EMAIL_TO $$ALERT_SLACK_WEBHOOK_URL $$ALERT_SLACK_CHANNEL $$ALERT_SLACK_CHANNEL_BACKUP $$ALERT_SLACK_CHANNEL_COST $$ALERT_TELEGRAM_BOT_TOKEN $$ALERT_TELEGRAM_CHAT_ID' \
+          < /tmpl/alertmanager.yml.tmpl > /out/alertmanager.yml
+        echo "rendered /etc/alertmanager/alertmanager.yml"
+    restart: "no"
+
+  node-exporter:
+    # Host CPU, memory, disk. Also the delivery path for the backup and
+    # restore-drill metrics: scripts/backup-metrics.sh writes .prom files into
+    # the backups volume and the textfile collector picks them up.
+    image: prom/node-exporter:latest
+    command:
+      - --path.rootfs=/host
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --collector.textfile.directory=/backups/metrics
+      - --collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)
+    pid: host
+    volumes:
+      - /:/host:ro,rslave
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - backups:/backups:ro
+    expose:
+      - "9100"
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    environment:
+      DATA_SOURCE_URI: "db:5432/whatsapp_ai_bot?sslmode=disable"
+      DATA_SOURCE_USER: postgres
+      DATA_SOURCE_PASS_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    expose:
+      - "9187"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    expose:
+      - "9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  blackbox-exporter:
+    # Probes the PUBLIC hostname from outside the app containers. Every other
+    # target is scraped inside the compose network and would keep passing while
+    # DNS, nginx or the certificate were broken -- which is precisely the
+    # combination Meta needs to deliver a webhook.
+    image: prom/blackbox-exporter:latest
+    command:
+      - --config.file=/etc/blackbox/blackbox.yml
+    volumes:
+      - ./monitoring/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    expose:
+      - "9115"
     restart: unless-stopped
 
   grafana:
@@ -320,18 +504,38 @@ secrets:
     file: ./secrets/admin_api_key
   grafana_admin_password:
     file: ./secrets/grafana_admin_password
+  # Off-site backup credentials. init-secrets.sh creates all of these as empty
+  # files -- Docker refuses to start the stack if a declared secret file is
+  # missing, so they must exist even when off-site backups are disabled.
+  backup_s3_access_key_id:
+    file: ./secrets/backup_s3_access_key_id
+  backup_s3_secret_access_key:
+    file: ./secrets/backup_s3_secret_access_key
+  backup_gcs_credentials:
+    file: ./secrets/backup_gcs_credentials
+  backup_azure_sas_token:
+    file: ./secrets/backup_azure_sas_token
+  backup_encryption_passphrase:
+    file: ./secrets/backup_encryption_passphrase
 
 volumes:
   pgdata:
   redisdata:
   promdata:
   grafanadata:
+  alertmanagerdata:
+  # Rendered Alertmanager config. A volume rather than a bind mount so the
+  # substituted credentials never touch the host filesystem.
+  alertmanager-config:
+  # Rendered blackbox probe targets.
+  prometheus-targets:
   # Certificates and ACME account keys. Survives `docker compose down`;
   # `down -v` destroys them and forces reissue against Let's Encrypt's rate
   # limits (5 duplicate certificates per week).
   certbot-conf:
   # ACME HTTP-01 challenge files, written by certbot and served by nginx.
   certbot-www:
-  # Database dumps. On the same host as the database it protects -- copy them
-  # off the box as well. See docs/BACKUP_RESTORE.md, "Off-site copies".
+  # Database dumps, plus the metrics/ directory node-exporter reads. Local
+  # copies only -- off-site replication is configured separately, see
+  # docs/OFFSITE_BACKUP.md.
   backups:
