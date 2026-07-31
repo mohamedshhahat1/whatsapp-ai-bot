@@ -205,7 +205,7 @@ async def test_repeating_the_same_text_is_spam(redis, settings, clock) -> None:
 async def test_spam_detection_normalises_whitespace_and_case(
     redis, settings, clock
 ) -> None:
-    """"PRICE?" and "price ?" are the same message, which is what a script sends."""
+    """ "PRICE?" and "price ?" are the same message, which is what a script sends."""
     variants = ["PRICE?", "price?", "  Price ?  ", "PRICE ?", "price   ?"]
     for i, text in enumerate(variants):
         decision = await quota.check(WA_ID, f"wamid.v{i}", text, settings)
@@ -221,7 +221,9 @@ async def test_an_operator_can_lift_a_block(redis, settings) -> None:
         await quota.check(WA_ID, f"wamid.f{i}", f"msg {i}", settings)
 
     assert await quota.unblock(WA_ID, settings) is True
-    assert (await quota.check(WA_ID, "wamid.next", "sorry about that", settings)).allowed
+    assert (
+        await quota.check(WA_ID, "wamid.next", "sorry about that", settings)
+    ).allowed
 
 
 async def test_unblocking_someone_who_is_not_blocked_is_not_an_error(
@@ -299,6 +301,7 @@ async def test_everything_is_allowed_when_redis_is_down(
     monkeypatch, settings, clock
 ) -> None:
     """Fail open. A cache outage must not stop the business answering customers."""
+
     async def _broken(_settings):
         raise ConnectionError("redis is gone")
 
@@ -311,8 +314,6 @@ async def test_everything_is_allowed_when_redis_is_down(
 async def test_a_failure_midway_through_a_check_still_allows(
     monkeypatch, settings, clock
 ) -> None:
-    from tests.fake_redis import FakeRedis
-
     fake = FakeRedis(clock, unavailable=True)
 
     async def _client(_settings):
@@ -327,6 +328,7 @@ async def test_a_failure_midway_through_a_check_still_allows(
 async def test_recording_usage_never_raises(monkeypatch, settings) -> None:
     """The reply has already been generated and sent. Losing the counter is bad;
     raising here would be worse -- it would fail work that already succeeded."""
+
     async def _broken(_settings):
         raise ConnectionError("redis is gone")
 
@@ -343,6 +345,7 @@ async def test_the_snapshot_says_so_when_it_cannot_tell(monkeypatch, settings) -
     Zero renders as a reassuring empty chart at exactly the moment the guard
     has failed open and is protecting nothing.
     """
+
     async def _broken(_settings):
         raise ConnectionError("redis is gone")
 
@@ -357,6 +360,7 @@ async def test_checks_are_skipped_entirely_when_both_are_disabled(
     monkeypatch, settings
 ) -> None:
     """No Redis round trip at all when the feature is off."""
+
     async def _explode(_settings):
         raise AssertionError("Redis must not be contacted when quotas are off")
 
