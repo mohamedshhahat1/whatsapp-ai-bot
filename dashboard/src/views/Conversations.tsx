@@ -1,6 +1,13 @@
 import { useState } from "react"
 
-import { ApiError, api } from "../api"
+import {
+  ApiError,
+  MODE_HUMAN,
+  PAGE_SIZE,
+  TAG_SALES_LEAD,
+  api,
+} from "../api"
+import type { Conversation, Message } from "../api"
 import { Empty, Loader, Refreshing, useAsync } from "../components/Async"
 import { useEvents, useEventsStatus } from "../events"
 import { datetime } from "../format"
@@ -11,15 +18,17 @@ import { datetime } from "../format"
 const DETAIL_FALLBACK_POLL_MS = 10_000
 const LIST_FALLBACK_POLL_MS = 30_000
 
-const MODE_HUMAN = "human"
-
 // Remembered so the question is asked once per browser. There are no operator
 // accounts, so this is a label that keeps two operators from answering the same
 // customer -- not an authenticated identity, and not a permission.
 const OPERATOR_STORAGE = "waai_operator"
 
+function currentOperator(): string {
+  return localStorage.getItem(OPERATOR_STORAGE) ?? ""
+}
+
 function operatorName(): string | null {
-  const stored = localStorage.getItem(OPERATOR_STORAGE) ?? ""
+  const stored = currentOperator()
   if (stored) return stored
   const entered =
     window.prompt("Your name (shown to other operators)")?.trim() ?? ""
@@ -34,14 +43,56 @@ function isRelevant(type: string): boolean {
   return type === "conversation.activity" || type === "conversation.handoff"
 }
 
+function isUnclaimedLead(conversation: Conversation): boolean {
+  return (
+    conversation.tag === TAG_SALES_LEAD &&
+    conversation.mode === MODE_HUMAN &&
+    !conversation.assigned_operator
+  )
+}
+
 interface Props {
   openId: number | null
   onOpen: (id: number) => void
   follow: boolean
   onFollowChange: (value: boolean) => void
+  // Lets the shell refresh its unclaimed-lead counter when ownership changes
+  // here, rather than waiting for the next poll.
+  onChanged?: () => void
 }
 
-function ConversationView({ id }: { id: number }) {
+// A media message carries a media_id and usually no text at all, so rendering
+// only `content` produced an empty bubble with no hint that anything was sent.
+function MessageBubble({ message }: { message: Message }) {
+  const hasMedia = message.media_id !== null
+  const hasText = Boolean(message.content)
+
+  return (
+    <div className={"bubble " + message.direction}>
+      {hasText && message.content}
+      {hasMedia && (
+        <span className="attachment">
+          [{message.type}] attachment - not downloadable from this dashboard
+        </span>
+      )}
+      {!hasText && !hasMedia && (
+        <span className="attachment">[{message.type}]</span>
+      )}
+      <span className="meta">
+        {datetime(message.created_at)}
+        {message.status ? " - " + message.status : ""}
+      </span>
+    </div>
+  )
+}
+
+function ConversationView({
+  id,
+  onChanged,
+}: {
+  id: number
+  onChanged?: () => void
+}) {
   const { connected } = useEventsStatus()
   const detail = useAsync(
     () => api.conversation(id),
@@ -60,11 +111,22 @@ function ConversationView({ id }: { id: number }) {
   })
 
   const humanOwned = detail.data?.mode === MODE_HUMAN
+  const owner = detail.data?.assigned_operator ?? null
+  const isLead = detail.data?.tag === TAG_SALES_LEAD
+  // No operator identity exists server side, so "someone else has this" is a
+  // name comparison. It is worth doing anyway: the common accident is two
+  // people answering the same customer, not a malicious takeover.
+  const ownedByOther = humanOwned && owner !== null && owner !== currentOperator()
 
   function report(exception: unknown) {
     setError(
       exception instanceof ApiError ? exception.message : String(exception),
     )
+  }
+
+  function changed() {
+    detail.reload()
+    onChanged?.()
   }
 
   async function send() {
@@ -76,7 +138,7 @@ function ConversationView({ id }: { id: number }) {
       setText("")
       // The server also publishes an event, but reloading here means the sent
       // message appears even if the stream is down.
-      detail.reload()
+      changed()
     } catch (exception) {
       report(exception)
     } finally {
@@ -85,13 +147,21 @@ function ConversationView({ id }: { id: number }) {
   }
 
   async function takeOver() {
+    if (
+      ownedByOther &&
+      !window.confirm(
+        `${owner} is currently answering this conversation. Take it over anyway?`,
+      )
+    ) {
+      return
+    }
     const operator = operatorName()
     if (!operator) return
     setSwitching(true)
     setError(null)
     try {
       await api.takeOver(id, operator)
-      detail.reload()
+      changed()
     } catch (exception) {
       report(exception)
     } finally {
@@ -104,7 +174,7 @@ function ConversationView({ id }: { id: number }) {
     setError(null)
     try {
       await api.resumeAi(id)
-      detail.reload()
+      changed()
     } catch (exception) {
       report(exception)
     } finally {
@@ -115,21 +185,25 @@ function ConversationView({ id }: { id: number }) {
   return (
     <div className="panel">
       <div className="row" style={{ justifyContent: "space-between" }}>
-        <h2>Conversation #{id}</h2>
+        <h2>
+          Conversation #{id}{" "}
+          {isLead && <span className="badge lead">Sales lead</span>}
+        </h2>
         <div className="row">
           {detail.data && (
-            <span className="badge">
+            <span className={"badge " + (humanOwned ? "human" : "bot")}>
               {humanOwned
-                ? "human" +
-                  (detail.data.assigned_operator
-                    ? " - " + detail.data.assigned_operator
-                    : " - unassigned")
+                ? "human" + (owner ? " - " + owner : " - unassigned")
                 : "bot"}
             </span>
           )}
-          {detail.data && !humanOwned && (
+          {detail.data && (!humanOwned || ownedByOther) && (
             <button disabled={switching} onClick={takeOver}>
-              {switching ? "Working..." : "Take Over"}
+              {switching
+                ? "Working..."
+                : ownedByOther
+                  ? "Take over from " + owner
+                  : "Take Over"}
             </button>
           )}
           {detail.data && humanOwned && (
@@ -143,6 +217,18 @@ function ConversationView({ id }: { id: number }) {
       <Loader loading={detail.loading} error={detail.error}>
         {detail.data && (
           <>
+            <p className="muted" style={{ fontSize: 12, marginTop: 0 }}>
+              Started {datetime(detail.data.created_at)}
+              {detail.data.handoff_at
+                ? " - handed to a human " + datetime(detail.data.handoff_at)
+                : ""}
+            </p>
+            {isLead && (
+              <p className="warn" style={{ fontSize: 12 }}>
+                This customer asked about price or started negotiating. The bot
+                never quotes a figure - a person has to.
+              </p>
+            )}
             {humanOwned && (
               <p className="muted" style={{ fontSize: 12 }}>
                 The bot is not answering this conversation. Incoming messages
@@ -152,16 +238,7 @@ function ConversationView({ id }: { id: number }) {
             )}
             <div className="chat">
               {detail.data.messages.map((message) => (
-                <div
-                  key={message.id}
-                  className={"bubble " + message.direction}
-                >
-                  {message.content}
-                  <span className="meta">
-                    {datetime(message.created_at)}
-                    {message.status ? " - " + message.status : ""}
-                  </span>
-                </div>
+                <MessageBubble key={message.id} message={message} />
               ))}
               {detail.data.messages.length === 0 && (
                 <Empty>No messages.</Empty>
@@ -204,11 +281,13 @@ export default function Conversations({
   onOpen,
   follow,
   onFollowChange,
+  onChanged,
 }: Props) {
   const { connected } = useEventsStatus()
+  const [offset, setOffset] = useState(0)
   const conversations = useAsync(
-    () => api.conversations(50),
-    [],
+    () => api.conversations(PAGE_SIZE, offset),
+    [offset],
     connected ? 0 : LIST_FALLBACK_POLL_MS,
   )
 
@@ -219,6 +298,11 @@ export default function Conversations({
     conversations.reload()
   })
 
+  const rows = conversations.data ?? []
+  // The endpoint returns a bare array with no total, so a full page is the
+  // only evidence that another one exists.
+  const hasNext = rows.length === PAGE_SIZE
+
   return (
     <>
       <div className="page-header">
@@ -228,6 +312,7 @@ export default function Conversations({
             <input
               type="checkbox"
               checked={follow}
+              style={{ width: "auto" }}
               onChange={(event) => onFollowChange(event.target.checked)}
             />{" "}
             Open new customer messages automatically
@@ -239,55 +324,97 @@ export default function Conversations({
 
       <div className="panel">
         <Loader loading={conversations.loading} error={conversations.error}>
-          {conversations.data && conversations.data.length === 0 && (
-            <Empty>No conversations yet.</Empty>
-          )}
-          {conversations.data && conversations.data.length > 0 && (
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Customer</th>
-                  <th>Status</th>
-                  <th>Answered by</th>
-                  <th>Last update</th>
-                </tr>
-              </thead>
-              <tbody>
-                {conversations.data.map((conversation) => (
-                  <tr
-                    key={conversation.id}
-                    className={
-                      "clickable" + (conversation.id === openId ? " active" : "")
-                    }
-                    onClick={() => onOpen(conversation.id)}
-                  >
-                    <td>#{conversation.id}</td>
-                    <td>user {conversation.user_id}</td>
-                    <td>
-                      <span className="badge">{conversation.status}</span>
-                    </td>
-                    <td>
-                      <span className="badge">{conversation.mode}</span>
-                      {conversation.mode === MODE_HUMAN && (
-                        <span className="muted" style={{ fontSize: 12 }}>
-                          {" "}
-                          {conversation.assigned_operator ?? "unassigned"}
-                        </span>
-                      )}
-                    </td>
-                    <td className="muted">
-                      {datetime(conversation.updated_at)}
-                    </td>
+          {rows.length === 0 && <Empty>No conversations yet.</Empty>}
+          {rows.length > 0 && (
+            <div className="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Customer</th>
+                    <th>Status</th>
+                    <th>Answered by</th>
+                    <th>Last update</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {rows.map((conversation) => (
+                    <tr
+                      key={conversation.id}
+                      className={
+                        "clickable" +
+                        (conversation.id === openId ? " active" : "") +
+                        (isUnclaimedLead(conversation) ? " lead-row" : "")
+                      }
+                      tabIndex={0}
+                      role="button"
+                      aria-label={`Open conversation ${conversation.id}`}
+                      onClick={() => onOpen(conversation.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault()
+                          onOpen(conversation.id)
+                        }
+                      }}
+                    >
+                      <td>
+                        #{conversation.id}{" "}
+                        {conversation.tag === TAG_SALES_LEAD && (
+                          <span className="badge lead">Lead</span>
+                        )}
+                      </td>
+                      <td>user {conversation.user_id}</td>
+                      <td>
+                        <span className="badge">{conversation.status}</span>
+                      </td>
+                      <td>
+                        <span
+                          className={
+                            "badge " +
+                            (conversation.mode === MODE_HUMAN ? "human" : "bot")
+                          }
+                        >
+                          {conversation.mode}
+                        </span>
+                        {conversation.mode === MODE_HUMAN && (
+                          <span className="muted" style={{ fontSize: 12 }}>
+                            {" "}
+                            {conversation.assigned_operator ?? "unassigned"}
+                          </span>
+                        )}
+                      </td>
+                      <td className="muted">
+                        {datetime(conversation.updated_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
+          <div className="pager">
+            <button
+              disabled={offset === 0}
+              onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+            >
+              Previous
+            </button>
+            <span className="muted" style={{ fontSize: 12 }}>
+              {offset + 1} - {offset + rows.length}
+            </span>
+            <button
+              disabled={!hasNext}
+              onClick={() => setOffset(offset + PAGE_SIZE)}
+            >
+              Next
+            </button>
+          </div>
         </Loader>
       </div>
 
-      {openId !== null && <ConversationView id={openId} />}
+      {openId !== null && (
+        <ConversationView id={openId} onChanged={onChanged} />
+      )}
     </>
   )
 }
