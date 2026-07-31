@@ -1,0 +1,223 @@
+# Alertmanager configuration TEMPLATE.
+#
+# Rendered to alertmanager.yml by the alertmanager-config init service in
+# docker-compose.prod.yml. Alertmanager does not expand environment variables
+# itself, and baking a Slack webhook URL or SMTP password into a file in git
+# is not an option.
+#
+# IMPORTANT -- the init service calls envsubst with an EXPLICIT variable list.
+# A bare `envsubst` would also substitute $labels and $value inside the Go
+# templates below, silently replacing them with empty strings and producing
+# notifications with no detail in them. That failure is invisible until the
+# first real incident, which is the worst possible time to discover it.
+#
+# Channels are opt-in: a receiver whose credentials are unset renders to an
+# empty config block and is skipped. Configure at least one.
+
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: "${ALERT_SMTP_HOST}:${ALERT_SMTP_PORT}"
+  smtp_from: "${ALERT_EMAIL_FROM}"
+  smtp_auth_username: "${ALERT_SMTP_USER}"
+  smtp_auth_password: "${ALERT_SMTP_PASSWORD}"
+  smtp_require_tls: true
+
+templates:
+  - /etc/alertmanager/templates/*.tmpl
+
+# ---------------------------------------------------------------------------
+# Routing.
+#
+# Matches on the `category` label that every rule in alerts.yml carries, not on
+# alertname. Routing on alertname means every new rule needs a routing change
+# and the one somebody forgets goes to the default receiver, which in practice
+# means nowhere anyone is looking.
+# ---------------------------------------------------------------------------
+route:
+  receiver: default
+
+  # Group by alertname and severity, NOT by instance. Grouping by instance when
+  # a host dies produces one notification per alert per target; grouping this
+  # way collapses that into a single message listing everything affected.
+  group_by: ["alertname", "severity", "service"]
+
+  # Wait briefly before the first notification so related alerts that fire
+  # together arrive in one message rather than three.
+  group_wait: 30s
+  group_interval: 5m
+
+  # How long before an unresolved alert is repeated. Four hours is deliberate:
+  # short enough that an overnight incident is not forgotten, long enough that
+  # a known ongoing problem does not train people to ignore the channel.
+  repeat_interval: 4h
+
+  routes:
+    # Anything critical goes everywhere, immediately.
+    - matchers:
+        - severity = critical
+      receiver: critical
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: true
+
+    # Backups and restores. Separated because these are never urgent in the
+    # next five minutes but are catastrophic if ignored for a month, so they
+    # go to a channel that gets reviewed rather than one that gets muted.
+    - matchers:
+        - category = data-protection
+      receiver: data-protection
+      group_wait: 1m
+      repeat_interval: 12h
+
+    # Cost alerts go to whoever owns the bill, which is usually not whoever
+    # owns the pager.
+    - matchers:
+        - category = cost
+      receiver: cost
+      repeat_interval: 6h
+
+    # Informational: chat only, never email. Email is for things that need a
+    # decision.
+    - matchers:
+        - severity = info
+      receiver: chat-only
+      repeat_interval: 24h
+
+    - matchers:
+        - severity = warning
+      receiver: warning
+
+# ---------------------------------------------------------------------------
+# Inhibition.
+#
+# When a machine dies, everything on it alerts at once. Without these rules a
+# single host failure produces twenty notifications and the one that explains
+# the cause is buried among nineteen symptoms.
+# ---------------------------------------------------------------------------
+inhibit_rules:
+  # A critical alert silences the warning-level version of the same alert on
+  # the same service.
+  - source_matchers:
+      - severity = critical
+    target_matchers:
+      - severity = warning
+    equal: ["alertname", "service"]
+
+  # The host is gone. Everything else is a consequence.
+  - source_matchers:
+      - alertname = HostDown
+    target_matchers:
+      - severity =~ "critical|warning|info"
+    equal: ["environment"]
+
+  # Postgres down explains the error rate, the latency and the API failing its
+  # readiness probe. Report the cause, not the three symptoms.
+  - source_matchers:
+      - alertname = PostgresDown
+    target_matchers:
+      - alertname =~ "HighErrorRate|HighLatency|ApiDown"
+    equal: ["environment"]
+
+  # Redis down likewise takes the broker with it.
+  - source_matchers:
+      - alertname = RedisDown
+    target_matchers:
+      - alertname =~ "WorkerDown|HighErrorRate"
+    equal: ["environment"]
+
+  # The spend guard tripping is the REASON the assistant is disabled. Both are
+  # true; only one is useful.
+  - source_matchers:
+      - alertname = SpendGuardTripped
+    target_matchers:
+      - alertname = AIDisabled
+    equal: ["environment"]
+
+  # A failed backup run explains a missing backup.
+  - source_matchers:
+      - alertname = BackupFailed
+    target_matchers:
+      - alertname = BackupMissing
+    equal: ["environment"]
+
+# ---------------------------------------------------------------------------
+# Receivers.
+# ---------------------------------------------------------------------------
+receivers:
+  - name: default
+    slack_configs:
+      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+        channel: "${ALERT_SLACK_CHANNEL}"
+        send_resolved: true
+        title: '{{ template "slack.title" . }}'
+        text: '{{ template "slack.text" . }}'
+
+  - name: critical
+    slack_configs:
+      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+        channel: "${ALERT_SLACK_CHANNEL}"
+        send_resolved: true
+        title: '{{ template "slack.title" . }}'
+        text: '{{ template "slack.text" . }}'
+    telegram_configs:
+      - bot_token: "${ALERT_TELEGRAM_BOT_TOKEN}"
+        chat_id: ${ALERT_TELEGRAM_CHAT_ID}
+        parse_mode: HTML
+        send_resolved: true
+        message: '{{ template "telegram.message" . }}'
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
+        headers:
+          Subject: '{{ template "email.subject" . }}'
+        html: '{{ template "email.body" . }}'
+
+  - name: warning
+    slack_configs:
+      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+        channel: "${ALERT_SLACK_CHANNEL}"
+        send_resolved: true
+        title: '{{ template "slack.title" . }}'
+        text: '{{ template "slack.text" . }}'
+    telegram_configs:
+      - bot_token: "${ALERT_TELEGRAM_BOT_TOKEN}"
+        chat_id: ${ALERT_TELEGRAM_CHAT_ID}
+        parse_mode: HTML
+        send_resolved: true
+        message: '{{ template "telegram.message" . }}'
+
+  - name: data-protection
+    slack_configs:
+      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+        channel: "${ALERT_SLACK_CHANNEL_BACKUP}"
+        send_resolved: true
+        title: '{{ template "slack.title" . }}'
+        text: '{{ template "slack.text" . }}'
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
+        headers:
+          Subject: '{{ template "email.subject" . }}'
+        html: '{{ template "email.body" . }}'
+
+  - name: cost
+    slack_configs:
+      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+        channel: "${ALERT_SLACK_CHANNEL_COST}"
+        send_resolved: true
+        title: '{{ template "slack.title" . }}'
+        text: '{{ template "slack.text" . }}'
+    email_configs:
+      - to: "${ALERT_EMAIL_TO}"
+        send_resolved: true
+        headers:
+          Subject: '{{ template "email.subject" . }}'
+        html: '{{ template "email.body" . }}'
+
+  - name: chat-only
+    slack_configs:
+      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+        channel: "${ALERT_SLACK_CHANNEL}"
+        send_resolved: false
+        title: '{{ template "slack.title" . }}'
+        text: '{{ template "slack.text" . }}'

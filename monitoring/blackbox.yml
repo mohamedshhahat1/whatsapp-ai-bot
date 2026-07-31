@@ -1,0 +1,41 @@
+# blackbox-exporter modules.
+#
+# Every other Prometheus target is scraped inside the compose network, which
+# means they would all keep passing while DNS, nginx or the TLS certificate
+# were broken and the public hostname served nothing. Meta needs the public
+# HTTPS endpoint specifically, so that is what gets probed here.
+
+modules:
+  https_2xx:
+    prober: http
+    timeout: 10s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: [200]
+      method: GET
+      follow_redirects: true
+      # Verify the certificate properly. Setting insecure_skip_verify here
+      # would defeat the SSLCertExpiring alerts entirely, since
+      # probe_ssl_earliest_cert_expiry comes from the verified chain.
+      tls_config:
+        insecure_skip_verify: false
+      preferred_ip_protocol: "ip4"
+      ip_protocol_fallback: true
+
+  http_webhook_verify:
+    # Probes the webhook path without a valid Meta signature. A correctly
+    # configured endpoint REJECTS this, so 403 is the healthy answer and a 200
+    # would mean signature verification had been turned off.
+    prober: http
+    timeout: 10s
+    http:
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+      valid_status_codes: [403]
+      method: GET
+      follow_redirects: false
+      tls_config:
+        insecure_skip_verify: false
+
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
