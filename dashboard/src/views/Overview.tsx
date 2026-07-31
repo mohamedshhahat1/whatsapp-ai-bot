@@ -1,8 +1,8 @@
 import { useState } from "react"
 import {
   Bar,
-  BarChart,
   CartesianGrid,
+  ComposedChart,
   Legend,
   Line,
   ResponsiveContainer,
@@ -10,7 +10,6 @@ import {
   XAxis,
   YAxis,
 } from "recharts"
-import { ComposedChart } from "recharts"
 
 import { api } from "../api"
 import { Card, Empty, Loader, Refreshing, useAsync } from "../components/Async"
