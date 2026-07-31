@@ -62,9 +62,7 @@ def test_documents_are_labelled_as_reference_material() -> None:
 
 def test_empty_retrieval_tells_the_model_to_decline() -> None:
     """No match must produce a refusal, not an invented price."""
-    instructions = _builder().build_instructions(
-        documents=[], retrieval_attempted=True
-    )
+    instructions = _builder().build_instructions(documents=[], retrieval_attempted=True)
     assert "No company document matched" in instructions
     assert "no source for prices" in instructions
 

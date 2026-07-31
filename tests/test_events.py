@@ -80,9 +80,7 @@ def test_published_event_reaches_a_subscribed_dashboard(client: TestClient) -> N
         # published after this point can be missed.
         assert socket.receive_json()["type"] == "ready"
 
-        payload = json.dumps(
-            conversation_activity(conversation_id=99, inbound=True)
-        )
+        payload = json.dumps(conversation_activity(conversation_id=99, inbound=True))
         publisher = Redis.from_url(settings.redis_url)
         try:
             delivered = 0

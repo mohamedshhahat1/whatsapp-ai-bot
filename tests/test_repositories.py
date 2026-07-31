@@ -79,7 +79,5 @@ async def test_closed_conversations_do_not_block_a_new_one(
     """The index is partial: only one *active* conversation is restricted."""
     db.add(Conversation(user_id=customer.user_id, status="closed"))
     await db.commit()
-    still_open = await ConversationRepository(db).get_or_create_active(
-        customer.user_id
-    )
+    still_open = await ConversationRepository(db).get_or_create_active(customer.user_id)
     assert still_open.id == customer.conversation_id
