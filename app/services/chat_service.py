@@ -433,6 +433,11 @@ class ChatService:
                 DUPLICATE_DELIVERIES_TOTAL.labels(stage="generation_cache").inc()
 
         error: str | None = None
+        # Declared up front rather than inferred from the first branch. mypy
+        # types an unannotated local from its first assignment, which here is
+        # `generation = cached` (already narrowed to CachedGeneration), and
+        # would then reject the `None` in the else branch.
+        generation: CachedGeneration | None = None
 
         if cached is not None:
             # A previous attempt already paid for this answer. Reuse it rather
@@ -467,7 +472,6 @@ class ChatService:
             )
 
             reply_text = FALLBACK_REPLY
-            generation = None
             try:
                 result = await self._ai.generate_reply(
                     history, instructions=instructions
