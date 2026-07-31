@@ -28,14 +28,15 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-API-Key": getApiKey(),
-      ...(init.headers ?? {}),
-    },
-  })
+  // Built through the Headers constructor rather than by spreading
+  // init.headers into an object literal: HeadersInit is a union of Headers,
+  // string[][] and Record<string, string>, and spreading the first two
+  // produces object types that are no longer assignable to HeadersInit.
+  const headers = new Headers(init.headers)
+  headers.set("Content-Type", "application/json")
+  headers.set("X-API-Key", getApiKey())
+
+  const response = await fetch(path, { ...init, headers })
 
   if (!response.ok) {
     let detail = response.statusText
