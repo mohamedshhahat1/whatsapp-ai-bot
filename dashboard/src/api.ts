@@ -7,6 +7,19 @@
 
 const KEY_STORAGE = "waai_admin_key"
 
+// Fired when the server rejects the key. App listens for this and drops back
+// to the sign-in screen. Without it the dashboard would sit on a permanent
+// error string holding a credential it already knew was dead.
+export const UNAUTHORIZED_EVENT = "waai:unauthorized"
+
+// Nothing in this app had a timeout, so a hung connection hung the view with
+// no way out but a manual reload.
+const DEFAULT_TIMEOUT_MS = 15_000
+
+// Reserved for failures that never reached the server, so callers can tell a
+// dead network apart from a real HTTP status.
+export const STATUS_NO_RESPONSE = 0
+
 export function getApiKey(): string {
   return sessionStorage.getItem(KEY_STORAGE) ?? ""
 }
@@ -27,7 +40,11 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(
+  path: string,
+  init: RequestInit = {},
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+): Promise<T> {
   // Built through the Headers constructor rather than by spreading
   // init.headers into an object literal: HeadersInit is a union of Headers,
   // string[][] and Record<string, string>, and spreading the first two
@@ -36,7 +53,32 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   headers.set("Content-Type", "application/json")
   headers.set("X-API-Key", getApiKey())
 
-  const response = await fetch(path, { ...init, headers })
+  const controller = new AbortController()
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs)
+
+  let response: Response
+  try {
+    response = await fetch(path, {
+      ...init,
+      headers,
+      signal: controller.signal,
+    })
+  } catch (exception) {
+    // An aborted fetch and a refused connection both land here, and they mean
+    // very different things to an operator.
+    if (exception instanceof DOMException && exception.name === "AbortError") {
+      throw new ApiError(
+        STATUS_NO_RESPONSE,
+        `The server did not respond within ${Math.round(timeoutMs / 1000)}s.`,
+      )
+    }
+    throw new ApiError(
+      STATUS_NO_RESPONSE,
+      "Could not reach the server. It may be restarting.",
+    )
+  } finally {
+    window.clearTimeout(timer)
+  }
 
   if (!response.ok) {
     let detail = response.statusText
@@ -46,12 +88,37 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     } catch {
       // Non-JSON error body; the status text is the best we have.
     }
+    if (response.status === 401) {
+      // require_admin raises 401 for a bad or missing key and never 403, so
+      // this is unambiguous: the credential is wrong. Drop it rather than let
+      // every subsequent poll retry with it.
+      clearApiKey()
+      window.dispatchEvent(new Event(UNAUTHORIZED_EVENT))
+    }
     throw new ApiError(response.status, detail)
   }
 
   if (response.status === 204) return undefined as T
   return (await response.json()) as T
 }
+
+// The backend types all of these as bare strings. The `(string & {})` arm
+// preserves that tolerance -- an unknown value from a newer server still
+// renders instead of breaking the build -- while giving autocomplete and
+// catching typos like "humann" at compile time.
+export type ConversationMode = "bot" | "human" | (string & {})
+export type ConversationStatus = "active" | "archived" | (string & {})
+export type ConversationTag = "sales_lead" | (string & {})
+export type MessageDirection = "inbound" | "outbound" | (string & {})
+export type MessageStatus =
+  | "pending"
+  | "sent"
+  | "unconfirmed"
+  | "failed"
+  | (string & {})
+
+export const TAG_SALES_LEAD = "sales_lead"
+export const MODE_HUMAN = "human"
 
 export interface CostBreakdown {
   prompt_tokens: number
@@ -138,9 +205,57 @@ export interface Customer {
   last_active: string | null
 }
 
-// "bot" or "human". Kept as a string rather than a union so that an unknown
-// value from a newer server renders instead of breaking the build.
-export type ConversationMode = string
+// GET /admin/users. Distinct from Customer, which is an activity aggregate.
+export interface User {
+  id: number
+  wa_id: string
+  name: string | null
+  created_at: string
+}
+
+// GET /admin/stats. Lifetime counters, cheaper than the analytics overview.
+export interface Stats {
+  total_users: number
+  total_conversations: number
+  total_messages: number
+  messages_last_24h: number
+  total_tokens_used: number
+}
+
+export interface QuotaLimits {
+  per_minute: number
+  per_hour: number
+  per_day: number
+}
+
+// GET /admin/quota. Every field below `available` is null when Redis is
+// unreachable -- the server deliberately refuses to report zeros, because
+// zeros render as a reassuring empty chart at the exact moment the spend
+// guard has failed open.
+export interface QuotaStats {
+  available: boolean
+  error: string | null
+  date: string | null
+  spend_usd: number | null
+  spend_limit_usd: number | null
+  spend_used_fraction: number | null
+  tokens: number | null
+  token_limit: number | null
+  ai_disabled: boolean | null
+  spend_guard_enabled: boolean | null
+  customer_rate_limit_enabled: boolean | null
+  blocked_customers: number | null
+  limits: QuotaLimits | null
+}
+
+export interface AiToggleResponse {
+  ai_disabled: boolean
+}
+
+export interface UnblockResponse {
+  wa_id: string
+  was_blocked: boolean
+}
 
 export interface Conversation {
   id: number
@@ -148,8 +263,11 @@ export interface Conversation {
   // status is lifecycle (active / archived); mode is ownership (bot / human).
   // They are independent: a conversation stays active the whole time a human
   // operator owns it.
-  status: string
+  status: ConversationStatus
   mode: ConversationMode
+  // Why the row is where it is. The repository sorts unclaimed sales leads to
+  // the top, so without this the list reorders for an invisible reason.
+  tag: ConversationTag | null
   assigned_operator: string | null
   handoff_at: string | null
   created_at: string
@@ -158,15 +276,25 @@ export interface Conversation {
 
 export interface Message {
   id: number
-  direction: string
+  wa_message_id: string | null
+  direction: MessageDirection
   type: string
+  // Null for media: the caption lives here only when the customer sent one.
   content: string | null
-  status: string | null
+  media_id: string | null
+  status: MessageStatus | null
   created_at: string
 }
 
 export interface ConversationDetail extends Conversation {
   messages: Message[]
+}
+
+export interface ManualReply {
+  message_id: number
+  conversation_id: number
+  wa_message_id: string | null
+  sent_at: string
 }
 
 export interface MessageHit {
@@ -175,7 +303,7 @@ export interface MessageHit {
   user_id: number
   wa_id: string
   name: string | null
-  direction: string
+  direction: MessageDirection
   content: string
   created_at: string
 }
@@ -194,6 +322,11 @@ export interface KnowledgeHit {
   content: string
 }
 
+// The list endpoints return bare arrays with no total count, so a page is
+// "full" exactly when it came back at the limit. Callers use that to decide
+// whether a Next button is live.
+export const PAGE_SIZE = 50
+
 export const api = {
   overview: (days: number) =>
     request<Overview>(`/admin/analytics/overview?days=${days}`),
@@ -205,8 +338,13 @@ export const api = {
     request<TopQuestion[]>(
       `/admin/analytics/questions?days=${days}&limit=${limit}`,
     ),
-  customers: (limit = 100) =>
-    request<Customer[]>(`/admin/analytics/customers?limit=${limit}`),
+  customers: (limit = PAGE_SIZE, offset = 0) =>
+    request<Customer[]>(
+      `/admin/analytics/customers?limit=${limit}&offset=${offset}`,
+    ),
+  users: (limit = PAGE_SIZE, offset = 0) =>
+    request<User[]>(`/admin/users?limit=${limit}&offset=${offset}`),
+  stats: () => request<Stats>("/admin/stats"),
   pricing: () => request<ModelPricing[]>("/admin/pricing"),
   addPricing: (payload: NewModelPricing) =>
     request<ModelPricing>("/admin/pricing", {
@@ -215,12 +353,16 @@ export const api = {
     }),
   deletePricing: (id: number) =>
     request<void>(`/admin/pricing/${id}`, { method: "DELETE" }),
-  conversations: (limit = 50) =>
-    request<Conversation[]>(`/admin/conversations?limit=${limit}`),
+  conversations: (limit = PAGE_SIZE, offset = 0) =>
+    request<Conversation[]>(
+      `/admin/conversations?limit=${limit}&offset=${offset}`,
+    ),
   conversation: (id: number) =>
     request<ConversationDetail>(`/admin/conversations/${id}`),
+  deleteConversation: (id: number) =>
+    request<void>(`/admin/conversations/${id}`, { method: "DELETE" }),
   reply: (id: number, text: string) =>
-    request<{ message_id: number }>(`/admin/conversations/${id}/reply`, {
+    request<ManualReply>(`/admin/conversations/${id}/reply`, {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
@@ -235,11 +377,26 @@ export const api = {
     request<Conversation>(`/admin/conversations/${id}/resume-ai`, {
       method: "POST",
     }),
-  search: (q: string) =>
-    request<MessageHit[]>(`/admin/search?q=${encodeURIComponent(q)}`),
+  // /admin/search accepts only q and limit -- there is no offset on the
+  // router, so this list is capped rather than paged.
+  search: (q: string, limit = PAGE_SIZE) =>
+    request<MessageHit[]>(
+      `/admin/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
   knowledge: () => request<KnowledgeDocument[]>("/admin/knowledge"),
   knowledgeSearch: (q: string) =>
     request<KnowledgeHit[]>(
       `/admin/knowledge/search?q=${encodeURIComponent(q)}`,
+    ),
+  quota: () => request<QuotaStats>("/admin/quota"),
+  setAiDisabled: (disabled: boolean) =>
+    request<AiToggleResponse>("/admin/ai-toggle", {
+      method: "POST",
+      body: JSON.stringify({ disabled }),
+    }),
+  unblockCustomer: (waId: string) =>
+    request<UnblockResponse>(
+      `/admin/customers/${encodeURIComponent(waId)}/unblock`,
+      { method: "POST" },
     ),
 }

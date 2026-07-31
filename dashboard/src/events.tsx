@@ -4,17 +4,38 @@
 // whether the customer started the turn. Views react by refetching through the
 // authenticated /admin API, so the socket never becomes a second, weaker copy
 // of the API's data or its access control.
+//
+// The handoff event is the exception: it carries mode, operator, reason and
+// tag so that a dashboard can raise a sales lead without a round trip. Those
+// four fields were on the wire from the first release and were silently
+// dropped here, which is why nothing could react to a lead in real time.
 
 import type { ReactNode } from "react"
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react"
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 
+import type { ConversationMode, ConversationTag } from "./api"
 import { getApiKey } from "./api"
+
+export const EVENT_ACTIVITY = "conversation.activity"
+export const EVENT_HANDOFF = "conversation.handoff"
 
 export interface ActivityEvent {
   type: string
   conversation_id?: number
   inbound?: boolean
   at?: string
+  // Present on conversation.handoff only.
+  mode?: ConversationMode
+  assigned_operator?: string | null
+  reason?: string | null
+  tag?: ConversationTag | null
 }
 
 type Handler = (event: ActivityEvent) => void
@@ -133,10 +154,7 @@ export function useEvents(handler: Handler): void {
     latest.current = handler
   }, [handler])
 
-  useEffect(
-    () => subscribe((event) => latest.current(event)),
-    [subscribe],
-  )
+  useEffect(() => subscribe((event) => latest.current(event)), [subscribe])
 }
 
 export function useEventsStatus(): EventsState {
