@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 #
-# Take one verified PostgreSQL backup and rotate the old ones.
+# Take one verified PostgreSQL backup, replicate it off-site, and rotate the
+# old ones.
 #
 # Runs inside the `backup` service in docker-compose.prod.yml (a postgres:16
 # image, so pg_dump matches the server major version -- a newer server dumped
@@ -18,8 +19,11 @@
 #   state/last_success        unix timestamp, read by the healthcheck
 #   state/last_result.json    machine-readable outcome of the last run
 #   state/backup.log
+#   metrics/backup.prom       Prometheus textfile collector output
 
 set -eu
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
 BACKUP_DIR="${BACKUP_DIR:-/backups}"
 PGHOST="${PGHOST:-db}"
@@ -48,6 +52,14 @@ log() {
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "${LOG_FILE}"
 }
 
+# Refresh Prometheus metrics from whatever state currently exists. Safe to
+# call on both the success and failure paths.
+publish_metrics() {
+    if [ -x "${SCRIPT_DIR}/backup-metrics.sh" ]; then
+        "${SCRIPT_DIR}/backup-metrics.sh" || log "WARNING: could not write backup metrics"
+    fi
+}
+
 fail() {
     log "ERROR: $*"
     cat > "${STATE_DIR}/last_result.json" <<EOF
@@ -57,6 +69,7 @@ EOF
     # once the newest success ages past BACKUP_MAX_AGE_HOURS, which is the
     # behaviour we want: one transient failure is noise, a day of them is an
     # incident.
+    publish_metrics
     exit 1
 }
 
@@ -164,8 +177,18 @@ promote() {
     fi
 }
 
-[ "${DAY_OF_WEEK}" = "7" ] && promote weekly
-[ "${DAY_OF_MONTH}" = "01" ] && promote monthly
+PROMOTED_WEEKLY="false"
+PROMOTED_MONTHLY="false"
+
+if [ "${DAY_OF_WEEK}" = "7" ]; then
+    promote weekly
+    PROMOTED_WEEKLY="true"
+fi
+
+if [ "${DAY_OF_MONTH}" = "01" ]; then
+    promote monthly
+    PROMOTED_MONTHLY="true"
+fi
 
 # --------------------------------------------------------------------------
 # Rotation. Prune by count, not by age: an age rule silently empties the
@@ -212,3 +235,42 @@ cat > "${STATE_DIR}/last_result.json" <<EOF
 EOF
 
 log "backup complete daily=${daily_count} weekly=${weekly_count} monthly=${monthly_count}"
+
+# --------------------------------------------------------------------------
+# Off-site replication.
+#
+# Runs AFTER last_success is written, and its failure does not fail this
+# script. That split is deliberate: a local dump that verified IS a real
+# backup even when the network is down. Treating an upload failure as a backup
+# failure would stop the retention clock and discard a perfectly good dump
+# because of a DNS blip.
+#
+# The upload keeps its own state file and its own alert
+# (OffsiteUploadMissing), so the failure is loud without being conflated.
+# --------------------------------------------------------------------------
+if [ "${BACKUP_REMOTE_PROVIDER:-none}" != "none" ]; then
+    base="$(basename "${TARGET}")"
+    log "replicating off-site provider=${BACKUP_REMOTE_PROVIDER}"
+
+    if "${SCRIPT_DIR}/backup-upload.sh" "daily/${base}"; then
+        log "off-site upload succeeded"
+    else
+        log "ERROR: off-site upload FAILED -- the only copy of this backup is on this server"
+    fi
+
+    # Tier copies are uploaded under their own keys so remote retention can
+    # expire them independently, exactly as the local tiers do.
+    if [ "${PROMOTED_WEEKLY}" = "true" ]; then
+        "${SCRIPT_DIR}/backup-upload.sh" "weekly/${base}" \
+            || log "WARNING: weekly off-site upload failed"
+    fi
+
+    if [ "${PROMOTED_MONTHLY}" = "true" ]; then
+        "${SCRIPT_DIR}/backup-upload.sh" "monthly/${base}" \
+            || log "WARNING: monthly off-site upload failed"
+    fi
+else
+    log "off-site replication disabled (BACKUP_REMOTE_PROVIDER=none) -- backups exist only on this server"
+fi
+
+publish_metrics
