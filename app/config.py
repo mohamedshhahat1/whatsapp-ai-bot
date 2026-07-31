@@ -295,6 +295,28 @@ class Settings(BaseSettings):
     # number degrades gracefully rather than breaking the conversation.
     sales_phone: str = ""
 
+    # WhatsApp Cloud API (Meta for Developers -> your app -> WhatsApp) ---------
+    # Consumers: routers/webhook.py uses whatsapp_verify_token for the
+    # subscription handshake and whatsapp_app_secret for the
+    # X-Hub-Signature-256 check; integrations/whatsapp.py uses whatsapp_token
+    # as the bearer credential and whatsapp_phone_number_id to address the
+    # messages endpoint.
+    #
+    # All four are listed in REQUIRED_IN_PRODUCTION, so production refuses to
+    # boot while any of them is still empty or a .env.example placeholder.
+    # They default to "" rather than to those placeholders so that a
+    # development stack starts, and only the endpoints that actually need a
+    # credential fail.
+    whatsapp_token: str = ""
+    whatsapp_phone_number_id: str = ""
+    whatsapp_verify_token: str = ""
+    whatsapp_app_secret: str = ""
+    # Graph API version, pinned on purpose. Meta ships breaking changes between
+    # versions and keeps old ones serving, so this is bumped deliberately after
+    # reading the changelog rather than tracking whatever is current. Not a
+    # credential, and not required in production: the default works.
+    whatsapp_api_version: str = "v21.0"
+
     # Admin API
     admin_api_key: str = "change-me"
 
