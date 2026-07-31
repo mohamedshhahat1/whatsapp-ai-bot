@@ -1,0 +1,166 @@
+name: Restore drill
+
+# Verifies the DRILL ITSELF against a synthetic database, weekly.
+#
+# This does not touch production data -- CI has none. It builds a database from
+# the migrations, dumps it, and puts scripts/restore-drill.sh through all
+# eleven steps against that dump. The value is catching a broken drill before
+# the drill has to catch a broken backup: a restore path that silently stopped
+# working is exactly as bad as no restore path, and both look identical from
+# the outside.
+#
+# The drill against REAL backups runs on the server, scheduled by
+# scripts/backup-scheduler.sh (RESTORE_DRILL_DAYS), and reports through
+# Prometheus rather than here.
+
+on:
+  schedule:
+    # Mondays 04:00 UTC. Not on the hour boundary shared with everything else,
+    # and early enough that a failure is seen at the start of the week.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+  push:
+    # Also run when the drill or the backup scripts themselves change, so a
+    # regression is caught on the commit that introduces it rather than up to
+    # a week later.
+    paths:
+      - "scripts/restore-drill.sh"
+      - "scripts/backup*.sh"
+      - "scripts/lib/storage.sh"
+      - "alembic/**"
+      - ".github/workflows/restore-drill.yml"
+
+jobs:
+  drill:
+    name: Restore drill (synthetic)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Shell syntax check
+        run: |
+          set -e
+          for f in scripts/*.sh scripts/lib/*.sh; do
+            sh -n "$f" || { echo "::error::syntax error in $f"; exit 1; }
+          done
+          echo "all shell scripts parse"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build application image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: whatsapp-ai-bot:drill
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ---------------------------------------------------------------------
+      # Produce a realistic backup to drill against.
+      # ---------------------------------------------------------------------
+      - name: Start source database
+        run: |
+          docker run -d --name drill-source \
+            -e POSTGRES_PASSWORD=sourcepass \
+            -e POSTGRES_DB=whatsapp_ai_bot \
+            -p 127.0.0.1:55433:5432 \
+            pgvector/pgvector:pg16
+          for i in $(seq 1 60); do
+            docker exec drill-source pg_isready -U postgres >/dev/null 2>&1 && break
+            sleep 2
+          done
+          docker exec drill-source pg_isready -U postgres
+
+      - name: Build the schema from the migrations
+        run: |
+          docker run --rm --add-host=host.docker.internal:host-gateway \
+            -e DATABASE_URL="postgresql+psycopg://postgres:sourcepass@host.docker.internal:55433/whatsapp_ai_bot" \
+            -e ENVIRONMENT=test \
+            -e OPENAI_API_KEY=drill -e WHATSAPP_TOKEN=drill \
+            -e WHATSAPP_PHONE_NUMBER_ID=drill -e WHATSAPP_VERIFY_TOKEN=drill \
+            -e WHATSAPP_APP_SECRET=drill -e ADMIN_API_KEY=drill \
+            whatsapp-ai-bot:drill alembic upgrade head
+
+      - name: Seed representative rows
+        env:
+          PGPASSWORD: sourcepass
+        run: |
+          # A drill against an empty database proves the schema restores but
+          # not that the DATA does. The integrity checks in steps 9-10 need
+          # rows with real foreign keys between them to mean anything.
+          docker exec -e PGPASSWORD=sourcepass drill-source \
+            psql -U postgres -d whatsapp_ai_bot -v ON_ERROR_STOP=1 -c "
+              INSERT INTO users (wa_id, name, created_at)
+              VALUES ('201000000001', 'Drill User', now())
+              ON CONFLICT DO NOTHING;
+            " || echo "::warning::seed insert skipped (column layout differs); drill will run against schema only"
+
+      - name: Create the backup
+        env:
+          PGPASSWORD: sourcepass
+        run: |
+          set -e
+          mkdir -p drill-backups/daily
+          docker exec -e PGPASSWORD=sourcepass drill-source \
+            pg_dump -U postgres -d whatsapp_ai_bot \
+            --format=custom --compress=9 --no-owner --no-privileges \
+            > "drill-backups/daily/ci-$(date -u +%Y%m%dT%H%MZ).dump"
+          ls -l drill-backups/daily
+          cd drill-backups/daily
+          for f in *.dump; do sha256sum "$f" > "$f.sha256"; done
+
+      # ---------------------------------------------------------------------
+      # Run the drill.
+      # ---------------------------------------------------------------------
+      - name: Run restore drill
+        env:
+          BACKUP_DIR: ${{ github.workspace }}/drill-backups
+          RESTORE_DRILL_APP_IMAGE: whatsapp-ai-bot:drill
+          RESTORE_DRILL_PORT: "55432"
+          RESTORE_DRILL_APP_PORT: "58000"
+          # The seeded database has no knowledge base, so documents and
+          # model_pricing may legitimately be absent depending on which
+          # migrations created them. Assert the three tables that always exist.
+          RESTORE_DRILL_TABLES: "users conversations messages"
+        run: |
+          chmod +x scripts/restore-drill.sh
+          ./scripts/restore-drill.sh
+
+      - name: Drill report
+        if: always()
+        run: |
+          echo "### Restore drill report" >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat drill-backups/state/restore_drill.json 2>/dev/null \
+            || echo '{"status":"no report produced"}' >> "$GITHUB_STEP_SUMMARY"
+          cat drill-backups/state/restore_drill.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload drill artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-drill-${{ github.sha }}
+          path: |
+            drill-backups/drills
+            drill-backups/state
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Clean up
+        if: always()
+        run: |
+          docker rm -f drill-source >/dev/null 2>&1 || true
+          # The drill preserves its own container on failure by design; the
+          # runner is ephemeral so it goes away with the VM either way.
+          docker ps -a --filter "name=wa-restore-drill-" --format '{{.Names}}' \
+            | xargs -r docker rm -f >/dev/null 2>&1 || true
