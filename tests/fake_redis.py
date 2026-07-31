@@ -176,9 +176,7 @@ class FakeRedis:
 
     # -- sorted sets -------------------------------------------------------
 
-    async def zadd(
-        self, key: str, mapping: dict[str, float], nx: bool = False
-    ) -> int:
+    async def zadd(self, key: str, mapping: dict[str, float], nx: bool = False) -> int:
         self._guard()
         self._sweep()
         zset = self._zsets.setdefault(key, {})
@@ -197,9 +195,7 @@ class FakeRedis:
         zset = self._zsets.get(key, {})
         return sum(1 for score in zset.values() if minimum <= score <= maximum)
 
-    async def zremrangebyscore(
-        self, key: str, minimum: float, maximum: float
-    ) -> int:
+    async def zremrangebyscore(self, key: str, minimum: float, maximum: float) -> int:
         self._guard()
         self._sweep()
         zset = self._zsets.get(key, {})

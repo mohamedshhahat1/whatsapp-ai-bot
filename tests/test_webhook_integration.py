@@ -198,15 +198,17 @@ async def test_status_updates_are_recorded(db: AsyncSession) -> None:
             get_settings(),
             _payload(wa_id, f"wamid.in.{wa_id}", "Hello there"),
         )
-        outbound_id = whatsapp.sent and (await db.scalar(
-            text(
-                "SELECT m.wa_message_id FROM messages m "
-                "JOIN conversations c ON c.id = m.conversation_id "
-                "JOIN users u ON u.id = c.user_id "
-                "WHERE u.wa_id = :wa_id AND m.direction = 'outbound'"
-            ),
-            {"wa_id": wa_id},
-        ))
+        outbound_id = whatsapp.sent and (
+            await db.scalar(
+                text(
+                    "SELECT m.wa_message_id FROM messages m "
+                    "JOIN conversations c ON c.id = m.conversation_id "
+                    "JOIN users u ON u.id = c.user_id "
+                    "WHERE u.wa_id = :wa_id AND m.direction = 'outbound'"
+                ),
+                {"wa_id": wa_id},
+            )
+        )
         assert outbound_id
 
         await process_webhook_payload(
