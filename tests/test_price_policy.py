@@ -16,6 +16,7 @@ import pytest
 
 from app.services import price_policy
 
+
 # --- Amounts that MUST be caught ---------------------------------------------
 
 
@@ -145,7 +146,10 @@ def test_deflection_without_phone_is_clean() -> None:
 
 def test_sales_handoff_ack_survives_its_own_gate() -> None:
     phone = "+20 100 000 0000"
-    assert price_policy.mentions_amount(price_policy.sales_handoff_ack(phone), phone) is False
+    assert (
+        price_policy.mentions_amount(price_policy.sales_handoff_ack(phone), phone)
+        is False
+    )
 
 
 def test_deflection_includes_the_phone_when_configured() -> None:
