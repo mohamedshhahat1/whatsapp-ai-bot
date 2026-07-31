@@ -10,10 +10,122 @@
 # tens to low hundreds of conversations a day. Tune them against real traffic
 # before trusting them; an alert that cries wolf in week one gets muted in week
 # two and is then worse than no alert.
+#
+# Every rule carries a `category` label. Alertmanager routes on that label
+# rather than on alertname, so a new rule in an existing category needs no
+# routing change. See docs/ALERTING.md for what each alert means and what to
+# do about it.
+#
+# Metric provenance, because a rule referencing a metric nobody exports fails
+# SILENTLY -- it never fires and never errors, which is indistinguishable from
+# a rule that keeps passing:
+#
+#   ai_disabled, whatsapp_*, openai_*, app_errors_*, webhook_*, customer_*,
+#   http_*                        -> app/core/metrics.py
+#   up, process_start_time_seconds -> Prometheus / prometheus_client
+#   pg_up, pg_*                    -> postgres-exporter
+#   redis_up, redis_*              -> redis-exporter
+#   node_*                         -> node-exporter
+#   probe_*                        -> blackbox-exporter
+#   backup_*, restore_drill_*      -> scripts/backup-metrics.sh via the
+#                                     node-exporter textfile collector
 
 groups:
+  # ---------------------------------------------------------------------------
+  # Something that should be running is not.
+  # ---------------------------------------------------------------------------
   - name: availability
     rules:
+      - alert: ApiDown
+        expr: up{job="api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+          service: api
+        annotations:
+          summary: "The API is not responding to scrapes"
+          description: >-
+            Prometheus cannot reach the application container. Webhook
+            deliveries from Meta are being refused, and Meta retries for a
+            limited window before dropping them permanently -- messages lost
+            here are lost for good.
+
+      - alert: WorkerDown
+        expr: up{job="worker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+          service: worker
+        annotations:
+          summary: "The Celery worker is not responding to scrapes"
+          description: >-
+            The API will keep accepting webhooks and queueing them, so nothing
+            looks broken from the outside, but no customer is being answered.
+            Work accumulates in Redis until the worker returns.
+
+      - alert: WorkerCrashLooping
+        # process_start_time_seconds resets on every process start. Several
+        # resets in half an hour means the worker is dying and being restarted,
+        # which `up` cannot see because it is up again by the next scrape.
+        expr: changes(process_start_time_seconds{job="worker"}[30m]) > 3
+        for: 5m
+        labels:
+          severity: critical
+          category: availability
+          service: worker
+        annotations:
+          summary: "The worker has restarted repeatedly in the last 30 minutes"
+          description: >-
+            More than three restarts in half an hour. Usually an OOM kill or an
+            unhandled exception at import time. Each restart risks a customer
+            reply being sent but never confirmed -- see
+            ReplyReservationsUnconfirmed.
+
+      - alert: HostDown
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          category: availability
+          service: host
+        annotations:
+          summary: "node-exporter is unreachable -- the host may be down"
+          description: >-
+            If this fires alone, the exporter died. If it fires alongside
+            everything else, the machine is gone. Alertmanager inhibits the
+            other alerts in that case so you get one page, not twenty.
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: availability
+          service: postgres
+        annotations:
+          summary: "PostgreSQL is unreachable"
+          description: >-
+            Total outage: no message can be stored and no conversation read.
+            The application fails closed here rather than answering customers
+            from an empty history.
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: availability
+          service: redis
+        annotations:
+          summary: "Redis is unreachable"
+          description: >-
+            Redis is both the Celery broker and the store for idempotency,
+            quotas and rate limits. Queued-but-unprocessed webhooks are lost
+            with it. The quota layer fails OPEN, so the spend ceiling is not
+            being enforced while this is true -- cost risk, not just outage.
+
       - alert: AIDisabled
         # 1 when the assistant is answering nobody: either the daily cost
         # ceiling tripped or an operator pulled the kill switch.
@@ -21,6 +133,8 @@ groups:
         for: 2m
         labels:
           severity: critical
+          category: availability
+          service: api
         annotations:
           summary: "The assistant is not answering customers"
           description: >-
@@ -46,6 +160,8 @@ groups:
         for: 10m
         labels:
           severity: critical
+          category: availability
+          service: webhook
           runbook: docs/DEPLOYMENT.md#webhook-not-receiving
         annotations:
           summary: "No customer messages received for 30 minutes"
@@ -54,8 +170,67 @@ groups:
             Check the TLS certificate is valid, that Meta's webhook subscription
             still points at the right HTTPS URL, and that nginx is up.
 
+      - alert: PublicEndpointDown
+        # Scraped from outside the compose network by blackbox-exporter. This
+        # is the only check that exercises nginx, TLS and DNS together -- every
+        # other check talks to containers directly and would pass happily while
+        # the public hostname served nothing.
+        expr: probe_success == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: availability
+          service: nginx
+        annotations:
+          summary: "The public HTTPS endpoint is failing its probe"
+          description: >-
+            The container may be healthy while the public URL is not. Meta will
+            not deliver webhooks to an endpoint failing TLS.
+
+  # ---------------------------------------------------------------------------
+  # It is running, but it is not working properly.
+  # ---------------------------------------------------------------------------
   - name: reliability
     rules:
+      - alert: HighErrorRate
+        expr: >-
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          /
+          clamp_min(sum(rate(http_requests_total[5m])), 0.001)
+          > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          category: reliability
+          service: api
+        annotations:
+          summary: "More than 5% of HTTP requests are returning 5xx"
+          description: >-
+            clamp_min keeps the ratio defined when traffic is near zero;
+            without it a single error at 3am divides by almost nothing and
+            pages on a 100% error rate derived from one request.
+
+      - alert: HighLatency
+        # p95 over the whole API. The webhook path must answer Meta quickly --
+        # slow responses are retried, and retries multiply load on an already
+        # struggling service.
+        expr: >-
+          histogram_quantile(
+            0.95,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          category: reliability
+          service: api
+        annotations:
+          summary: "API p95 latency is above 2 seconds"
+          description: >-
+            Meta retries slow webhook deliveries, which adds load to a service
+            that is already slow. Check database contention and whether the
+            event loop is blocked.
+
       - alert: ReplyReservationsUnconfirmed
         # The reservation ledger catching redeliveries at the reply stage means
         # workers are dying AFTER a WhatsApp send but BEFORE the confirming
@@ -66,6 +241,8 @@ groups:
         for: 5m
         labels:
           severity: warning
+          category: reliability
+          service: worker
         annotations:
           summary: "Workers are dying mid-send"
           description: >-
@@ -78,22 +255,52 @@ groups:
         expr: increase(webhook_dead_letters_total[1h]) > 0
         labels:
           severity: critical
+          category: reliability
+          service: worker
         annotations:
           summary: "Customer messages parked in the dead letter queue"
           description: >-
             A delivery exhausted all five retries. The payload is in the Redis
             dead-letter list and the customer has had no reply at all.
 
+      - alert: DeadLetterQueueNotEmpty
+        # Deliberately counter-based rather than a queue-depth gauge.
+        #
+        # A depth gauge would need to be refreshed from Redis on a schedule;
+        # one updated only on write stays stuck above zero forever once the
+        # queue is drained by hand, producing a permanent alert that gets muted
+        # and then hides the next real incident. Counting arrivals over 24h is
+        # a weaker signal but an honest one: it fires while entries are recent
+        # and clears on its own once they age out.
+        expr: increase(webhook_dead_letters_total[24h]) > 0
+        for: 30m
+        labels:
+          severity: warning
+          category: reliability
+          service: worker
+        annotations:
+          summary: "Dead letter queue has entries from the last 24 hours"
+          description: >-
+            Drain and investigate. Every entry is a customer message that was
+            received, accepted, and never answered.
+
       - alert: TaskTimeouts
         expr: increase(app_errors_total{type="task_soft_timeout"}[15m]) > 3
         labels:
           severity: warning
+          category: reliability
+          service: worker
         annotations:
           summary: "Tasks are hitting the soft time limit"
           description: >-
             Usually a hung external call rather than an application bug. Check
             OpenAI and Meta status before changing the limit.
 
+  # ---------------------------------------------------------------------------
+  # Third parties we depend on and cannot fix.
+  # ---------------------------------------------------------------------------
+  - name: integrations
+    rules:
       - alert: OpenAIErrorRate
         expr: >-
           sum(rate(openai_requests_total{status!="success"}[10m]))
@@ -103,35 +310,114 @@ groups:
         for: 10m
         labels:
           severity: warning
+          category: integrations
+          service: openai
         annotations:
           summary: "More than 20% of OpenAI calls are failing"
           description: >-
             Customers are receiving the fallback reply instead of an answer.
 
+      - alert: OpenAIDown
+        expr: >-
+          sum(rate(openai_requests_total{status!="success"}[10m])) > 0
+          and
+          sum(rate(openai_requests_total{status="success"}[10m])) == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: integrations
+          service: openai
+        annotations:
+          summary: "Every OpenAI call is failing"
+          description: >-
+            Not a degradation -- a total loss of the assistant. Check the API
+            key has not been revoked, the account has credit, and the
+            organisation is not rate limited. Every customer is getting the
+            fallback reply.
+
+      - alert: WhatsAppApiFailures
+        expr: sum(increase(app_errors_total{type=~".*whatsapp.*"}[15m])) > 5
+        for: 5m
+        labels:
+          severity: critical
+          category: integrations
+          service: whatsapp
+        annotations:
+          summary: "Outbound WhatsApp sends are failing"
+          description: >-
+            Replies are being generated and then failing to reach the customer,
+            which costs tokens and delivers nothing. Common causes: the access
+            token expired, the phone number ID changed, or the 24-hour customer
+            service window closed for that conversation.
+
+      - alert: WhatsAppTokenLikelyExpired
+        # Sends failing while nothing else is wrong is the signature of an
+        # expired token. Meta's temporary tokens last 24 hours and the
+        # permanent ones can be revoked without warning.
+        expr: >-
+          sum(increase(app_errors_total{type=~".*whatsapp.*"}[1h])) > 20
+          and
+          sum(increase(whatsapp_messages_total{direction="inbound"}[1h])) > 0
+        for: 15m
+        labels:
+          severity: critical
+          category: integrations
+          service: whatsapp
+        annotations:
+          summary: "Sustained WhatsApp send failures while messages still arrive"
+          description: >-
+            Inbound deliveries are arriving normally but outbound sends keep
+            failing. That asymmetry almost always means the access token was
+            revoked or expired. Rotate WHATSAPP_TOKEN.
+
+  # ---------------------------------------------------------------------------
+  # Money.
+  # ---------------------------------------------------------------------------
   - name: cost
     rules:
       - alert: SpendApproachingLimit
+        # Derived from the exported limit rather than a hard-coded number, so
+        # changing DAILY_SPEND_LIMIT_USD moves this threshold automatically.
+        # The previous version restated the limit in the rule and had to be
+        # kept in step by hand, which is a guarantee that one day it will not
+        # be.
         expr: >-
           openai_spend_guard_usd_today
-          / clamp_min(openai_spend_guard_usd_today, 0.01) * 0 +
-          openai_spend_guard_usd_today > 0
-          and openai_spend_guard_trips_total >= 0
-          and openai_spend_guard_usd_today >= 20
+          >= 0.8 * clamp_min(openai_spend_guard_limit_usd, 0.01)
         for: 5m
         labels:
           severity: warning
+          category: cost
+          service: openai
         annotations:
-          summary: "Daily OpenAI spend is approaching the ceiling"
+          summary: "Daily OpenAI spend has reached 80% of the ceiling"
           description: >-
-            Hard-coded at 20 USD to match the default DAILY_SPEND_LIMIT_USD of
-            25. If you change that setting, change this threshold with it --
-            Prometheus cannot read the application's configuration, so the two
-            numbers have to be kept in step by hand.
+            At this rate the spend guard will trip before the day ends and
+            every customer will be routed to a human. Raise the ceiling or find
+            what is consuming tokens.
+
+      - alert: DailySpendExceeded
+        expr: >-
+          openai_spend_guard_usd_today
+          >= clamp_min(openai_spend_guard_limit_usd, 0.01)
+        for: 1m
+        labels:
+          severity: critical
+          category: cost
+          service: openai
+        annotations:
+          summary: "The daily OpenAI spend ceiling has been reached"
+          description: >-
+            The circuit breaker is open. The assistant is answering nobody
+            until the daily counter resets at midnight UTC or the limit is
+            raised.
 
       - alert: SpendGuardTripped
         expr: increase(openai_spend_guard_trips_total[1h]) > 0
         labels:
           severity: critical
+          category: cost
+          service: openai
         annotations:
           summary: "The daily cost ceiling stopped the assistant"
           description: >-
@@ -139,12 +425,270 @@ groups:
             legitimately and the ceiling needs raising, or something is
             consuming tokens that should not be.
 
+      - alert: HighTokenUsage
+        expr: >-
+          sum(increase(openai_tokens_total[24h]))
+          >= 0.8 * clamp_min(openai_daily_token_limit, 1)
+        for: 10m
+        labels:
+          severity: warning
+          category: cost
+          service: openai
+        annotations:
+          summary: "Token consumption has reached 80% of the daily ceiling"
+          description: >-
+            Tokens and dollars can diverge -- a cheaper model burns far more
+            tokens for the same money -- so this ceiling is tracked separately
+            from spend. A sudden jump usually means the retrieved context grew,
+            not that traffic did.
+
+      - alert: TokenBurstAnomaly
+        # Catches a runaway prompt long before either daily ceiling notices.
+        # A retrieval bug that stuffs the whole knowledge base into every
+        # request looks completely normal to a per-request check.
+        expr: >-
+          sum(rate(openai_tokens_total[10m]))
+          > 5 * clamp_min(sum(rate(openai_tokens_total[6h] offset 10m)), 0.001)
+          and sum(rate(openai_tokens_total[10m])) > 10
+        for: 10m
+        labels:
+          severity: warning
+          category: cost
+          service: openai
+        annotations:
+          summary: "Token consumption is five times its recent baseline"
+          description: >-
+            Check whether the retrieved context or conversation history grew
+            unexpectedly. Reaching the daily ceiling by mid-morning is the
+            failure mode this exists to prevent.
+
+  # ---------------------------------------------------------------------------
+  # The machine underneath.
+  # ---------------------------------------------------------------------------
+  - name: resources
+    rules:
+      - alert: DiskAlmostFull
+        expr: >-
+          (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+            / clamp_min(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}, 1)
+          ) < 0.20
+        for: 15m
+        labels:
+          severity: warning
+          category: resources
+          service: host
+        annotations:
+          summary: "Less than 20% disk space free on {{ $labels.mountpoint }}"
+          description: >-
+            Backups, Postgres WAL and container logs all grow without asking.
+            Check backup_local_bytes_total before assuming it is the database.
+
+      - alert: DiskCriticallyFull
+        # Postgres does not degrade when the disk fills, it stops accepting
+        # writes. 5% on a small volume can vanish inside an hour, so this pages
+        # after five minutes rather than fifteen.
+        expr: >-
+          (
+            node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}
+            / clamp_min(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"}, 1)
+          ) < 0.05
+        for: 5m
+        labels:
+          severity: critical
+          category: resources
+          service: host
+        annotations:
+          summary: "Less than 5% disk space free on {{ $labels.mountpoint }}"
+          description: >-
+            PostgreSQL stops accepting writes when it cannot extend a file, and
+            a full disk during a backup leaves a truncated dump. Free space now.
+
+      - alert: MemoryPressure
+        expr: >-
+          (
+            node_memory_MemAvailable_bytes
+            / clamp_min(node_memory_MemTotal_bytes, 1)
+          ) < 0.10
+        for: 10m
+        labels:
+          severity: warning
+          category: resources
+          service: host
+        annotations:
+          summary: "Less than 10% memory available"
+          description: >-
+            MemAvailable, not MemFree -- free memory being low is normal and
+            healthy on Linux because the kernel uses it for page cache.
+            The OOM killer usually takes the worker first, mid-send.
+
+      - alert: CpuOverload
+        expr: >-
+          (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.90
+        for: 15m
+        labels:
+          severity: warning
+          category: resources
+          service: host
+        annotations:
+          summary: "CPU above 90% for 15 minutes"
+          description: >-
+            Sustained rather than spiky: the nightly backup runs pg_dump at
+            compression level 9 and is expected to saturate a core for a few
+            minutes. Fifteen minutes is not that.
+
+      - alert: SSLCertExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) < 86400 * 21
+        for: 1h
+        labels:
+          severity: warning
+          category: resources
+          service: nginx
+        annotations:
+          summary: "TLS certificate expires in under 21 days"
+          description: >-
+            Let's Encrypt renews at 30 days, so reaching 21 means renewal has
+            already failed at least once. Check the certbot container. An
+            expired certificate stops Meta delivering webhooks entirely.
+
+      - alert: SSLCertExpiringCritical
+        expr: (probe_ssl_earliest_cert_expiry - time()) < 86400 * 7
+        for: 1h
+        labels:
+          severity: critical
+          category: resources
+          service: nginx
+        annotations:
+          summary: "TLS certificate expires in under 7 days"
+          description: >-
+            Automatic renewal is definitively broken. Renew by hand now. When
+            this certificate expires Meta stops delivering webhooks and the
+            failure is total and immediate.
+
+  # ---------------------------------------------------------------------------
+  # Backups and restores. Everything here is age-based, because the failure
+  # that actually happens is a backup container running happily while producing
+  # nothing -- and liveness cannot see that.
+  # ---------------------------------------------------------------------------
+  - name: data-protection
+    rules:
+      - alert: BackupFailed
+        expr: backup_last_status == 0
+        for: 10m
+        labels:
+          severity: critical
+          category: data-protection
+          service: backup
+        annotations:
+          summary: "The most recent backup run failed"
+          description: >-
+            See /backups/state/last_result.json for the reason. A single
+            failure is recoverable; the danger is it repeating unnoticed until
+            the retention window has rotated away every good copy.
+
+      - alert: BackupMissing
+        # The important one. Nothing crashes when backups stop -- the container
+        # sleeps, the disk stops growing, and everything looks fine for weeks.
+        expr: >-
+          (time() - backup_last_success_timestamp_seconds) > 86400 * 1.25
+        for: 30m
+        labels:
+          severity: critical
+          category: data-protection
+          service: backup
+        annotations:
+          summary: "No successful backup in over 30 hours"
+          description: >-
+            Backups run daily, so 30 hours means at least one was skipped
+            entirely. Note this fires on a timestamp of 0 too, which is what a
+            deployment that has never once backed up looks like.
+
+      - alert: OffsiteUploadMissing
+        expr: >-
+          (time() - backup_last_offsite_upload_timestamp_seconds) > 86400 * 1.5
+        for: 30m
+        labels:
+          severity: critical
+          category: data-protection
+          service: backup
+        annotations:
+          summary: "No backup has reached off-site storage in 36 hours"
+          description: >-
+            Local backups may still be running fine. This means the only copies
+            live on the same machine as the database, so a disk failure or a
+            lost server takes the data and the backups together. Check
+            credentials -- an expired Azure SAS token or rotated S3 key fails
+            exactly like this.
+
+      - alert: OffsiteVerificationFailed
+        expr: backup_remote_verify_status == 0
+        for: 30m
+        labels:
+          severity: critical
+          category: data-protection
+          service: backup
+        annotations:
+          summary: "Off-site backup verification failed"
+          description: >-
+            The remote object either would not download or did not match its
+            checksum. Listing a bucket proves nothing: an upload job writing
+            zero-byte objects looks perfectly healthy in a listing. This check
+            downloads the bytes, which is why it is the one that catches it.
+
+      - alert: OffsiteVerificationStale
+        expr: >-
+          (time() - backup_remote_verify_last_success_timestamp_seconds) > 86400 * 3
+        for: 1h
+        labels:
+          severity: warning
+          category: data-protection
+          service: backup
+        annotations:
+          summary: "Off-site backups have not been verified for three days"
+          description: >-
+            The verification job itself has stopped running. Unverified backups
+            are assumptions.
+
+      - alert: RestoreDrillFailed
+        expr: restore_drill_status == 0
+        for: 15m
+        labels:
+          severity: critical
+          category: data-protection
+          service: backup
+        annotations:
+          summary: "The automated restore drill failed"
+          description: >-
+            A backup that will not restore is not a backup, and this is the
+            only check that proves the difference. The drill environment is
+            preserved on failure -- see /backups/drills/ for the report, the
+            Postgres log and the schema inspection.
+
+      - alert: RestoreDrillStale
+        expr: >-
+          (time() - restore_drill_last_success_timestamp_seconds) > 86400 * 10
+        for: 1h
+        labels:
+          severity: warning
+          category: data-protection
+          service: backup
+        annotations:
+          summary: "No successful restore drill in 10 days"
+          description: >-
+            Drills run weekly. Ten days means the drill has stopped running,
+            which quietly returns you to having backups nobody has ever tested.
+
+  # ---------------------------------------------------------------------------
+  # Customer behaviour.
+  # ---------------------------------------------------------------------------
   - name: abuse
     rules:
       - alert: HighAbuseBlockRate
         expr: sum(increase(customer_abuse_blocks_total[15m])) > 5
         labels:
           severity: warning
+          category: reliability
+          service: api
         annotations:
           summary: "Several customers blocked for flooding or spam"
           description: >-
@@ -157,6 +701,8 @@ groups:
         expr: sum(increase(customer_rate_limited_total[1h])) > 50
         labels:
           severity: info
+          category: reliability
+          service: api
         annotations:
           summary: "Customers are regularly hitting the per-number rate limits"
           description: >-

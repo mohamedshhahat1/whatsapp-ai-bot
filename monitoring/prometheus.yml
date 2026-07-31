@@ -1,19 +1,107 @@
+# Prometheus configuration.
+#
+# Scrapes the application, the worker, the host, PostgreSQL, Redis, and the
+# public HTTPS endpoint, then ships anything that fires to Alertmanager.
+#
+# The blackbox targets live in a separate file rather than inline because they
+# contain the public hostname, which is deployment-specific. Prometheus does
+# NOT expand environment variables in this file -- a ${DOMAIN} written here
+# would be scraped literally -- so the target file is generated from DOMAIN at
+# container start by the prometheus-targets init service in
+# docker-compose.prod.yml.
+
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+  # Attached to every alert that reaches Alertmanager, so a notification from
+  # staging is never mistaken for one from production at 3am.
+  external_labels:
+    environment: production
+    service: whatsapp-ai-bot
 
-# Alerting rules are evaluated but there is no Alertmanager wired up yet, so
-# they surface in the Prometheus UI and Grafana rather than paging anyone.
-# Routing them to email/Slack is a deployment decision -- see
-# docs/DEPLOYMENT.md, "Alerting".
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
 rule_files:
   - /etc/prometheus/alerts.yml
 
 scrape_configs:
+  # --- Application -----------------------------------------------------------
   - job_name: api
+    metrics_path: /metrics
     static_configs:
       - targets: ["app:8000"]
+        labels:
+          service: api
 
   - job_name: worker
+    # The worker runs its own metrics server; message processing happens there,
+    # so most OpenAI and message metrics originate from this target rather than
+    # from the API.
     static_configs:
       - targets: ["worker:9100"]
+        labels:
+          service: worker
+
+  # --- Infrastructure --------------------------------------------------------
+  - job_name: node
+    # Also carries the backup and restore-drill metrics, which reach Prometheus
+    # through node-exporter's textfile collector reading /backups/metrics.
+    static_configs:
+      - targets: ["node-exporter:9100"]
+        labels:
+          service: host
+
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels:
+          service: postgres
+
+  - job_name: redis
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels:
+          service: redis
+
+  # --- External probes -------------------------------------------------------
+  #
+  # Everything above talks to containers directly and would keep passing while
+  # the public hostname served nothing at all. This job is the only one that
+  # exercises DNS, nginx and the TLS certificate together, which is the exact
+  # combination Meta needs in order to deliver a webhook.
+  - job_name: blackbox-https
+    metrics_path: /probe
+    params:
+      module: [https_2xx]
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/blackbox.json
+        refresh_interval: 5m
+    relabel_configs:
+      # The blackbox pattern: the target being probed travels as a URL
+      # parameter, and the exporter itself is the thing actually scraped.
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+      - target_label: service
+        replacement: nginx
+
+  # --- Self-monitoring -------------------------------------------------------
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: alertmanager
+    # If Alertmanager is down, no alert can be delivered -- including the alert
+    # saying Alertmanager is down. Prometheus itself surfaces that failure in
+    # its own UI and via up{job="alertmanager"}, which is the best that can be
+    # done without a second, independent monitoring system.
+    static_configs:
+      - targets: ["alertmanager:9093"]
