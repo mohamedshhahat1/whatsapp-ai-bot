@@ -17,17 +17,32 @@ export default tseslint.config(
     files: ["**/*.{ts,tsx}"],
     languageOptions: {
       ecmaVersion: 2020,
+      // typescript-eslint's eslint-recommended layer should already disable
+      // no-undef for TypeScript files, since the compiler does that job
+      // better. This list is belt and braces: several of these were being
+      // used before today with no declaration, and no CI run has ever been
+      // observed on this repository to prove the rule is actually off.
       globals: {
         window: "readonly",
         document: "readonly",
         console: "readonly",
+        navigator: "readonly",
         fetch: "readonly",
+        Headers: "readonly",
+        Request: "readonly",
+        Response: "readonly",
+        Event: "readonly",
+        AbortController: "readonly",
+        DOMException: "readonly",
+        AudioContext: "readonly",
+        HTMLElement: "readonly",
         WebSocket: "readonly",
         setTimeout: "readonly",
         clearTimeout: "readonly",
         setInterval: "readonly",
         clearInterval: "readonly",
         localStorage: "readonly",
+        sessionStorage: "readonly",
       },
     },
     plugins: {

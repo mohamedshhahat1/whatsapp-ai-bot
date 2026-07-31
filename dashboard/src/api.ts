@@ -102,20 +102,22 @@ async function request<T>(
   return (await response.json()) as T
 }
 
-// The backend types all of these as bare strings. The `(string & {})` arm
-// preserves that tolerance -- an unknown value from a newer server still
-// renders instead of breaking the build -- while giving autocomplete and
-// catching typos like "humann" at compile time.
-export type ConversationMode = "bot" | "human" | (string & {})
-export type ConversationStatus = "active" | "archived" | (string & {})
-export type ConversationTag = "sales_lead" | (string & {})
-export type MessageDirection = "inbound" | "outbound" | (string & {})
-export type MessageStatus =
-  | "pending"
-  | "sent"
-  | "unconfirmed"
-  | "failed"
-  | (string & {})
+// The backend types all of these as bare strings. Loose<T> keeps that
+// tolerance -- an unknown value from a newer server still renders instead of
+// breaking the build -- while giving autocomplete and catching typos.
+//
+// Record<never, never> rather than the more familiar `{}`: they are identical
+// to the type checker, but `{}` trips @typescript-eslint/no-empty-object-type,
+// which is an error in the recommended set this project lints with.
+type Loose<T extends string> = T | (string & Record<never, never>)
+
+export type ConversationMode = Loose<"bot" | "human">
+export type ConversationStatus = Loose<"active" | "archived">
+export type ConversationTag = Loose<"sales_lead">
+export type MessageDirection = Loose<"inbound" | "outbound">
+export type MessageStatus = Loose<
+  "pending" | "sent" | "unconfirmed" | "failed"
+>
 
 export const TAG_SALES_LEAD = "sales_lead"
 export const MODE_HUMAN = "human"
