@@ -28,7 +28,16 @@ x-app-environment: &app-environment
   ENVIRONMENT: production
   DEBUG: "false"
   SECRETS_DIR: /run/secrets
+  # No credentials here. The redis_password secret is mounted at
+  # /run/secrets/redis_password and pydantic-settings maps it onto the
+  # redis_password field, which app/config.py merges into this URL along with
+  # every derived Celery URL. Writing the password into REDIS_URL instead
+  # would put it in `docker inspect` output for three services.
   REDIS_URL: redis://redis:6379/0
+  # Set to "true" only when Redis is reached across a network the compose
+  # bridge does not cover -- a managed instance or a separate host. In-stack
+  # traffic never leaves the Docker network, so TLS here is pure overhead.
+  REDIS_TLS: "${REDIS_TLS:-false}"
   USE_TASK_QUEUE: "true"
   RATE_LIMIT_ENABLED: "true"
   # nginx is the only proxy in front of the app, so the real client IP is the
@@ -62,6 +71,7 @@ x-app-environment: &app-environment
 
 x-app-secrets: &app-secrets
   - database_url
+  - redis_password
   - openai_api_key
   - whatsapp_token
   - whatsapp_phone_number_id
@@ -171,14 +181,64 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: redis-server --appendonly yes
+    # Renders requirepass and the two ACL users into a tmpfs file from the
+    # Docker secrets, then starts Redis with the checked-in config, which ends
+    # with `include /run/redis/auth.conf`.
+    #
+    # --requirepass on the command line would put the password into `ps` inside
+    # the container and `docker inspect` outside it; an env var would put it in
+    # `docker inspect` too. This way it exists only in the secret mount and in
+    # a root-only file on a tmpfs that never touches disk.
+    #
+    # `default` gets full access for the application. `exporter` is limited to
+    # the handful of read-only commands redis_exporter issues, so a compromised
+    # metrics container cannot touch the quota, spend or idempotency keys.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        umask 077
+        mkdir -p /run/redis
+        REDIS_PW="$$(cat /run/secrets/redis_password)"
+        EXPORTER_PW="$$(cat /run/secrets/redis_exporter_password)"
+        if [ -z "$$REDIS_PW" ]; then
+          echo "FATAL: secrets/redis_password is empty. Run ./scripts/init-secrets.sh" >&2
+          exit 1
+        fi
+        {
+          printf 'requirepass %s\n' "$$REDIS_PW"
+          printf 'user default on >%s ~* &* +@all\n' "$$REDIS_PW"
+          printf 'user exporter on >%s ~* &* -@all +info +ping +client|setinfo +client|list +config|get +cluster|info +slowlog|get +latency|latest +memory|stats +command|docs\n' "$$EXPORTER_PW"
+        } > /run/redis/auth.conf
+        exec redis-server /usr/local/etc/redis/redis.conf
     volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
       - redisdata:/data
+    tmpfs:
+      # The rendered auth file lives in memory only. On a bind mount or a
+      # volume it would survive the container and sit on the host disk in
+      # plaintext.
+      - /run/redis:mode=700
+    secrets:
+      - redis_password
+      - redis_exporter_password
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      # REDISCLI_AUTH rather than -a: the latter prints a warning containing
+      # the password to stderr on every single probe, which lands in the
+      # container logs. Grepping for PONG rather than trusting the exit code
+      # because an unauthenticated ping can still exit 0 in some versions.
+      test:
+        - CMD-SHELL
+        - REDISCLI_AUTH="$$(cat /run/secrets/redis_password)" redis-cli ping | grep -q PONG
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 10s
+    # Let the AOF finish flushing. appendfsync everysec means at most a second
+    # of writes is outstanding, but a clean stop avoids an AOF rewrite on the
+    # next start.
+    stop_grace_period: 30s
     restart: unless-stopped
 
   backup:
@@ -389,6 +449,13 @@ services:
     image: oliver006/redis_exporter:latest
     environment:
       REDIS_ADDR: "redis://redis:6379"
+      # The restricted ACL account, not `default`. Read-only by construction:
+      # if this container is compromised it cannot clear the rate limits,
+      # spend counters or reply-idempotency keys.
+      REDIS_USER: exporter
+      REDIS_PASSWORD_FILE: /run/secrets/redis_exporter_password
+    secrets:
+      - redis_exporter_password
     expose:
       - "9121"
     depends_on:
@@ -490,6 +557,10 @@ secrets:
     file: ./secrets/database_url
   postgres_password:
     file: ./secrets/postgres_password
+  redis_password:
+    file: ./secrets/redis_password
+  redis_exporter_password:
+    file: ./secrets/redis_exporter_password
   openai_api_key:
     file: ./secrets/openai_api_key
   whatsapp_token:
