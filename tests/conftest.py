@@ -16,7 +16,6 @@ os.environ.setdefault("USE_TASK_QUEUE", "false")
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass
-from typing import TypeVar
 from uuid import uuid4
 
 import pytest
@@ -29,8 +28,6 @@ from app.db.session import SessionLocal, engine
 from app.main import app
 from app.repositories.conversation import ConversationRepository
 from app.repositories.user import UserRepository
-
-T = TypeVar("T")
 
 # Deleting a customer by hand rather than relying on cascades: the FKs are
 # plain references, so the children have to go first.
@@ -89,7 +86,7 @@ def database_reachable() -> bool:
     return asyncio.run(check())
 
 
-def run_db(operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
+def run_db[T](operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
     """Run one database operation from synchronous test code.
 
     A synchronous test that also uses TestClient cannot share a pool with the
