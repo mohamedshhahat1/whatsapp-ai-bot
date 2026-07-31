@@ -7,6 +7,7 @@ Actions secrets) -- see ``app/core/secrets.py`` and ``docs/SECRETS.md``.
 
 import os
 from functools import lru_cache
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from pydantic import model_validator
 from pydantic_settings import (
@@ -45,9 +46,73 @@ PLACEHOLDER_VALUES = frozenset(
     }
 )
 
+_REDIS_SCHEMES = frozenset({"redis", "rediss"})
+
 
 def _running_in_production() -> bool:
     return os.environ.get("ENVIRONMENT", "development").strip().lower() == "production"
+
+
+def _redis_url_has_password(url: str) -> bool:
+    """True when the URL already carries credentials of its own."""
+    if not url:
+        return False
+    try:
+        return bool(urlsplit(url).password)
+    except ValueError:
+        return False
+
+
+def apply_redis_credentials(
+    url: str,
+    *,
+    username: str = "",
+    password: str = "",
+    tls: bool = False,
+) -> str:
+    """Return ``url`` with credentials and TLS applied.
+
+    Injecting here rather than at each call site is the whole point: every
+    Redis consumer in the app derives its URL from ``redis_url``, so one
+    change authenticates all of them and a future consumer cannot forget to.
+
+    A password already present in the URL always wins -- an operator who wrote
+    credentials into ``REDIS_URL`` explicitly meant them, and silently
+    overwriting them would be worse than either behaviour on its own.
+
+    The password is percent-encoded. Redis passwords are generated with
+    ``openssl rand -base64``, which emits ``+`` and ``/``; unencoded, ``/``
+    truncates the URL at the database number and the client connects to the
+    wrong database with a mangled password.
+    """
+    if not url:
+        return url
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        # Not parseable -- hand it back untouched rather than corrupting it.
+        return url
+
+    if parts.scheme not in _REDIS_SCHEMES:
+        # Someone is pointing Celery at RabbitMQ or similar. Leave it alone.
+        return url
+
+    scheme = "rediss" if tls else parts.scheme
+
+    if parts.password:
+        netloc = parts.netloc
+    elif password:
+        host = parts.hostname or "localhost"
+        if ":" in host:
+            # IPv6 literal.
+            host = f"[{host}]"
+        authority = f"{host}:{parts.port}" if parts.port else host
+        netloc = f"{quote(username, safe='')}:{quote(password, safe='')}@{authority}"
+    else:
+        netloc = parts.netloc
+
+    return urlunsplit((scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 class Settings(BaseSettings):
@@ -72,6 +137,26 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://postgres:postgres@localhost:5432/whatsapp_ai_bot"
     )
     redis_url: str = "redis://localhost:6379/0"
+
+    # Redis authentication (see docs/REDIS_SECURITY.md).
+    #
+    # Supplied as a Docker secret (/run/secrets/redis_password), a
+    # REDIS_PASSWORD_FILE path, or the REDIS_PASSWORD environment variable.
+    # It is merged into redis_url -- and into the Celery broker and backend
+    # URLs when those are set explicitly -- by the validator below.
+    redis_password: str = ""
+    # Redis 6 ACL user. Empty means the `default` user, which is what the
+    # application uses; the metrics exporter has its own restricted account.
+    redis_username: str = ""
+    # Switches redis:// to rediss://. Only needed when Redis is reached across
+    # a network the compose bridge does not cover -- a managed instance or a
+    # separate host. Pointless in-stack overhead otherwise.
+    redis_tls: bool = False
+    # Fail closed. A production stack whose Redis has no password is holding
+    # the rate limits, spend counters and reply-idempotency keys in the open,
+    # and the failure is invisible until someone reaches the port. Set
+    # REDIS_AUTH_REQUIRED=false to accept that deliberately.
+    redis_auth_required: bool = True
 
     # Background queue (Celery). Broker/backend default to redis_url when empty.
     use_task_queue: bool = True
@@ -251,6 +336,58 @@ class Settings(BaseSettings):
                 "The .env file is not read when ENVIRONMENT=production."
             )
         return self
+
+    @model_validator(mode="after")
+    def _apply_redis_credentials(self) -> "Settings":
+        """Merge the Redis password and TLS setting into every Redis URL.
+
+        Applied to the Celery broker and backend as well, because those are
+        separate settings when set explicitly and would otherwise connect
+        unauthenticated while ``redis_url`` looked correct.
+        """
+        self.redis_url = apply_redis_credentials(
+            self.redis_url,
+            username=self.redis_username,
+            password=self.redis_password,
+            tls=self.redis_tls,
+        )
+        self.celery_broker_url = apply_redis_credentials(
+            self.celery_broker_url,
+            username=self.redis_username,
+            password=self.redis_password,
+            tls=self.redis_tls,
+        )
+        self.celery_result_backend = apply_redis_credentials(
+            self.celery_result_backend,
+            username=self.redis_username,
+            password=self.redis_password,
+            tls=self.redis_tls,
+        )
+        return self
+
+    @model_validator(mode="after")
+    def _require_redis_auth(self) -> "Settings":
+        """Refuse to boot production against an unauthenticated Redis.
+
+        Redis holds the per-customer rate limits, the spend counters and the
+        reply-idempotency keys. Reachable without a password, all three can be
+        cleared by anyone who can open the port -- and nothing in the
+        application would report a problem.
+        """
+        if self.environment.strip().lower() != "production":
+            return self
+        if not self.redis_auth_required:
+            return self
+        if self.redis_password.strip() or _redis_url_has_password(self.redis_url):
+            return self
+        raise ValueError(
+            "Redis authentication is not configured. Provide REDIS_PASSWORD "
+            "through a Docker secret (/run/secrets/redis_password), a "
+            "REDIS_PASSWORD_FILE path, Vault, or the environment -- or embed "
+            "credentials in REDIS_URL. Run ./scripts/init-secrets.sh to "
+            "generate one. Set REDIS_AUTH_REQUIRED=false to accept an "
+            "unauthenticated Redis deliberately."
+        )
 
     @property
     def database_url_sync(self) -> str:
