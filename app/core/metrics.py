@@ -105,12 +105,46 @@ AI_DISABLED = Gauge(
     ),
 )
 
+# The configured ceilings, exported so alert rules can compare against the
+# real limit instead of restating it.
+#
+# A rule that hard-codes "20" keeps measuring against 20 after someone changes
+# DAILY_SPEND_LIMIT_USD to 100 -- it then fires permanently, gets muted, and
+# the cost ceiling effectively loses its alarm. Exporting the limit makes the
+# rule follow the setting.
+SPEND_LIMIT_USD = Gauge(
+    "openai_spend_guard_limit_usd",
+    "Configured daily spend ceiling in USD (DAILY_SPEND_LIMIT_USD).",
+)
+
+DAILY_TOKEN_LIMIT = Gauge(
+    "openai_daily_token_limit",
+    "Configured daily token ceiling (DAILY_TOKEN_LIMIT).",
+)
+
 # Explicit zero at import time. An unset gauge is absent from /metrics
 # entirely, and an alert on a missing series behaves differently from one on a
 # series reading 0 -- the difference between "healthy" and "not scraped yet"
 # should not be a guess.
 AI_DISABLED.set(0)
 DAILY_SPEND_USD.set(0)
+
+
+def publish_limits() -> None:
+    """Export the configured cost ceilings as gauges.
+
+    Imported lazily so this module never takes part in an import cycle with
+    ``app.config``, which reaches back into ``app.core`` for its secret
+    sources.
+    """
+    from app.config import get_settings
+
+    settings = get_settings()
+    SPEND_LIMIT_USD.set(settings.daily_spend_limit_usd)
+    DAILY_TOKEN_LIMIT.set(settings.daily_token_limit)
+
+
+publish_limits()
 
 # --- Reliability -------------------------------------------------------------
 
