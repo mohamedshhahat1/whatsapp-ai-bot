@@ -53,7 +53,9 @@ function isUnclaimedLead(conversation: Conversation): boolean {
 
 interface Props {
   openId: number | null
-  onOpen: (id: number) => void
+  // Accepts null so the transcript pane can clear itself after a delete. App
+  // holds this as number | null already.
+  onOpen: (id: number | null) => void
   follow: boolean
   onFollowChange: (value: boolean) => void
   // Lets the shell refresh its unclaimed-lead counter when ownership changes
@@ -89,9 +91,11 @@ function MessageBubble({ message }: { message: Message }) {
 function ConversationView({
   id,
   onChanged,
+  onDeleted,
 }: {
   id: number
   onChanged?: () => void
+  onDeleted: () => void
 }) {
   const { connected } = useEventsStatus()
   const detail = useAsync(
@@ -102,6 +106,7 @@ function ConversationView({
   const [text, setText] = useState("")
   const [sending, setSending] = useState(false)
   const [switching, setSwitching] = useState(false)
+  const [deleting, setDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   useEvents((event) => {
@@ -182,6 +187,26 @@ function ConversationView({
     }
   }
 
+  async function remove() {
+    if (
+      !window.confirm(
+        "Delete this conversation and every message in it?\n\nThe transcript " +
+          "is removed permanently and cannot be recovered from this dashboard.",
+      )
+    ) {
+      return
+    }
+    setDeleting(true)
+    setError(null)
+    try {
+      await api.deleteConversation(id)
+      onDeleted()
+    } catch (exception) {
+      report(exception)
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="panel">
       <div className="row" style={{ justifyContent: "space-between" }}>
@@ -209,6 +234,11 @@ function ConversationView({
           {detail.data && humanOwned && (
             <button disabled={switching} onClick={resumeAi}>
               {switching ? "Working..." : "Resume AI"}
+            </button>
+          )}
+          {detail.data && (
+            <button className="danger" disabled={deleting} onClick={remove}>
+              {deleting ? "Deleting..." : "Delete"}
             </button>
           )}
           <Refreshing active={detail.refreshing} />
@@ -413,7 +443,15 @@ export default function Conversations({
       </div>
 
       {openId !== null && (
-        <ConversationView id={openId} onChanged={onChanged} />
+        <ConversationView
+          id={openId}
+          onChanged={onChanged}
+          onDeleted={() => {
+            onOpen(null)
+            conversations.reload()
+            onChanged?.()
+          }}
+        />
       )}
     </>
   )
