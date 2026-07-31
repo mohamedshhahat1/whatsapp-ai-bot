@@ -41,9 +41,7 @@ class Message(Base):
     #: NULL for operator replies from the dashboard and for fixed copy sent
     #: without a model call. Postgres permits unlimited NULLs in a unique
     #: constraint, so those rows never contend with each other.
-    reply_to_wa_message_id: Mapped[str | None] = mapped_column(
-        String(128), unique=True
-    )
+    reply_to_wa_message_id: Mapped[str | None] = mapped_column(String(128), unique=True)
     direction: Mapped[str] = mapped_column(String(10))  # "inbound" | "outbound"
     type: Mapped[str] = mapped_column(String(20), default="text")
     content: Mapped[str | None] = mapped_column(Text)

@@ -106,9 +106,7 @@ def _payload(wa_id: str, wa_message_id: str, body: str) -> dict[str, Any]:
                 "changes": [
                     {
                         "value": {
-                            "contacts": [
-                                {"wa_id": wa_id, "profile": {"name": "Test"}}
-                            ],
+                            "contacts": [{"wa_id": wa_id, "profile": {"name": "Test"}}],
                             "messages": [
                                 {
                                     "from": wa_id,
