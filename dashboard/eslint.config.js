@@ -1,5 +1,5 @@
-// Flat config (ESLint 9). CI installs the plugins with --no-save so this can
-// be enforced without changing package.json dependency resolution.
+// Flat config (ESLint 9). CI installs the plugins with --no-save so linting is
+// enforced without changing package.json dependency resolution.
 import js from "@eslint/js"
 import reactHooks from "eslint-plugin-react-hooks"
 import reactRefresh from "eslint-plugin-react-refresh"
@@ -28,7 +28,7 @@ export default tseslint.config(
         setInterval: "readonly",
         clearInterval: "readonly",
         localStorage: "readonly",
-ায়      },
+      },
     },
     plugins: {
       "react-hooks": reactHooks,
@@ -41,7 +41,7 @@ export default tseslint.config(
         { allowConstantExport: true },
       ],
       // The dashboard talks to a JSON API. Genuine `any` at the boundary is
-      // normal; warn so it is visible without blocking the build.
+      // normal; warn so it stays visible without blocking the build.
       "@typescript-eslint/no-explicit-any": "warn",
       "@typescript-eslint/no-unused-vars": [
         "error",

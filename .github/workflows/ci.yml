@@ -1,26 +1,32 @@
-name: CI/CD
+name: CI
 
-# Every push runs the full pipeline: lint -> test -> build -> deploy.
-# Pull requests run lint + test + a build check (no image push, no deploy).
 on:
   push:
   pull_request:
   workflow_dispatch:
 
-# A newer push on the same branch cancels the previous run.
+# A second push to the same branch cancels the first. Without this, a busy
+# branch queues runs that are already obsolete and the useful one waits behind
+# them.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
   PYTHON_VERSION: "3.12"
+  NODE_VERSION: "22"
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  # Ratchet only. Raise it as coverage improves; never lower it to make a red
+  # build green -- that converts the gate into decoration.
+  COVERAGE_MIN: "50"
 
 jobs:
-  # 1) LINT ---------------------------------------------------------------
+  # ==========================================================================
+  # Python static analysis
+  # ==========================================================================
   lint:
-    name: Lint (Ruff, Black, Mypy)
+    name: Lint (ruff, black, mypy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,48 +35,104 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
 
-      - name: Install dependencies
+      - name: Install tooling
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Ruff (lint)
+      # Each step runs even if the previous failed, so one run reports every
+      # problem instead of revealing them one commit at a time.
+      - name: Ruff
+        id: ruff
+        if: always()
         run: ruff check --output-format=github .
 
-      - name: Black (format check)
+      - name: Black
+        id: black
+        if: always()
         run: black --check --diff .
 
-      - name: Mypy (type check)
+      - name: Mypy
+        id: mypy
+        if: always()
         run: mypy
 
-  # 1b) SECRET SCAN -------------------------------------------------------
+  # ==========================================================================
+  # Python dependency vulnerabilities
+  # ==========================================================================
+  python-security:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+
+      - name: Audit runtime dependencies
+        run: |
+          pip-audit \
+            --requirement requirements.txt \
+            --desc \
+            --format json \
+            --output pip-audit.json \
+            --progress-spinner off
+
+      - name: Audit summary
+        if: always()
+        run: |
+          pip-audit --requirement requirements.txt --desc --progress-spinner off \
+            || echo "::warning::pip-audit reported vulnerabilities (see report)"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pip-audit-${{ github.sha }}
+          path: pip-audit.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # ==========================================================================
+  # Secret scanning
+  # ==========================================================================
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          # gitleaks scans history, which needs the full clone. With the
+          # default shallow fetch it only ever sees the tip commit and a
+          # credential committed and then removed goes unnoticed.
           fetch-depth: 0
 
-      - name: Scan repository history for committed secrets
-        run: |
-          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest \
-            detect --source=/repo --config=/repo/.gitleaks.toml \
-            --redact --no-banner --verbose
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "true"
 
-  # 2) TESTS --------------------------------------------------------------
+  # ==========================================================================
+  # Tests
+  # ==========================================================================
   test:
-    name: Tests (pytest)
-    needs: lint
+    name: Tests
     runs-on: ubuntu-latest
+    needs: lint
 
     services:
       postgres:
-        # pgvector image: the knowledge-base migration needs the extension.
+        # pgvector, not stock postgres: migration 0001 creates a vector column
+        # and CREATE EXTENSION vector fails on the plain image.
         image: pgvector/pgvector:pg16
         env:
           POSTGRES_USER: postgres
@@ -80,34 +142,34 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
+          --health-interval 5s
           --health-timeout 5s
-          --health-retries 5
+          --health-retries 10
+
       redis:
         image: redis:7-alpine
+        # Deliberately password-protected. Production Redis requires auth, so
+        # testing against an open one would leave the credential-injection
+        # path in app/config.py unexercised until deployment.
+        options: >-
+          --health-cmd "redis-cli -a ci-redis-password ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+          --entrypoint redis-server
         ports:
           - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
-    # Test-only values. Real credentials never enter CI: production secrets
-    # live in Docker secrets / Vault on the server (see docs/SECRETS.md).
     env:
-      ENVIRONMENT: test
+      ENVIRONMENT: development
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/whatsapp_ai_bot_test
       REDIS_URL: redis://localhost:6379/0
-      USE_TASK_QUEUE: "false"
-      RATE_LIMIT_ENABLED: "false"
-      METRICS_ENABLED: "true"
-      RAG_ENABLED: "false"
-      OPENAI_API_KEY: test-key
+      REDIS_PASSWORD: ci-redis-password
+      OPENAI_API_KEY: sk-test
       WHATSAPP_TOKEN: test-token
-      WHATSAPP_PHONE_NUMBER_ID: "000000000000000"
-      WHATSAPP_VERIFY_TOKEN: test-verify-token
-      WHATSAPP_APP_SECRET: ""
+      WHATSAPP_PHONE_NUMBER_ID: "1234567890"
+      WHATSAPP_VERIFY_TOKEN: test-verify
+      WHATSAPP_APP_SECRET: test-app-secret
       ADMIN_API_KEY: test-admin-key
 
     steps:
@@ -117,86 +179,358 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-dev.txt
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+          pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Apply database migrations
+      # The service container runs redis-server with no arguments, so set the
+      # password over the wire before anything connects.
+      - name: Enable Redis authentication
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq redis-tools
+          redis-cli -h localhost -p 6379 CONFIG SET requirepass ci-redis-password
+          REDISCLI_AUTH=ci-redis-password redis-cli -h localhost -p 6379 ping
+
+      - name: Run migrations
         run: alembic upgrade head
 
-      - name: Run pytest
-        run: pytest --cov=app --cov-report=term-missing --cov-report=xml
+      - name: Pytest
+        run: |
+          pytest \
+            --junitxml=reports/junit.xml \
+            --cov=app \
+            --cov-report=term-missing \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=html:reports/htmlcov \
+            --cov-fail-under=${{ env.COVERAGE_MIN }}
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-${{ github.sha }}
+          path: reports/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: Upload coverage report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-${{ github.sha }}
-          path: coverage.xml
-          if-no-files-found: ignore
+          path: |
+            reports/coverage.xml
+            reports/htmlcov
+          if-no-files-found: warn
+          retention-days: 30
 
-  # 3) BUILD DOCKER -------------------------------------------------------
-  build:
-    name: Build Docker image
-    needs: [test, secret-scan]
+  # ==========================================================================
+  # Database migrations
+  # ==========================================================================
+  migrations:
+    name: Migrations (fresh, upgrade, downgrade)
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    needs: lint
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: migration_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      ENVIRONMENT: development
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/migration_test
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      # Fresh database: proves the migrations build the schema from nothing,
+      # which is what a disaster recovery actually does. A chain that only
+      # works against a database that already exists is not a recovery path.
+      - name: Upgrade from empty database
+        run: alembic upgrade head
+
+      - name: Verify schema exists
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -e
+          for table in users conversations messages; do
+            psql -h localhost -U postgres -d migration_test \
+              -tAc "SELECT to_regclass('public.$table')" | grep -q "$table" || {
+                echo "::error::table $table missing after upgrade"; exit 1; }
+          done
+          psql -h localhost -U postgres -d migration_test \
+            -tAc "SELECT 1 FROM pg_extension WHERE extname='vector'" | grep -q 1 || {
+              echo "::error::pgvector extension not installed by migrations"; exit 1; }
+
+      # Downgrade is the step nobody runs until a rollback during an incident,
+      # which is the worst possible moment to discover a missing downgrade().
+      - name: Downgrade to base
+        run: alembic downgrade base
+
+      - name: Upgrade again
+        run: alembic upgrade head
+
+  # ==========================================================================
+  # Frontend
+  # ==========================================================================
+  frontend:
+    name: Dashboard (build, types, lint, audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # npm ci is correct and is used whenever a lockfile exists. This
+      # repository has no dashboard/package-lock.json, and npm ci fails hard
+      # without one -- so CI would be permanently red rather than
+      # reproducible. Run `npm install` locally in dashboard/ once and commit
+      # the lockfile; this step then tightens automatically with no change
+      # here.
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            echo "lockfile found - using npm ci"
+            npm ci
+          else
+            echo "::warning::dashboard/package-lock.json is missing; falling back to npm install. Commit a lockfile for reproducible builds."
+            npm install
+          fi
+
+      - name: TypeScript compilation
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: |
+          npm install --no-save --no-audit --no-fund \
+            eslint@9 \
+            @eslint/js \
+            typescript-eslint \
+            eslint-plugin-react-hooks \
+            eslint-plugin-react-refresh
+          npx eslint .
+
+      - name: Build
+        run: npm run build 2>&1 | tee ../frontend-build.log
+
+      - name: npm audit
+        # Moderate advisories in the Vite toolchain are routine and are not
+        # shipped to users -- the build output is static files. Fail on high
+        # and critical, which are the ones worth blocking a release for.
+        run: npm audit --audit-level=high
+
+      - name: Upload build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-log-${{ github.sha }}
+          path: frontend-build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload build output
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist-${{ github.sha }}
+          path: dashboard/dist
+          if-no-files-found: warn
+          retention-days: 7
+
+  # ==========================================================================
+  # Docker
+  # ==========================================================================
+  docker:
+    name: Docker (build, compose, Trivy)
+    runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
-      # Only authenticate & push for branch pushes; PRs from forks build only.
-      - name: Log in to GitHub Container Registry
-        if: github.event_name == 'push'
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: whatsapp-ai-bot:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Validates BOTH compose files. This is the check that would have caught
+      # the earlier bug where a bind mount pointed at a file that did not
+      # exist: Docker silently creates a DIRECTORY in its place, and the
+      # service starts and misbehaves rather than failing.
+      - name: Validate dev compose
+        run: docker compose -f docker-compose.yml config -q
+
+      - name: Validate production compose
+        env:
+          DOMAIN: ci.example.com
+        run: |
+          set -e
+          # Compose refuses to evaluate a file whose declared secret sources do
+          # not exist, so create placeholders. This doubles as a check that the
+          # secrets list in the compose file and init-secrets.sh agree.
+          mkdir -p secrets
+          for name in \
+            database_url postgres_password redis_password \
+            redis_exporter_password openai_api_key whatsapp_token \
+            whatsapp_phone_number_id whatsapp_verify_token \
+            whatsapp_app_secret admin_api_key grafana_admin_password \
+            backup_s3_access_key_id backup_s3_secret_access_key \
+            backup_gcs_credentials backup_azure_sas_token \
+            backup_encryption_passphrase
+          do
+            printf 'ci-placeholder' > "secrets/$name"
+          done
+          docker compose -f docker-compose.prod.yml config -q
+          echo "production compose is valid"
+
+      - name: Verify monitoring config files exist
+        # Every bind-mounted config in the prod compose must be a real file.
+        # A missing one becomes a directory at runtime and the container fails
+        # in a way that looks like a config syntax error.
+        run: |
+          set -e
+          for f in \
+            monitoring/prometheus.yml \
+            monitoring/alerts.yml \
+            monitoring/alertmanager.yml.tmpl \
+            monitoring/blackbox.yml \
+            redis/redis.conf \
+            nginx/tls.conf \
+            nginx/security-headers.conf
+          do
+            test -f "$f" || { echo "::error::missing bind-mount source: $f"; exit 1; }
+          done
+          test -d monitoring/templates || {
+            echo "::error::missing monitoring/templates directory"; exit 1; }
+          echo "all bind-mount sources present"
+
+      - name: Validate Prometheus rules and config
+        run: |
+          set -e
+          docker run --rm -v "$PWD/monitoring:/m" --entrypoint promtool \
+            prom/prometheus:latest check rules /m/alerts.yml
+
+      - name: Trivy scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: whatsapp-ai-bot:ci
+          format: table
+          # CRITICAL only, and unfixed CVEs ignored. Failing on every HIGH in a
+          # Debian base image would break every build for reasons no change in
+          # this repository can fix, and a pipeline that is always red is a
+          # pipeline everybody learns to ignore.
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+      - name: Trivy report (informational, all severities)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: whatsapp-ai-bot:ci
+          format: json
+          output: trivy-report.json
+          severity: LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Upload Trivy report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-${{ github.sha }}
+          path: trivy-report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # ==========================================================================
+  # Publish
+  # ==========================================================================
+  build:
+    name: Publish image
+    runs-on: ubuntu-latest
+    needs: [test, migrations, frontend, docker, secret-scan, python-security]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive image tags
+      - name: Image metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=ref,event=branch
-            type=ref,event=pr
             type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: ${{ github.event_name == 'push' }}
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # 4) DEPLOY -------------------------------------------------------------
-  # Runs only for pushes to main, and only once the deployment target is
-  # configured. Enable it by setting the repository variable
-  # DEPLOY_ENABLED=true and adding the DEPLOY_* secrets below.
-  # The server holds its own credentials as Docker secrets - none are shipped
-  # from CI (see docs/SECRETS.md).
+  # ==========================================================================
+  # Deploy
+  # ==========================================================================
   deploy:
     name: Deploy
-    needs: build
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
-    environment:
-      name: production
-      url: ${{ vars.DEPLOY_URL }}
+    needs: build
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1
@@ -204,25 +538,19 @@ jobs:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: ${{ secrets.DEPLOY_PORT || 22 }}
-          script_stop: true
-          envs: APP_IMAGE
           script: |
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
-            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ${{ env.REGISTRY }} -u ${{ github.actor }} --password-stdin
-            export APP_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}
+            git pull --ff-only
             docker compose -f docker-compose.prod.yml pull
-            docker compose -f docker-compose.prod.yml up -d --remove-orphans
-            docker compose -f docker-compose.prod.yml exec -T app alembic upgrade head
-            docker compose -f docker-compose.prod.yml exec -T app python scripts/ingest_knowledge.py
-            docker image prune -f
-
-      - name: Smoke test /health
-        if: vars.DEPLOY_URL != ''
-        run: |
-          for i in 1 2 3 4 5; do
-            if curl -fsS "${{ vars.DEPLOY_URL }}/health"; then exit 0; fi
-            sleep 10
-          done
-          echo "Health check failed" && exit 1
+            docker compose -f docker-compose.prod.yml up -d
+            for i in 1 2 3 4 5; do
+              if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+                echo "health check passed"
+                exit 0
+              fi
+              echo "health check attempt $i failed; retrying"
+              sleep 10
+            done
+            echo "deployment failed health checks"
+            exit 1
