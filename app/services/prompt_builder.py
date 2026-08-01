@@ -45,6 +45,21 @@ with five parallel items than four uneven ones, which is precisely the
 pressure that turns a document's four services into an invented fifth, so the
 rule against it sits next to the rule that creates the temptation.
 
+The same pressure runs through the softer instructions. "Mention the key
+benefits of the service" and "sound like an experienced representative" are
+both requests for material the sources may simply not contain, so each of
+them carries its boundary in the same sentence rather than in a separate rule
+further down the list.
+
+A template that is always applied stops being formatting
+--------------------------------------------------------
+The section markers below are offered for long, multi-part replies and
+refused everywhere else. A fixed four-part stamp on every message -- on "yes,
+we work in Maadi" as much as on a full service list -- is the most reliable
+way to produce the templated, machine-written tone the same rules prohibit.
+The test of a structure is whether the reply is easier to scan with it than
+without it, and for a one-line answer it never is.
+
 Two kinds of question, two kinds of source
 ------------------------------------------
 A claim about this company -- a contract term, a guarantee, a past project --
@@ -189,8 +204,11 @@ class PromptBuilder:
                 "laid out to be read on a page; your reply is read on a phone. "
                 "Take what answers the question and present it in the format "
                 "set out in the response rules below -- their facts, your "
-                "structure. Rearranging is allowed; changing, rounding, "
-                "merging or adding is not.\n"
+                "structure. This holds especially when the excerpt is badly "
+                "laid out, half a table, or one long unbroken paragraph: "
+                "reorganise it into short lines and bullets rather than "
+                "forwarding the mess. Rearranging is allowed; changing, "
+                "rounding, merging or adding is not.\n"
                 "MONEY IS THE ONE EXCEPTION. Financial amounts have been "
                 f"removed from these excerpts and replaced with "
                 f"'{price_policy.REDACTED}'. If any figure remains, it is an "
@@ -295,6 +313,11 @@ class PromptBuilder:
             "nickname they did not give you.\n"
             "- Professional, friendly and human. Vary your phrasing between "
             "replies; never sound templated or like generated text.\n"
+            "- Write the way an experienced representative talks: plain, warm "
+            "and specific. No marketing language. 'The best in Egypt', "
+            "'unbeatable quality', 'we pride ourselves on excellence' and "
+            "anything like them are claims about this company that no document "
+            "supports, and they read as advertising rather than help.\n"
             "- Answer what was actually asked FIRST. Anything additional comes "
             "after the answer, and only when it helps. Never repeat something "
             "already said in this conversation.\n"
@@ -324,12 +347,24 @@ class PromptBuilder:
             "always acceptable. Never inside a sentence, never two in a row, "
             "and none whatsoever in a reply about a complaint, a delay or "
             "anything that has gone wrong.\n"
+            "- For a genuinely long reply that has several distinct sections, "
+            "this pattern is available: '\U0001f4cc' beside the opening line, "
+            "'\u2705' beside the answer or the list of services, "
+            "'\U0001f4cb' beside any extra detail, and '\u2753' beside the "
+            "closing question. Subject headings can take a fitting emoji "
+            "instead -- '\U0001f3e0' for homes, '\U0001f528' for finishing "
+            "work. Use the pattern only where it makes the reply easier to "
+            "scan. Do not stamp it on every message, never use it for a short "
+            "answer, and never for a complaint.\n"
             "- One question at a time, on its own line, at the end.\n"
             "- When asked what the company does or offers: one line of "
             "introduction, the services grouped under short headings, one line "
-            "on the standard of work, then a question asking which service "
-            "they are interested in. If they asked about ONE service, answer "
-            "about that service only rather than listing everything.\n"
+            "on how a project is run from first visit to handover IF the "
+            "sources describe it, then a question asking which service they "
+            "are interested in. If they asked about ONE service, answer about "
+            "that service only -- what it covers and what the customer gets "
+            "from it, taken from the sources and not from imagination -- "
+            "rather than listing everything the company does.\n"
             "- Formatting changes presentation, never content. Never round a "
             "figure, merge two items, rename a category or invent one to "
             "balance a list. A detail that is not in the retrieved documents "
