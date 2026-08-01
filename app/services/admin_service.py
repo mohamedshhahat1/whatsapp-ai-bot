@@ -55,6 +55,15 @@ class AdminService:
             raise NotFoundError(f"Conversation {conversation_id} not found")
         await self._conversations.set_mode(conversation, mode, operator=operator)
         await self._session.commit()
+        # ``Conversation.updated_at`` is declared with ``onupdate=func.now()``,
+        # so Postgres computes the new value and SQLAlchemy expires the
+        # attribute after the UPDATE rather than guessing it. Left expired, the
+        # next read is lazy IO -- and the next read is Pydantic serialising
+        # ConversationRead, synchronously, which raises MissingGreenlet instead
+        # of returning a timestamp. ``expire_on_commit=False`` does not help:
+        # this expiry comes from the flush, not from the commit. Refresh here,
+        # inside async code, where the IO is allowed.
+        await self._session.refresh(conversation)
         # Published even when the mode did not actually change, so a second
         # operator's screen always reflects the current owner. The cost is one
         # redundant refetch; the alternative is two people typing to the same
