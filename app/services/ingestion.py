@@ -74,7 +74,6 @@ def humanize(stem: str) -> str:
     """'price_list-2026' -> 'Price List 2026'."""
     return stem.replace("_", " ").replace("-", " ").strip().title() or stem
 
-
 class KnowledgeIngestionService:
     """Builds and refreshes the vector index from the knowledge folder."""
 
@@ -119,9 +118,7 @@ class KnowledgeIngestionService:
                     await self._documents.delete_by_source(source)
                     await self._session.commit()
                     note = f"{note}; removed from the index"
-                logger.warning(
-                    "document_skipped_unfilled", source=source, detail=note
-                )
+                logger.warning("document_skipped_unfilled", source=source, detail=note)
                 return IngestionResult(source, "skipped", note=note)
 
             pieces: list[tuple[int | None, TextChunk]] = []

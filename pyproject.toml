@@ -55,4 +55,4 @@ ignore_errors = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-asyncio_mode = "auto
+asyncio_mode = "auto"
