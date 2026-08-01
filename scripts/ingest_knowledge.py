@@ -63,14 +63,14 @@ async def main() -> int:
 
     print(f"Knowledge folder : {directory}")
     print(f"Embedding model  : {settings.embedding_model}")
-    print(f"Chunk size       : {settings.chunk_max_tokens} tokens "
-          f"(overlap {settings.chunk_overlap_tokens})")
+    print(
+        f"Chunk size       : {settings.chunk_max_tokens} tokens "
+        f"(overlap {settings.chunk_overlap_tokens})"
+    )
     print("-" * 62)
 
     async with SessionLocal() as session:
-        service = KnowledgeIngestionService(
-            session, get_embedding_client(), settings
-        )
+        service = KnowledgeIngestionService(session, get_embedding_client(), settings)
         try:
             results = await service.ingest_directory(
                 directory, force=args.force, prune=args.prune
@@ -98,11 +98,15 @@ async def main() -> int:
     chunks = sum(r.chunks for r in results if r.status == "indexed")
     skipped = sum(1 for r in results if r.status == "skipped")
     print("-" * 62)
-    print(f"{indexed} document(s) indexed, {chunks} chunk(s) embedded, "
-          f"{failures} failure(s)")
+    print(
+        f"{indexed} document(s) indexed, {chunks} chunk(s) embedded, "
+        f"{failures} failure(s)"
+    )
     if skipped:
-        print(f"{skipped} document(s) skipped: still contain [[TODO]] "
-              f"placeholders and were not indexed.")
+        print(
+            f"{skipped} document(s) skipped: still contain [[TODO]] "
+            f"placeholders and were not indexed."
+        )
 
     await engine.dispose()
     return 1 if failures else 0

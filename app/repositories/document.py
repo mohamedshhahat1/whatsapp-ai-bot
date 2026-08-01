@@ -42,9 +42,7 @@ class DocumentRepository(BaseRepository):
         return list(result)
 
     async def count_chunks(self) -> int:
-        return int(
-            await self.session.scalar(select(func.count(DocumentChunk.id))) or 0
-        )
+        return int(await self.session.scalar(select(func.count(DocumentChunk.id))) or 0)
 
     async def upsert(self, source: str, title: str, content_hash: str) -> Document:
         """Create the document row, or update it in place if it already exists."""

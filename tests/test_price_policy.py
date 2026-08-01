@@ -16,7 +16,6 @@ import pytest
 
 from app.services import price_policy
 
-
 # --- Amounts that MUST be caught ---------------------------------------------
 
 

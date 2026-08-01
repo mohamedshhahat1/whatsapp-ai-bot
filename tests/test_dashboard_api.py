@@ -22,9 +22,7 @@ READ_ENDPOINTS = (
 
 
 @pytest.mark.parametrize("path", READ_ENDPOINTS)
-def test_read_endpoints_require_the_admin_key(
-    client: TestClient, path: str
-) -> None:
+def test_read_endpoints_require_the_admin_key(client: TestClient, path: str) -> None:
     assert client.get(path).status_code == 401
 
 
@@ -82,9 +80,7 @@ def test_pricing_can_be_added_listed_and_deleted(
         )
         assert duplicate.status_code == 409
     finally:
-        deleted = client.delete(
-            f"/admin/pricing/{pricing_id}", headers=admin_headers
-        )
+        deleted = client.delete(f"/admin/pricing/{pricing_id}", headers=admin_headers)
         assert deleted.status_code == 204
 
 
