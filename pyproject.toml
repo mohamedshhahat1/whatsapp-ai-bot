@@ -23,8 +23,10 @@ ignore = ["E501", "B008"]
 # "app" is the only first-party package. The repository also contains an
 # "alembic/" directory, which makes isort's src-based detection classify the
 # installed "alembic" distribution as first-party; pin it explicitly.
+# "redis" is also pinned because ruff's auto-detection may misclassify it
+# as first-party when it should be third-party.
 known-first-party = ["app"]
-known-third-party = ["alembic"]
+known-third-party = ["alembic", "redis"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test config must set environment variables before importing the app.
@@ -53,4 +55,4 @@ ignore_errors = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-asyncio_mode = "auto"
+asyncio_mode = "auto

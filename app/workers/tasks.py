@@ -9,7 +9,7 @@ which is what the ``finally`` block below is for.
 
 import asyncio
 import json
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any
 
 import redis
