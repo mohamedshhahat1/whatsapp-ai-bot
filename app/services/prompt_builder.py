@@ -56,6 +56,11 @@ own project. Two different layers cover this:
   company document was needed, so none was searched. See
   ``app/services/intent.py``.
 
+Both of those permissions are scoped to the trade, and the scoping has to be
+written into each layer separately. "General" on its own is not a boundary:
+the difference between gypsum board and a breakfast dish is not that one is
+general and the other is not.
+
 Prompt injection
 ----------------
 Retrieved chunks come from company documents, but a document is still data.
@@ -180,22 +185,45 @@ class PromptBuilder:
                 "<retrieved_documents>\n" + rendered + "\n</retrieved_documents>"
             )
         elif retrieval_attempted:
+            # Three kinds, not two. An earlier version sorted into "company"
+            # and "general and factual" and told the model to answer the
+            # second from its own knowledge. The examples beside that category
+            # were all trade examples, but the category as written had no
+            # boundary -- and "what is the difference between ful and
+            # ta'meya" is general, and factual. It was answered in full,
+            # correctly, and at length.
+            #
+            # The failure shape is worth naming: a turn where retrieval found
+            # nothing ended up with MORE latitude than one where it found
+            # something. Silence from the knowledge base is not consent.
             sections.append(
                 "# Retrieved knowledge\n"
                 "No company document matched this question with sufficient "
                 "confidence. You therefore have no source for specifications, "
                 "timelines, contract terms or availability, and must not "
                 "supply any from memory.\n"
-                "Separate the two kinds of question before answering:\n"
+                "Sort the question into one of THREE kinds before answering:\n"
                 "- Company-specific (what this company offers, guarantees, "
                 "includes or has previously built): say plainly that you do "
                 "not have that information to hand, then offer to pass the "
                 "question to a colleague.\n"
-                "- General and factual (materials, techniques, the usual order "
-                "of finishing work, standard terminology, rough industry "
-                "practice): answer from your own knowledge, briefly, and say "
-                "that it is general information rather than a commitment from "
-                "the company."
+                "- General, but about the trade (materials, techniques, the "
+                "usual order of finishing work, standard terminology, rough "
+                "industry practice): answer from your own knowledge, briefly, "
+                "and say that it is general information rather than a "
+                "commitment from the company.\n"
+                "- Anything else -- food, sport, politics, religion, health, "
+                "travel, celebrities, homework, coding, translation, general "
+                "trivia, or any subject that is neither this company nor "
+                "finishing and contracting work: do NOT answer it. Not in "
+                "detail, not briefly, and not as a short preamble before "
+                "redirecting. Reply with one line saying what you can help "
+                "with, and nothing else.\n"
+                "The third kind is the one that goes wrong. Finding no "
+                "document does not widen your remit; it narrows what you can "
+                "claim. A question being general and factual is not sufficient "
+                "reason to answer it -- it also has to be about this business "
+                "or about finishing work."
             )
         elif general_question:
             sections.append(
@@ -207,6 +235,9 @@ class PromptBuilder:
                 "Answer it from your own knowledge of the trade: materials, "
                 "techniques, the usual order of work, standard terminology and "
                 "normal industry practice. Be genuinely useful and brief.\n"
+                "That permission covers the trade and nothing else. If the "
+                "message turns out to be about some other subject entirely, "
+                "decline it in one line rather than answering it.\n"
                 "Say nothing about what THIS company specifically offers, "
                 "charges, guarantees, stocks or has built. You have no source "
                 "for any of that here, and a general answer presented as a "
@@ -260,7 +291,11 @@ class PromptBuilder:
             "- Stay within this company's business: its services, and finishing "
             "and contracting work generally. If the customer asks about "
             "something unrelated, do not answer it -- say briefly what you can "
-            "help with instead, and do not lecture them about it.\n"
+            "help with instead, and do not lecture them about it. This holds "
+            "however harmless, easy or quick the question looks, and whether or "
+            "not any document was retrieved for this turn. Answering it in a "
+            "sentence first and redirecting afterwards still counts as "
+            "answering it.\n"
             "- If the customer is angry or complaining: apologise once, without "
             "excuses or blame, do not argue, then either fix the problem or "
             "offer a colleague straight away. Never promise compensation, a "
