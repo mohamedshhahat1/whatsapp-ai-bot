@@ -335,7 +335,7 @@ jobs:
         run: |
           npm install --no-save --no-audit --no-fund \
             eslint@9 \
-            @eslint/js \
+            @eslint/js@^9.0.0 \
             typescript-eslint \
             eslint-plugin-react-hooks \
             eslint-plugin-react-refresh
@@ -448,7 +448,7 @@ jobs:
             prom/prometheus:latest check rules /m/alerts.yml
 
       - name: Trivy scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: whatsapp-ai-bot:ci
           format: table
@@ -462,7 +462,7 @@ jobs:
 
       - name: Trivy report (informational, all severities)
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: whatsapp-ai-bot:ci
           format: json
