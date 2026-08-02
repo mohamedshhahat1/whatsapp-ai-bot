@@ -51,6 +51,7 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
     final state = ref.watch(chatListProvider);
     final notifier = ref.read(chatListProvider.notifier);
     final filtered = notifier.filtered;
+    final hasChips = state.modeFilter != null || state.statusFilter != null;
 
     return Scaffold(
       body: CustomScrollView(
@@ -70,9 +71,18 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
               ),
               PullDownButton(
                 itemBuilder: (context) => [
+                  const PullDownMenuTitle(title: Text('Answered by')),
                   PullDownMenuItem(title: 'All', icon: Icons.all_inclusive, onTap: () => notifier.setModeFilter(null)),
                   PullDownMenuItem(title: 'Bot Mode', icon: Icons.smart_toy, onTap: () => notifier.setModeFilter('bot')),
                   PullDownMenuItem(title: 'Human Mode', icon: Icons.person, onTap: () => notifier.setModeFilter('human')),
+                  const PullDownMenuDivider.large(),
+                  // Sessions close on their own, so 'closed' is an ordinary
+                  // and common state rather than an archive. Operators
+                  // normally want the active ones only.
+                  const PullDownMenuTitle(title: Text('Session')),
+                  PullDownMenuItem(title: 'All sessions', icon: Icons.all_inclusive, onTap: () => notifier.setStatusFilter(null)),
+                  PullDownMenuItem(title: 'Active only', icon: Icons.chat_bubble_outline, onTap: () => notifier.setStatusFilter(statusActive)),
+                  PullDownMenuItem(title: 'Closed only', icon: Icons.lock_outline, onTap: () => notifier.setStatusFilter(statusClosed)),
                 ],
                 buttonBuilder: (context, showMenu) => IconButton(icon: const Icon(Icons.filter_list), onPressed: showMenu),
               ),
@@ -89,17 +99,25 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                 ).animate().fadeIn().slideY(begin: -0.1),
               ),
             ),
-          if (state.modeFilter != null)
+          if (hasChips)
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Wrap(children: [
-                  FilterChip(
-                    label: Text(state.modeFilter == 'bot' ? 'Bot Mode' : 'Human Mode'),
-                    onSelected: (_) => notifier.setModeFilter(null),
-                    onDeleted: () => notifier.setModeFilter(null),
-                    selected: true,
-                  ),
+                child: Wrap(spacing: 8, children: [
+                  if (state.modeFilter != null)
+                    FilterChip(
+                      label: Text(state.modeFilter == 'bot' ? 'Bot Mode' : 'Human Mode'),
+                      onSelected: (_) => notifier.setModeFilter(null),
+                      onDeleted: () => notifier.setModeFilter(null),
+                      selected: true,
+                    ),
+                  if (state.statusFilter != null)
+                    FilterChip(
+                      label: Text(state.statusFilter == statusClosed ? 'Closed only' : 'Active only'),
+                      onSelected: (_) => notifier.setStatusFilter(null),
+                      onDeleted: () => notifier.setStatusFilter(null),
+                      selected: true,
+                    ),
                 ]),
               ),
             ),
@@ -108,7 +126,15 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
           else if (state.status == ChatListStatus.error && state.conversations.isEmpty)
             SliverToBoxAdapter(child: ErrorView(message: state.errorMessage ?? 'Failed to load', onRetry: () => notifier.refresh()))
           else if (filtered.isEmpty)
-            SliverToBoxAdapter(child: const _EmptyState(icon: Icons.chat_bubble_outline, title: 'No conversations', subtitle: 'Conversations will appear here when customers message your bot.'))
+            SliverToBoxAdapter(
+              child: _EmptyState(
+                icon: Icons.chat_bubble_outline,
+                title: state.statusFilter == null ? 'No conversations' : 'No matching sessions',
+                subtitle: state.statusFilter == null
+                    ? 'Conversations will appear here when customers message your bot.'
+                    : 'No ${state.statusFilter} sessions right now. Clear the filter to see the rest.',
+              ),
+            )
           else
             SliverList.builder(
               itemCount: filtered.length + (state.hasMore ? 1 : 0),
@@ -120,12 +146,16 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                 final isUnread = state.unreadIds.contains(conv.id);
                 final isLead = conv.tag == tagSalesLead;
                 return Slidable(
+                  // One customer has many sessions over time, so this key must
+                  // be the conversation id, never the user id.
                   key: ValueKey(conv.id),
                   endActionPane: ActionPane(
                     motion: const DrawerMotion(),
                     children: [
                       SlidableAction(onPressed: (_) => context.push('/chats/${conv.id}'), backgroundColor: AppColors.primary, foregroundColor: Colors.white, icon: Icons.open_in_new, label: 'Open'),
-                      SlidableAction(onPressed: (_) async { await ref.read(chatListProvider.notifier).markRead(conv.id); }, backgroundColor: AppColors.info, foregroundColor: Colors.white, icon: Icons.mark_chat_read, label: 'Read'),
+                      // markRead returns void; awaiting it was a compile
+                      // error, since a void expression has no value to use.
+                      SlidableAction(onPressed: (_) => notifier.markRead(conv.id), backgroundColor: AppColors.info, foregroundColor: Colors.white, icon: Icons.mark_chat_read, label: 'Read'),
                     ],
                   ),
                   child: ConversationTile(
