@@ -60,14 +60,30 @@ through the existing ``get_or_create_active``. Fresh history for the model, a
 null ``welcome_sent_at`` and a null ``closing_sent_at`` all come for free --
 there are no flags to clear, and so none to forget to clear.
 
-Revision ID: 0007_conversation_session_lifecycle
+Why the revision id is shorter than the filename
+------------------------------------------------
+``alembic_version.version_num`` is VARCHAR(32) and alembic creates that table
+itself, so the identifier below has to fit in 32 characters.
+"0007_conversation_session_lifecycle" is 35, which failed in the worst place
+to fail: every DDL statement ran, and only the final version stamp raised
+StringDataRightTruncation. Postgres' transactional DDL rolled the whole
+migration back, so the failure was clean rather than half-applied -- but on a
+database engine without it, the schema would have advanced while the version
+table still read 0006.
+
+The filename keeps the long form on purpose: code comments and
+docs/SESSION_LIFECYCLE.md refer to it by that name, and alembic identifies a
+revision by the ``revision`` variable rather than by the file it lives in.
+Keep new identifiers under 32 characters.
+
+Revision ID: 0007_session_lifecycle
 Revises: 0006_reply_idempotency
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0007_conversation_session_lifecycle"
+revision = "0007_session_lifecycle"
 down_revision = "0006_reply_idempotency"
 branch_labels = None
 depends_on = None
@@ -136,9 +152,7 @@ def upgrade() -> None:
         "ix_conversations_idle_sweep",
         "conversations",
         ["last_activity_at"],
-        postgresql_where=sa.text(
-            "status = 'active' AND closing_sent_at IS NULL"
-        ),
+        postgresql_where=sa.text("status = 'active' AND closing_sent_at IS NULL"),
     )
 
 
