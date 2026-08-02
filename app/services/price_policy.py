@@ -62,7 +62,7 @@ price word, a per-metre unit, or a thousands word with no unit after it. And a
 number followed by سنة, يوم, متر, غرفة or similar is never money, whatever
 else is near it.
 
-This file is written in real Arabic rather than \uXXXX escapes because it
+This file is written in real Arabic rather than \\uXXXX escapes because it
 contains copy that customers read.
 """
 
@@ -86,7 +86,7 @@ NEGOTIATION_MIN_AMOUNT = 1000
 # --- Vocabulary --------------------------------------------------------------
 
 _DIGIT = r"[0-9\u0660-\u0669]"
-_NUMBER = rf"{_DIGIT}[0-9\u0660-\u0669,\u066c\u066b\.]{{0,12}}"
+_NUMBER = rf"{_DIGIT}[0-9\u0660-\u0669,\u066c\u066b\.]{0,12}"
 
 _CURRENCY = (
     r"\u062c\u0646\u064a\u0647\u0627\u062a"  # gunayhaat
@@ -107,7 +107,7 @@ _CURRENCY = (
 _UNIT = (
     r"\u0645\u062a\u0631"  # metre
     r"|\u0623\u0645\u062a\u0627\u0631|\u0627\u0645\u062a\u0627\u0631"  # metres
-    r"|\u0645\u0662|\u0645 ?2"  # m2
+    r"|\u0645\u00b2|\u0645 ?2"  # m2
     r"|\u062a\u0648\u0645|\u0623\u062a\u0627\u0645|\u0627\u062a\u0627\u0645"  # day(s)
     r"|\u0623\u0633\u0628\u0648\u0639|\u0627\u0633\u0627\u0628\u062a\u0639"  # week(s)
     r"|\u0634\u0647\u0631|\u0634\u0647\u0648\u0631|\u0623\u0634\u0647\u0631"  # month(s)
@@ -136,7 +136,7 @@ _PRICE_WORD = (
 
 # Per-square-metre notation, which makes a number a rate even with no currency.
 _PER_METRE = (
-    r"/\s?\u0645\u0662|/\s?m\u00b2|/\s?m2"
+    r"/\s?\u0645\u00b2|/\s?m\u00b2|/\s?m2"
     r"|per\s+(?:square\s+)?met(?:er|re)"
     r"|\u0644\u0644\u0645\u062a\u0631"  # lil-metr - per metre
     r"|\u0627\u0644\u0645\u062a\u0631 \u0627\u0644\u0645\u0631\u0628\u0639"
@@ -168,16 +168,16 @@ _MONEY = tuple(
         rf"(?P<amt>[$\u20ac\u00a3]\s*{_NUMBER})",
         rf"(?P<amt>{_NUMBER}\s*[$\u20ac\u00a3])",
         # سعر المتر 2500 / the price is 2500 / خصم 500
-        rf"(?:{_PRICE_WORD})[^0-9\u0660-\u0669\n]{{0,25}}(?P<amt>{_NUMBER}){_NOT_A_UNIT}",
+        rf"(?:{_PRICE_WORD})[^0-9\u0660-\u0669\n]{0,25}(?P<amt>{_NUMBER}){_NOT_A_UNIT}",
         # 2500 للمتر / 2500 per square metre / 2500/m²
         rf"(?P<amt>{_NUMBER})\s*(?:{_PER_METRE})",
         # 50 ألف / 2 مليون / 50k -- but not "50 ألف متر"
         rf"(?P<amt>{_NUMBER}\s*(?:{_THOUSANDS})){_NOT_A_UNIT}",
         # خصم 10% / 10% discount. A bare percentage is NOT money: "رطوبة 60%"
         # and "زيادة 5% في المساحة" are ordinary facts.
-        rf"(?:\u062e\u0635\u0645|discount)[^0-9\u0660-\u0669\n]{{0,15}}"
+        rf"(?:\u062e\u0635\u0645|discount)[^0-9\u0660-\u0669\n]{0,15}"
         rf"(?P<amt>{_NUMBER}\s*%)",
-        rf"(?P<amt>{_NUMBER}\s*%)[^0-9\u0660-\u0669\n]{{0,15}}"
+        rf"(?P<amt>{_NUMBER}\s*)[^0-9\u0660-\u0669\n]{0,15}"
         rf"(?:\u062e\u0635\u0645|discount)",
     )
 )
@@ -301,7 +301,7 @@ _NEGOTIATION_PATTERNS = tuple(
         r"\bany\s+(?:lower|less)\b|\bgo\s+lower\b|\bcome\s+down\b",
         r"\bwhat.{0,15}\baccept\b",
         # citing a competitor
-        r"\u0627\u0644\u0641\u064a\u0633|\u0641\u062a\u0633\u0628\u0648\u0643",  # Facebook
+        r"\u0627\u0644\u0641\u062a\u0633|\u0641\u062a\u0633\u0628\u0648\u0643",  # Facebook
         r"\u0634\u0631\u0643\u0629 \u062a\u0627\u0646\u064a\u0629"
         r"|\u062d\u062f \u062a\u0627\u0646\u062a",
         r"\u0646\u0641\u0633 \u0627\u0644\u0633\u0639\u0631|\u0632\u064a \u0633\u0639\u0631",
@@ -309,7 +309,7 @@ _NEGOTIATION_PATTERNS = tuple(
         r"\banother\s+company\b|\bsomeone\s+else\s+(?:quoted|offered)\b",
         # naming a figure: "اعملها بـ 1500", "خليها 1500"
         rf"(?:\u0628\u0640?\s*|\u062e\u0644\u062a\u0647\u0627\s*|\u062e\u0644\u062a\u0647\s*)"
-        rf"{_DIGIT}{{3,}}",
+        rf"{_DIGIT}{3,}",
     )
 )
 
