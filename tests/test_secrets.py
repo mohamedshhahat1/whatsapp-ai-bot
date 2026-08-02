@@ -47,6 +47,7 @@ def test_production_rejects_placeholder_secrets(monkeypatch) -> None:
 
 def test_production_accepts_fully_provided_secrets(monkeypatch) -> None:
     monkeypatch.delenv("OPENAI_API_KEY_FILE", raising=False)
+    monkeypatch.delenv("REDIS_PASSWORD", raising=False)
 
     settings = Settings(
         _env_file=None,
@@ -57,6 +58,7 @@ def test_production_accepts_fully_provided_secrets(monkeypatch) -> None:
         whatsapp_verify_token="random-verify-token",
         whatsapp_app_secret="meta-app-secret",
         admin_api_key="strong-admin-key",
+        redis_password="test-password",
     )
 
     assert settings.environment == "production"

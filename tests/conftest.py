@@ -12,13 +12,11 @@ os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
 os.environ.setdefault("WHATSAPP_APP_SECRET", "")
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("USE_TASK_QUEUE", "false")
-# CI sets REDIS_PASSWORD for the integration pipeline, but the unit tests
+# CI may set REDIS_PASSWORD for the integration pipeline, but the unit tests
 # that construct Settings(environment="development") must not inherit it.
-# Set a dummy password so production Settings validation passes for tests
-# that don't explicitly override redis_password, while tests that DO pass
-# redis_password="" explicitly will still trigger the validator.
+# Pop it here so test_development_does_not_require_redis_auth sees a clean env.
+# test_production_accepts_fully_provided_secrets passes redis_password explicitly.
 os.environ.pop("REDIS_PASSWORD", None)
-os.environ["REDIS_PASSWORD"] = "test-redis-password"
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
