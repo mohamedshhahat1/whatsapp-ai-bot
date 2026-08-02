@@ -62,7 +62,7 @@ price word, a per-metre unit, or a thousands word with no unit after it. And a
 number followed by سنة, يوم, متر, غرفة or similar is never money, whatever
 else is near it.
 
-This file is written in real Arabic rather than \uXXXX escapes because it
+This file is written in real Arabic rather than unicode escape sequences because it
 contains copy that customers read.
 """
 
