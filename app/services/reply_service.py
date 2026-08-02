@@ -46,6 +46,18 @@ class ReplyService:
         self._conversations = ConversationRepository(session)
         self._messages = MessageRepository(session)
 
+    def _resets_idle_timer(self) -> bool:
+        """Whether an operator reply should reset the conversation's timer.
+
+        The two flags are read here rather than delegated to SessionService
+        because that module imports CUSTOMER_SERVICE_WINDOW from this one, and
+        importing it back would be a cycle. Two booleans are not worth
+        restructuring the dependency for.
+        """
+        if not self._settings.enable_conversation_session:
+            return False
+        return self._settings.reset_idle_timer_on_outgoing_message
+
     async def send_manual_reply(self, conversation_id: int, text: str) -> Message:
         """Send an operator reply and record it in the conversation.
 
@@ -87,13 +99,12 @@ class ReplyService:
             status="sent",
         )
         # An operator reply is activity like any other, so it resets the idle
-        # timer -- unless RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE says otherwise,
-        # which is why this goes through SessionService rather than straight to
-        # the repository. It matters most after the AI resumes: without it, a
+        # timer. This matters most after the AI resumes: without it, a
         # conversation a person had been working for twenty minutes would be
         # eligible for closing the instant it went back to the bot, and the
         # customer would get a goodbye seconds after the operator's last word.
-        await self._sessions.touch(conversation.id, outgoing=True)
+        if self._resets_idle_timer():
+            await self._conversations.touch(conversation.id)
         await self._session.commit()
         logger.info(
             "manual_reply_sent",
