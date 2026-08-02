@@ -21,7 +21,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.config import get_settings
 from app.db.session import SessionLocal, engine
@@ -67,17 +67,22 @@ def admin_headers() -> dict[str, str]:
 
 
 async def database_reachable() -> bool:
-    """Check connectivity, disposing the engine afterwards so no connection
-    pool stays bound to a loop that is about to be closed.
+    """Check connectivity using a throwaway engine.
+
+    A separate engine is used so the module-level engine's connection pool is
+    never bound to the throwaway event loop that asyncio.run() creates in
+    synchronous fixtures -- that caused "Event loop is closed" errors when
+    the next test reused the module-level engine on a different loop.
     """
+    test_engine = create_async_engine(engine.url)
     try:
-        async with engine.connect() as connection:
+        async with test_engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
         return True
     except Exception:
         return False
     finally:
-        await engine.dispose()
+        await test_engine.dispose()
 
 
 def run_db[T](operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
