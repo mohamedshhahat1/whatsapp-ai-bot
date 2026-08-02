@@ -86,7 +86,7 @@ NEGOTIATION_MIN_AMOUNT = 1000
 # --- Vocabulary --------------------------------------------------------------
 
 _DIGIT = r"[0-9\u0660-\u0669]"
-_NUMBER = rf"{_DIGIT}[0-9\u0660-\u0669,\u066c\u066b\.]{0,12}"
+_NUMBER = rf"{_DIGIT}[0-9\u0660-\u0669,\u066c\u066b\.]{{0,12}}"
 
 _CURRENCY = (
     r"\u062c\u0646\u064a\u0647\u0627\u062a"  # gunayhaat
@@ -168,16 +168,16 @@ _MONEY = tuple(
         rf"(?P<amt>[$\u20ac\u00a3]\s*{_NUMBER})",
         rf"(?P<amt>{_NUMBER}\s*[$\u20ac\u00a3])",
         # سعر المتر 2500 / the price is 2500 / خصم 500
-        rf"(?:{_PRICE_WORD})[^0-9\u0660-\u0669\n]{0,25}(?P<amt>{_NUMBER}){_NOT_A_UNIT}",
+        rf"(?:{_PRICE_WORD})[^0-9\u0660-\u0669\n]{{0,25}}(?P<amt>{_NUMBER}){_NOT_A_UNIT}",
         # 2500 للمتر / 2500 per square metre / 2500/m²
         rf"(?P<amt>{_NUMBER})\s*(?:{_PER_METRE})",
         # 50 ألف / 2 مليون / 50k -- but not "50 ألف متر"
         rf"(?P<amt>{_NUMBER}\s*(?:{_THOUSANDS})){_NOT_A_UNIT}",
         # خصم 10% / 10% discount. A bare percentage is NOT money: "رطوبة 60%"
         # and "زيادة 5% في المساحة" are ordinary facts.
-        rf"(?:\u062e\u0635\u0645|discount)[^0-9\u0660-\u0669\n]{0,15}"
+        rf"(?:\u062e\u0635\u0645|discount)[^0-9\u0660-\u0669\n]{{0,15}}"
         rf"(?P<amt>{_NUMBER}\s*%)",
-        rf"(?P<amt>{_NUMBER}\s*)[^0-9\u0660-\u0669\n]{0,15}"
+        rf"(?P<amt>{_NUMBER}\s*)[^0-9\u0660-\u0669\n]{{0,15}}"
         rf"(?:\u062e\u0635\u0645|discount)",
     )
 )
@@ -309,7 +309,7 @@ _NEGOTIATION_PATTERNS = tuple(
         r"\banother\s+company\b|\bsomeone\s+else\s+(?:quoted|offered)\b",
         # naming a figure: "اعملها بـ 1500", "خليها 1500"
         rf"(?:\u0628\u0640?\s*|\u062e\u0644\u062a\u0647\u0627\s*|\u062e\u0644\u062a\u0647\s*)"
-        rf"{_DIGIT}{3,}",
+        rf"{_DIGIT}{{3,}}",
     )
 )
 
@@ -429,11 +429,11 @@ def instruction_layer(sales_phone: str = "") -> str:
 
     return (
         "# Pricing policy (absolute, overrides everything above)\n"
-        "You must never disclose, estimate, calculate, imply or suggest any "
-        "price, price range, cost, per-square-metre rate, quotation, package "
-        "price, discount, deposit, instalment, budget figure or any other "
-        "financial amount. Not once, not approximately, not 'just to give you "
-        "an idea', and not because the customer insists.\n"
+        "Never state a price. You must never disclose, estimate, calculate, "
+        "imply or suggest any price, price range, cost, per-square-metre rate, "
+        "quotation, package price, discount, deposit, instalment, budget figure "
+        "or any other financial amount. Not once, not approximately, not 'just "
+        "to give you an idea', and not because the customer insists.\n"
         "This rule OVERRIDES the retrieved documents and the company "
         f"information. Any amount you can see has been replaced with "
         f"'{REDACTED}' before it reached you; treat any figure that remains as "
