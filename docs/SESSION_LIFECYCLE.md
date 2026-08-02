@@ -13,17 +13,25 @@ timeouts in the code: see [Configuration](#configuration).
 A session **is** a `conversations` row. There is no separate session table and
 no separate state column.
 
-The four states in the spec are **derived**, by
-`Conversation.session_state(idle_after, now=None)`:
+The states are **derived**, by the free function
+`derive_session_state(status, mode, last_activity_at, closing_sent_at,
+idle_after, now=None)` in `app/models/conversation.py`.
+`Conversation.session_state(idle_after, now=None)` is a thin method over it.
 
 | State | Condition |
 | --- | --- |
 | `CLOSED` | `status = 'closed'` |
+| `CLOSING` | open, but `closing_sent_at` is set — claimed by the sweeper |
 | `ACTIVE_HUMAN` | open and `mode = 'human'` |
 | `WAITING_IDLE` | open, `mode = 'bot'`, and `now - last_activity_at >= idle_after` |
 | `ACTIVE_BOT` | open and recently active |
 
 Precedence runs top to bottom.
+
+It is a free function, not only a method, because the API schema derives the
+same state during serialisation without an ORM instance to hand. One function
+is what stops the backend, the dashboard and the Flutter app from each growing
+a slightly different version of this table.
 
 The reason for deriving rather than storing: a stored state would have to be
 written by something, and the only thing that could write `WAITING_IDLE` is the
@@ -32,10 +40,27 @@ confident lie. Deriving it means the answer is correct the microsecond you ask,
 and there is no third source of truth to drift out of step with `status` and
 `mode`.
 
+`CLOSING` covers the short gap between the sweeper claiming a session and the
+goodbye being delivered. It is brief but real, and an operator looking at the
+row during it should see that it is on its way out rather than a state
+implying they can still step in.
+
 Note that a quiet **human** conversation reports `ACTIVE_HUMAN`, not
 `WAITING_IDLE`. `WAITING_IDLE` means "due to be closed", and the sweeper never
 closes a conversation an operator is holding. A state that contradicted the
 behaviour would be worse than no state at all.
+
+### Why there is no `REOPENED` state
+
+Reviving a session clears `closed_at` and `closing_sent_at` and sets `status`
+back to active — which leaves the row **identical in every column** to one that
+never closed. There is nothing left to derive `REOPENED` from.
+
+Reporting it would require storing a `reopened_at` column purely to colour a
+badge, and that column would then need its own rules about when it is cleared
+(does a session reopened in March still read as reopened in July?). The
+reopen *event* carries the transition to anyone who is watching in real time,
+which is where that information is actually useful.
 
 ### Columns
 
@@ -103,6 +128,40 @@ This is **unrelated** to Meta's 24-hour customer service window
 (`CUSTOMER_SERVICE_WINDOW` in `app/services/reply_service.py`), which is a
 platform rule rather than a preference and is deliberately not configurable.
 They share a number today by coincidence.
+
+### An operator acting on a closed session
+
+There is a third path, and it is not driven by the customer at all.
+
+An operator who replies to, takes over, or resumes the AI on a session the
+sweeper has already closed used to write into a dead row. The message went
+out, but the customer's answer either revived a *different* session or created
+one — so the operator's question and the reply to it ended up in two separate
+conversations, and neither read as a coherent exchange.
+
+`revive_for_operator()` in `app/services/reply_service.py` now runs first on
+all four of those actions. It calls `ConversationRepository.reopen()`, which
+shares the same `_REVIVE` payload as `reopen_recent` — one dict, so the two
+paths cannot drift into meaning different things.
+
+**No time window is applied here, on purpose.** The reopen window exists to
+guess whether a returning *customer* is continuing their visit or starting a
+new one. An operator who has deliberately opened a specific conversation and
+typed into it has stated their intent, and second-guessing it after an
+arbitrary number of minutes would just resurrect the orphaned-reply bug for
+older sessions.
+
+Reviving can still fail, in exactly one way: the customer has since started
+another session, and the partial unique index permits only one active
+conversation per customer. That is **not** swallowed. The action is refused
+with `409 conversation_superseded`, and both clients handle it — the dashboard
+and the Flutter app each disable Reply and Take Over and explain why, rather
+than leaving the operator typing into something the customer is no longer
+reading.
+
+Note what this means for the UI: controls are disabled on a **superseded**
+conversation, not merely a closed one. Disabling on closed would block the
+normal path, since closed sessions reopen on demand.
 
 ## The idle timer
 
@@ -175,6 +234,82 @@ the claim keeps it.
   backfills `last_activity_at` from `updated_at`/`created_at` rather than
   `now()` precisely so this guard can see how old they really are.
 
+## Realtime events
+
+Lifecycle transitions are published to the `dashboard:events` Redis channel by
+`app/core/events.py` and relayed to every connected client by `/ws/events`.
+The relay forwards whatever is on the channel, so adding an event type needs no
+WebSocket change.
+
+| Event | When |
+| --- | --- |
+| `conversation.activity` | a message arrived or was sent |
+| `conversation.handoff` | ownership changed — takeover, resume, assignment |
+| `conversation.closed` | a session ended, **for every close** |
+| `conversation.reopened` | a closed session was revived (`reason`: `customer` or `operator`) |
+
+`conversation.closed` is published for every close, not only the ones that
+send a goodbye. That distinction is the entire reason it exists. The sweeper
+closes silently whenever the closing message is disabled, the copy is empty, or
+the session has fallen outside Meta's service window — and in those cases no
+event fired at all. The conversation list **stops polling while the event
+stream is connected**, so the stale row never self-corrected on a *healthy*
+system; only a manual refresh fixed it.
+
+Events are thin by design: they say *that* a conversation changed, never what
+was said. The lifecycle events additionally carry the row's own status columns
+so a client can repaint a badge without a round trip — those are facts about
+the row, not about the person. No phone number, name or message body is ever
+written to the bus.
+
+## The operator list
+
+`ConversationRepository.list()` orders by:
+
+1. **Unclaimed sales leads first** — tagged, in human mode, nobody assigned,
+   **and still active**.
+2. **Everything else by `updated_at`, newest first.**
+
+The `status = 'active'` condition in the first rule was added with this work
+and is load-bearing. Before sessions closed themselves, a lead stayed active
+until an operator claimed it. Now it closes after five idle minutes — and
+without that condition it would stay pinned to the top of every operator's
+screen permanently, which is exactly how people learn to ignore the top of a
+list.
+
+Recency deliberately dominates within the second group rather than status.
+Pushing every closed session below every active one sounds tidier and is worse
+in practice: an operator scanning the list wants what happened recently, and a
+conversation that ended four minutes ago matters more to them than one sitting
+open and silent since yesterday. Operators who want only live work filter for
+it — `GET /admin/conversations?status=active`.
+
+Sorting lives in the repository rather than in each client so that the web UI,
+the mobile app and any direct API consumer agree, and so pagination stays
+correct: sorting a page after fetching it only orders the fifty rows that
+happened to land on it.
+
+## The API
+
+Every conversation endpoint returns the full lifecycle picture:
+`status`, `last_activity_at`, `welcome_sent_at`, `closing_sent_at`,
+`closed_at`, `created_at`, `updated_at`, plus three computed fields —
+`session_state`, `idle_timeout_minutes` and `close_after_idle`. The last two
+travel with the payload so a client can render "closes in about four minutes"
+without being separately configured with the server's timeout.
+
+- `GET /admin/conversations?offset&limit&status` — `status` accepts `active`
+  or `closed`.
+- `GET /admin/conversations/{id}`
+- `GET /admin/conversations/{id}/history?limit` — the customer's **other**
+  sessions, newest first, with a total count.
+
+The history endpoint is an operator convenience and nothing more. Sessions stay
+separate rows, because they were separate visits and merging them would
+misrepresent what happened. It is explicitly **not** used to build model
+context: the AI still sees only the current session, since silently widening
+what it remembers would change its answers in ways nobody asked for.
+
 ## Configuration
 
 | Variable | Default | Notes |
@@ -183,7 +318,7 @@ the claim keeps it.
 | `CONVERSATION_IDLE_TIMEOUT_MINUTES` | `5` | Floored at 1 minute. |
 | `CONVERSATION_CLOSE_AFTER_IDLE` | `true` | Off, the timer still runs and `WAITING_IDLE` is still reported, but nothing is closed. |
 | `ENABLE_CONVERSATION_CLOSING_MESSAGE` | `true` | Off still closes sessions, silently. |
-| `CONVERSATION_REOPEN_WINDOW_MINUTES` | `30` | `0` disables reopen; every closed session is final. |
+| `CONVERSATION_REOPEN_WINDOW_MINUTES` | `30` | `0` disables reopen; every closed session is final. Does not apply to operator actions. |
 | `NEW_SESSION_AFTER_HOURS` | `24` | Outer bound; clamps the reopen window. |
 | `ENABLE_WELCOME_ON_NEW_SESSION` | `true` | Off, sessions begin with an answer and no greeting. |
 | `ENABLE_REPEAT_WELCOME_AFTER_NEW_SESSION` | `true` | Off greets each customer once, ever. |
