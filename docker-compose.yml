@@ -84,6 +84,45 @@ services:
       start_period: 40s
     restart: unless-stopped
 
+  # The scheduler. Emits conversations.close_idle_sessions once a minute onto
+  # the webhooks queue, where the worker above picks it up.
+  #
+  # This container is REQUIRED for the conversation session lifecycle. Without
+  # it, sessions are still opened, greeted, tracked and reset correctly -- and
+  # nothing ever closes them, so no closing message is ever sent and every
+  # conversation stays open forever. That failure is silent: the app is
+  # healthy, the worker is healthy, and only the absence of goodbyes shows it.
+  #
+  # Exactly ONE replica, ever. Two schedulers means two ticks a minute; the
+  # claim in ConversationRepository.claim_idle_sessions keeps that correct, so
+  # the cost is wasted queries rather than duplicate messages -- but there is
+  # no reason to pay it. Do not scale this service.
+  #
+  # The schedule file goes in /tmp because the image runs as a non-root user
+  # and beat writes it on every sync; the default location is the working
+  # directory, which is not writable. It holds only the last-run timestamp, so
+  # losing it on restart costs at most one extra sweep.
+  beat:
+    build: .
+    command: celery -A app.workers.celery_app.celery_app beat --loglevel=info --schedule=/tmp/celerybeat-schedule
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/whatsapp_ai_bot
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # No healthcheck: beat answers no inspect ping and serves no port, so
+    # there is nothing to probe that would not simply restate "the process is
+    # running", which Docker already knows. Monitor it from the other end
+    # instead -- the session_sweep_completed log line, or an alert on active
+    # conversations older than the idle timeout.
+    restart: unless-stopped
+
   db:
     # Postgres 16 + the pgvector extension used by the knowledge base.
     image: pgvector/pgvector:pg16
