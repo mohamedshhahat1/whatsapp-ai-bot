@@ -1,5 +1,7 @@
 """Conversation management: persistence, history, context window."""
 
+from datetime import timedelta
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -22,12 +24,36 @@ class ConversationService:
         self.conversations = ConversationRepository(session)
         self.messages = MessageRepository(session)
 
+    @property
+    def _reopen_within(self) -> timedelta | None:
+        """How stale a closed session may be and still be resumed here.
+
+        ``None`` disables resuming, which is both what the master switch does
+        and what a zero window means. Every inbound message passes through
+        ``get_context``, so this is the single place the reopen window has to
+        be applied -- there is no second path by which a conversation is
+        opened, and therefore no way for one to skip the check.
+        """
+        if not self._settings.enable_conversation_session:
+            return None
+        window = self._settings.conversation_reopen_window
+        return window if window > timedelta(0) else None
+
     async def get_context(
         self, wa_id: str, name: str | None = None
     ) -> tuple[User, Conversation]:
-        """Resolve (and lazily create) the user and their active conversation."""
+        """Resolve (and lazily create) the user and their active conversation.
+
+        A customer whose previous session was closed within the reopen window
+        is returned to that same conversation, history and welcome flag
+        intact. Past the window -- and always past ``new_session_after``,
+        which the setting clamps the window to -- they get a genuinely new
+        session instead.
+        """
         user = await self.users.get_or_create(wa_id=wa_id, name=name)
-        conversation = await self.conversations.get_or_create_active(user.id)
+        conversation = await self.conversations.get_or_create_active(
+            user.id, reopen_within=self._reopen_within
+        )
         return user, conversation
 
     async def claim_inbound(

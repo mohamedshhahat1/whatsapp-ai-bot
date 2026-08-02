@@ -1,10 +1,11 @@
 """Conversation data access."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import NamedTuple
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
 from app.core.exceptions import ConflictError
@@ -80,7 +81,74 @@ class ConversationRepository(BaseRepository):
             .limit(1)
         )
 
-    async def get_or_create_active(self, user_id: int) -> Conversation:
+    async def reopen_recent(
+        self, user_id: int, not_before: datetime
+    ) -> Conversation | None:
+        """Resume the customer's most recently closed session, if it is young.
+
+        A goodbye followed thirty seconds later by "sorry, one more thing" is
+        one conversation, not two. Starting a fresh session there would greet
+        the customer again and drop the history the model needs to understand
+        what "it" refers to, so within the reopen window the old session is
+        revived instead.
+
+        Reviving rather than copying is what keeps this cheap and correct:
+        ``welcome_sent_at`` survives, so ``should_welcome`` already returns
+        False and nothing has to remember to suppress a second greeting.
+        ``closing_sent_at`` is cleared, which re-arms the goodbye for the
+        resumed session -- otherwise the conversation could never be closed
+        again, because a claimed session is permanently ineligible.
+
+        Returns ``None`` when there is nothing recent enough, and the caller
+        opens a new session as usual.
+
+        The conditional UPDATE and the nested transaction are both about the
+        partial unique index: two concurrent messages could each find no
+        active conversation and both try to revive the same row, and the
+        second would violate ``uq_active_conversation_per_user``. Rolling back
+        only the savepoint lets the loser fall through and re-read the
+        winner's row rather than poisoning the whole transaction.
+        """
+        candidate = (
+            select(Conversation.id)
+            .where(
+                Conversation.user_id == user_id,
+                Conversation.status == STATUS_CLOSED,
+                Conversation.closed_at.is_not(None),
+                Conversation.closed_at >= not_before,
+            )
+            .order_by(Conversation.closed_at.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        try:
+            async with self.session.begin_nested():
+                reopened_id = await self.session.scalar(
+                    update(Conversation)
+                    .where(
+                        Conversation.id == candidate,
+                        Conversation.status == STATUS_CLOSED,
+                    )
+                    .values(
+                        status=STATUS_ACTIVE,
+                        closed_at=None,
+                        closing_sent_at=None,
+                        last_activity_at=datetime.now(UTC),
+                    )
+                    .returning(Conversation.id)
+                    .execution_options(synchronize_session=False)
+                )
+        except IntegrityError:
+            # Someone else opened a session for this customer first.
+            return None
+
+        if reopened_id is None:
+            return None
+        return await self.session.get(Conversation, reopened_id)
+
+    async def get_or_create_active(
+        self, user_id: int, reopen_within: timedelta | None = None
+    ) -> Conversation:
         """Return the customer's active conversation, creating it atomically.
 
         Concurrent webhook deliveries used to be able to create two active
@@ -97,6 +165,11 @@ class ConversationRepository(BaseRepository):
         null welcome flag, a null closing flag and no history -- nothing to
         reset, and therefore nothing to forget to reset.
 
+        ``reopen_within`` softens exactly that behaviour for a customer who
+        comes straight back: within it the previous session is revived instead
+        (see :meth:`reopen_recent`). ``None`` or zero keeps the original
+        always-start-fresh path, so every existing caller is unaffected.
+
         ``mode`` is not listed in the insert, so it comes from the column's
         server default rather than the ORM default. The same is true of
         ``last_activity_at``, which is why that column carries a server
@@ -105,6 +178,13 @@ class ConversationRepository(BaseRepository):
         conversation = await self.active_for_user(user_id)
         if conversation is not None:
             return conversation
+
+        if reopen_within is not None and reopen_within > timedelta(0):
+            resumed = await self.reopen_recent(
+                user_id, datetime.now(UTC) - reopen_within
+            )
+            if resumed is not None:
+                return resumed
 
         created_id = await self.session.scalar(
             pg_insert(Conversation)
@@ -296,8 +376,9 @@ class ConversationRepository(BaseRepository):
 
         Setting ``status`` to closed releases the customer's slot in
         ``uq_active_conversation_per_user``, so their next message opens a new
-        conversation rather than resuming this one. That is the reopen path in
-        its entirety.
+        conversation rather than resuming this one -- unless it arrives inside
+        the reopen window, in which case :meth:`reopen_recent` revives this
+        row instead.
         """
         await self.session.execute(
             update(Conversation)
