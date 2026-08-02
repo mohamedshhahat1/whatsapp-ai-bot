@@ -9,6 +9,7 @@ which is what the ``finally`` block below is for.
 
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -23,6 +24,7 @@ from app.core.logging import configure_logging, get_logger
 from app.core.metrics import ERRORS_TOTAL, WEBHOOK_DEAD_LETTERS_TOTAL
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
+from app.services.session_service import SessionService
 from app.services.webhook_processor import process_webhook_payload
 from app.workers.celery_app import celery_app
 
@@ -31,6 +33,19 @@ configure_logging(debug=settings.debug)
 logger = get_logger(__name__)
 
 MAX_RETRIES = 5
+
+
+async def _close_all(resources: tuple[tuple[str, Callable[[], Awaitable[Any]]], ...]) -> None:
+    """Close each resource in the loop that created it, best-effort.
+
+    A failure here must not mask the original exception, or a retriable error
+    would surface as a shutdown error and lose its traceback.
+    """
+    for label, close in resources:
+        try:
+            await close()
+        except Exception:
+            logger.warning("resource_close_failed", resource=label, exc_info=True)
 
 
 async def _run(payload: dict[str, Any]) -> None:
@@ -43,18 +58,35 @@ async def _run(payload: dict[str, Any]) -> None:
             await process_webhook_payload(session, whatsapp, ai, settings, payload)
     finally:
         # Every client opened in this loop is closed in this loop, in reverse
-        # order of creation. Closing is best-effort: a failure here must not
-        # mask the original exception, or a retriable error would surface as
-        # a shutdown error and lose its traceback.
-        for label, close in (
-            ("openai", ai.aclose),
-            ("whatsapp", whatsapp.aclose),
-            ("engine", engine.dispose),
-        ):
-            try:
-                await close()
-            except Exception:
-                logger.warning("resource_close_failed", resource=label, exc_info=True)
+        # order of creation.
+        await _close_all(
+            (
+                ("openai", ai.aclose),
+                ("whatsapp", whatsapp.aclose),
+                ("engine", engine.dispose),
+            )
+        )
+
+
+async def _sweep_idle_sessions() -> int:
+    """Close every conversation that has gone idle.
+
+    No OpenAI client: a closing message is fixed company copy, never generated.
+    """
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    whatsapp = WhatsAppClient(settings)
+    try:
+        async with session_factory() as session:
+            service = SessionService(session, settings, whatsapp)
+            return await service.close_idle_sessions()
+    finally:
+        await _close_all(
+            (
+                ("whatsapp", whatsapp.aclose),
+                ("engine", engine.dispose),
+            )
+        )
 
 
 def _dead_letter(payload: dict[str, Any], error: BaseException) -> None:
@@ -131,3 +163,43 @@ def process_webhook_event(self: Task, payload: dict[str, Any]) -> None:
             )
             _dead_letter(payload, exc)
         raise
+
+
+@celery_app.task(
+    bind=True,
+    name="conversations.close_idle_sessions",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=60,
+    retry_jitter=True,
+    max_retries=2,
+)
+def close_idle_sessions(self: Task) -> None:
+    """Periodic sweep: end sessions with no activity for the configured time.
+
+    Emitted by beat every SWEEP_INTERVAL_SECONDS. Safe to run concurrently
+    with itself and safe to retry, because every session is taken with a
+    conditional UPDATE before anything is sent: a second runner claims a
+    disjoint set, and a retry claims only what the failed attempt did not.
+    Neither can produce a second goodbye.
+
+    Retries are few and quick on purpose. A sweep is a statement about the
+    present, so a failed one is better replaced by the next scheduled tick
+    than retried for several minutes against a world that has moved on.
+    """
+    try:
+        closed = asyncio.run(_sweep_idle_sessions())
+    except SoftTimeLimitExceeded:
+        ERRORS_TOTAL.labels(type="session_sweep_timeout").inc()
+        logger.error("session_sweep_timeout", retries=self.request.retries)
+        raise
+    except Exception as exc:
+        logger.error(
+            "session_sweep_failed",
+            retries=self.request.retries,
+            error=str(exc),
+        )
+        raise
+
+    if closed:
+        logger.info("session_sweep_completed", closed=closed)

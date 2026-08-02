@@ -17,6 +17,20 @@ logger = get_logger(__name__)
 
 settings = get_settings()
 
+# How often to look for conversations that have gone idle.
+#
+# This is the RESOLUTION of the idle timeout, not the timeout itself: with a
+# five-minute timeout and a sixty-second sweep, a closing message lands
+# between 5:00 and 6:00 after the last activity. That slack is deliberate --
+# a customer cannot perceive the difference, and the alternative is either a
+# per-session scheduled job (see app/services/session_service.py for why not)
+# or sweeping every few seconds for a deadline nobody is watching.
+#
+# Not derived from conversation_idle_timeout_minutes on purpose. A very short
+# timeout should not turn into a very frequent query against every active
+# conversation.
+SWEEP_INTERVAL_SECONDS = 60
+
 celery_app = Celery(
     "whatsapp_ai_bot",
     broker=settings.broker_url,
@@ -68,6 +82,33 @@ celery_app.conf.update(
     # thread outright; the gap between them is the cleanup budget.
     task_soft_time_limit=settings.celery_task_soft_time_limit,
     task_time_limit=settings.celery_task_time_limit,
+    # --- Scheduled work -----------------------------------------------------
+    # Requires a beat process: `celery -A app.workers.celery_app.celery_app
+    # beat`. Without one, sessions are still opened, greeted and tracked, but
+    # nothing ever closes them and no closing message is sent. See the `beat`
+    # service in docker-compose.yml.
+    #
+    # Exactly ONE beat process may run. Two schedulers means two ticks, and
+    # while the claim in ConversationRepository.claim_idle_sessions makes that
+    # harmless for correctness, it doubles the query load for nothing.
+    #
+    # `expires` is the important option here. Beat keeps emitting ticks while
+    # the workers are down, and without an expiry they queue up: bring the
+    # workers back after an hour and sixty identical sweeps run at once, each
+    # scanning the same table. Expiring a tick after one interval means a
+    # recovering worker runs the newest sweep and discards the backlog, which
+    # is exactly right -- a sweep is a statement about now, and a stale one has
+    # nothing to say.
+    beat_schedule={
+        "close-idle-conversation-sessions": {
+            "task": "conversations.close_idle_sessions",
+            "schedule": float(SWEEP_INTERVAL_SECONDS),
+            "options": {
+                "queue": "webhooks",
+                "expires": float(SWEEP_INTERVAL_SECONDS),
+            },
+        },
+    },
     # --- Shutdown -----------------------------------------------------------
     # On SIGTERM, stop taking new work and let in-flight tasks finish. This is
     # what makes a deploy safe: with acks_late, a task killed mid-flight is
