@@ -51,7 +51,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.core.events import conversation_activity, publish
+from app.core.events import conversation_activity, conversation_closed, publish
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
 from app.integrations.whatsapp import WhatsAppClient
@@ -173,6 +173,7 @@ class SessionService:
             1. claim   -- conditional UPDATE, then COMMIT
             2. send    -- the WhatsApp call, outside any transaction
             3. close   -- status, then COMMIT
+            4. publish -- conversation.closed, after the commit
 
         Committing the claim first is what makes the goodbye unrepeatable. If
         this process dies between 1 and 3 the session is left claimed but
@@ -209,12 +210,51 @@ class SessionService:
         return len(targets)
 
     async def _finish(self, conversation_id: int, wa_id: str) -> None:
-        """Send the goodbye if it is allowed, then close the session."""
+        """Send the goodbye if it is allowed, close the session, announce it.
+
+        The announcement is deliberately here rather than in ``_send_closing``,
+        where it used to live. A session closes for several reasons that never
+        reach a send -- the closing message switched off, empty copy, nothing
+        ever received, Meta's service window expired, or the send itself
+        failing -- and in every one of those the dashboard previously heard
+        nothing at all. That is the bad case, not the rare one: the
+        conversation list stops polling while its event stream is connected,
+        so a healthy system was precisely the one where the stale row sat
+        there reading "active" until somebody pressed Refresh.
+        """
         if await self._should_send_closing(conversation_id):
             await self._send_closing(conversation_id, wa_id)
 
         await self._conversations.close(conversation_id)
         await self._session.commit()
+        await self._announce_closed(conversation_id)
+
+    async def _announce_closed(self, conversation_id: int) -> None:
+        """Publish conversation.closed once the close is durable.
+
+        Reads the row back instead of assembling the payload from what the
+        sweep happened to know, so ``closed_at`` and ``updated_at`` are the
+        values the database actually wrote rather than this process's guess at
+        them. One extra SELECT per closed session, on a path that already
+        makes a WhatsApp call.
+
+        Publishing strictly after the commit matters: a dashboard that acts on
+        this event will refetch, and an event sent from inside the transaction
+        can be delivered before the close is visible to that read.
+        """
+        conversation = await self._conversations.get(conversation_id)
+        if conversation is None:  # pragma: no cover - deleted mid-sweep
+            return
+        await publish(
+            conversation_closed(
+                conversation_id=conversation.id,
+                user_id=conversation.user_id,
+                status=conversation.status,
+                closed_at=conversation.closed_at,
+                updated_at=conversation.updated_at,
+            ),
+            self._settings,
+        )
 
     async def _should_send_closing(self, conversation_id: int) -> bool:
         """Whether a goodbye may actually be sent to this session.
@@ -267,6 +307,11 @@ class SessionService:
         committed, so this is never retried -- and that is the intended
         behaviour rather than a gap: retrying a send whose outcome is unknown
         is precisely how a customer gets thanked for their enquiry twice.
+
+        The activity event below announces the new transcript line. It is not
+        the close announcement -- ``_finish`` publishes that separately, for
+        every close -- and the two are distinct on purpose: this one says a
+        message arrived, that one says the session ended.
         """
         text = self.closing_text
         try:
