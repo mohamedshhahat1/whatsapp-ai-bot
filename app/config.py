@@ -302,6 +302,13 @@ class Settings(BaseSettings):
     # A session is one complete visit: welcome, questions, goodbye. See
     # app/services/session_service.py and docs/SESSION_LIFECYCLE.md.
     #
+    # The master switch. Off, nothing in the lifecycle runs: no welcome is
+    # tracked, no session is ever closed and the sweeper returns immediately.
+    # Conversations then behave exactly as they did before the feature
+    # existed -- one endless thread per customer -- which is what makes this
+    # a safe way to disable the whole thing in a hurry without a rollback.
+    enable_conversation_session: bool = True
+    #
     # A session goes idle after this many minutes with nothing happening in
     # EITHER direction -- not merely nothing from the customer. A reply the
     # bot is still composing is activity, and closing a conversation out from
@@ -312,14 +319,53 @@ class Settings(BaseSettings):
     # gaps and keeps more context; below about two minutes the bot starts
     # saying goodbye to customers who are still typing.
     conversation_idle_timeout_minutes: int = 5
+    # Whether going idle ends the session at all. Off, the idle timer still
+    # runs and is still readable, but nothing is ever closed and no goodbye is
+    # sent -- sessions end only when a customer stops coming back. Distinct
+    # from the switch below: this one governs CLOSING, that one only governs
+    # the MESSAGE.
+    conversation_close_after_idle: bool = True
     # Whether an idle session is given a goodbye at all. Turning this off
     # still closes the session on schedule -- so the next message starts a
     # fresh one and is greeted normally -- it just closes it silently.
     enable_conversation_closing_message: bool = True
+    # The grace period after a session closes. A customer who writes back
+    # within this many minutes resumes the SAME conversation -- same history,
+    # no second welcome -- because a goodbye followed thirty seconds later by
+    # "sorry, one more thing" is one conversation, and greeting them again
+    # would read as though the bot had forgotten them.
+    #
+    # Set to 0 to disable resuming entirely, so every closed session is final
+    # and any later message starts a new one.
+    conversation_reopen_window_minutes: int = 30
+    # Past this many hours a returning customer always starts a genuinely new
+    # session, whatever the reopen window says. This is the outer bound on how
+    # stale a resumed conversation may be: without it, a long reopen window
+    # would let someone returning next week land in last week's thread, and
+    # the model would answer them in the context of a finished job.
+    new_session_after_hours: int = 24
+    # Whether a new session greets its customer at all. Off, the welcome is
+    # never sent by the lifecycle and conversations simply begin with an
+    # answer to whatever was asked.
+    enable_welcome_on_new_session: bool = True
     # Whether a returning customer whose previous session was closed is
     # greeted again. Off means the welcome is sent once per customer ever,
     # however long they have been away.
     enable_repeat_welcome_after_new_session: bool = True
+    # The duplicate guards. Both default on and both should stay on: they are
+    # the flags that make "exactly one welcome and one goodbye per session"
+    # true, and turning either off permits a redelivered webhook or an
+    # overlapping sweep to message the customer twice. Present because the
+    # spec asks for them to be configurable, not because there is a good
+    # reason to change them.
+    prevent_duplicate_welcome: bool = True
+    prevent_duplicate_closing: bool = True
+    # Whether outgoing messages reset the idle timer as well as incoming ones.
+    # On -- the default, and strongly recommended -- the timer measures
+    # silence in the conversation. Off, it measures silence FROM THE CUSTOMER
+    # only, so a slow completion or a long operator reply can be overtaken by
+    # the sweeper and followed by a goodbye the customer never earned.
+    reset_idle_timer_on_outgoing_message: bool = True
     # Overrides the approved Arabic closing copy in app/services/persona.py.
     # Empty means use that copy, exactly as system_prompt defers to the
     # persona: the default is multi-line text a real customer reads, which
@@ -567,6 +613,34 @@ class Settings(BaseSettings):
         the customer would be told goodbye before they were answered.
         """
         return timedelta(minutes=max(1, self.conversation_idle_timeout_minutes))
+
+    @property
+    def conversation_reopen_window(self) -> timedelta:
+        """How long a closed session stays resumable.
+
+        Zero is a meaningful value here, unlike the idle timeout: it means
+        "never resume", and every closed session is final. So this floors at
+        zero rather than at one minute, and a negative value from a typo is
+        read as the same deliberate "off".
+        """
+        return timedelta(minutes=max(0, self.conversation_reopen_window_minutes))
+
+    @property
+    def new_session_after(self) -> timedelta:
+        """The age past which a returning customer always starts fresh.
+
+        Never shorter than the reopen window. The two settings can be
+        configured to contradict each other -- a 60-minute reopen window with
+        a 0-hour new-session bound -- and rather than let the resolution
+        depend on which check happens to run first, the wider one is clamped
+        to the stricter. Starting a new session is the safe direction to err
+        in: the cost is one extra welcome, where the other direction answers
+        someone in the context of a conversation they consider finished.
+        """
+        return max(
+            timedelta(hours=max(0, self.new_session_after_hours)),
+            self.conversation_reopen_window,
+        )
 
 
 @lru_cache
