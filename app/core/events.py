@@ -10,6 +10,12 @@ Events are deliberately thin: they say *that* a conversation changed, not
 *what* was said. The dashboard refetches through the authenticated admin API,
 so there is still one source of truth, and no customer phone number, name or
 message body is ever written to the message bus.
+
+The lifecycle events below bend that rule in one narrow way: they carry the
+conversation's own lifecycle columns (status and its timestamps). Those are
+not customer data -- they are facts about the row, not about the person -- and
+carrying them means a dashboard can repaint a status badge without a round
+trip. Message *content* still never appears here.
 """
 
 import json
@@ -28,6 +34,18 @@ CHANNEL = "dashboard:events"
 
 ACTIVITY = "conversation.activity"
 HANDOFF = "conversation.handoff"
+CLOSED = "conversation.closed"
+REOPENED = "conversation.reopened"
+
+
+def _moment(value: datetime | None) -> str | None:
+    """ISO-format a timestamp for the bus, tolerating NULL columns.
+
+    ``closed_at`` and friends are nullable by design, and a client that
+    receives ``null`` learns something true. Formatting here rather than at
+    each call site keeps every event's timestamps in one shape.
+    """
+    return value.isoformat() if value is not None else None
 
 
 def conversation_activity(*, conversation_id: int, inbound: bool) -> dict[str, Any]:
@@ -76,6 +94,72 @@ def conversation_handoff(
         "assigned_operator": assigned_operator,
         "reason": reason,
         "tag": tag,
+        "at": datetime.now(UTC).isoformat(),
+    }
+
+
+def conversation_closed(
+    *,
+    conversation_id: int,
+    user_id: int,
+    status: str,
+    closed_at: datetime | None,
+    updated_at: datetime | None,
+) -> dict[str, Any]:
+    """Build the event announcing that a session has ended.
+
+    Published for EVERY close, not only the ones that sent a goodbye. That
+    distinction is the whole reason this event exists: the sweeper closes
+    silently whenever the closing message is disabled, the copy is empty, or
+    the conversation has fallen outside Meta's service window, and in those
+    cases the old activity event never fired. A dashboard would keep showing
+    "active" indefinitely, because the conversation list stops polling while
+    the event stream is connected -- so the stale row never self-corrected on
+    a *healthy* system.
+
+    Carries the resulting state rather than a bare id so a client can repaint
+    the row immediately and still refetch at its leisure.
+    """
+    return {
+        "type": CLOSED,
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "status": status,
+        "closed_at": _moment(closed_at),
+        "updated_at": _moment(updated_at),
+        "at": datetime.now(UTC).isoformat(),
+    }
+
+
+def conversation_reopened(
+    *,
+    conversation_id: int,
+    user_id: int,
+    status: str,
+    reason: str,
+    updated_at: datetime | None,
+) -> dict[str, Any]:
+    """Build the event announcing that a closed session was revived.
+
+    ``reason`` distinguishes the two ways that happens, because they mean
+    different things to a watching operator:
+
+    * ``"customer"`` -- the customer came back inside the reopen window and
+      the conversation resumed by itself.
+    * ``"operator"`` -- somebody replied to, or took over, a closed
+      conversation, and it was revived so the reply had somewhere to live.
+
+    A row that reappears as active with no explanation looks like a bug, and
+    an operator who cannot tell "the customer is back" from "my colleague
+    just claimed this" will act on the wrong one.
+    """
+    return {
+        "type": REOPENED,
+        "conversation_id": conversation_id,
+        "user_id": user_id,
+        "status": status,
+        "reason": reason,
+        "updated_at": _moment(updated_at),
         "at": datetime.now(UTC).isoformat(),
     }
 
