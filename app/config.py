@@ -139,131 +139,67 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
 
     # Redis authentication (see docs/REDIS_SECURITY.md).
-    #
-    # Supplied as a Docker secret (/run/secrets/redis_password), a
-    # REDIS_PASSWORD_FILE path, or the REDIS_PASSWORD environment variable.
-    # It is merged into redis_url -- and into the Celery broker and backend
-    # URLs when those are set explicitly -- by the validator below.
     redis_password: str = ""
-    # Redis 6 ACL user. Empty means the `default` user, which is what the
-    # application uses; the metrics exporter has its own restricted account.
     redis_username: str = ""
-    # Switches redis:// to rediss://. Only needed when Redis is reached across
-    # a network the compose bridge does not cover -- a managed instance or a
-    # separate host. Pointless in-stack overhead otherwise.
     redis_tls: bool = False
-    # Fail closed. A production stack whose Redis has no password is holding
-    # the rate limits, spend counters and reply-idempotency keys in the open,
-    # and the failure is invisible until someone reaches the port. Set
-    # REDIS_AUTH_REQUIRED=false to accept that deliberately.
     redis_auth_required: bool = True
 
     # Background queue (Celery). Broker/backend default to redis_url when empty.
     use_task_queue: bool = True
     celery_broker_url: str = ""
     celery_result_backend: str = ""
-
-    # How long the broker waits for an ack before handing a delivery to another
-    # worker. Must exceed the slowest realistic task: an inbound message costs
-    # an embedding call plus a completion plus two WhatsApp calls, and a
-    # redelivery while the first attempt is still running is how one customer
-    # message becomes two replies. 15 minutes is deliberately generous --
-    # celery_task_time_limit below kills a genuinely stuck task long before it.
     celery_visibility_timeout: int = 900
-    # Raises SoftTimeLimitExceeded inside the task, so cleanup still runs.
     celery_task_soft_time_limit: int = 240
-    # Hard kill. The gap between the two is the cleanup budget.
     celery_task_time_limit: int = 300
-
-    # How long a generated completion stays replayable so a retried delivery
-    # is not billed twice (app/core/idempotency.py). A day comfortably outlaps
-    # Meta's redelivery window.
     reply_idempotency_ttl_seconds: int = 86400
 
-    # Rate limiting (limit strings use the `limits` notation, e.g. "60/minute")
+    # Rate limiting
     rate_limit_enabled: bool = True
-    # A flood ceiling for the webhook endpoint as a whole, NOT per customer.
-    # Every delivery arrives from Meta's addresses, so this is one shared
-    # bucket by construction and can only ever be a crude DoS backstop. Real
-    # isolation is per-wa_id, below. Keep it well above peak: throttling here
-    # rejects Meta's POST and drops other customers' messages with it.
     rate_limit_webhook: str = "6000/minute"
     rate_limit_admin: str = "60/minute"
-    # Number of reverse proxies in front of the app that append to
-    # X-Forwarded-For. Only the last N entries are trustworthy; everything to
-    # the left of them is client-supplied. Set to 0 when the app is exposed
-    # directly with no proxy.
     trusted_proxy_hops: int = 1
 
-    # Per-customer quotas (app/core/quota.py) ---------------------------------
-    # Keyed on wa_id, enforced in the worker before any paid call. This is the
-    # limit that actually isolates one customer from another.
+    # Per-customer quotas
     customer_rate_limit_enabled: bool = True
-    # A person types a handful of messages a minute. Well above human pace so
-    # an excited customer sending four short lines in a row is never touched.
     customer_limit_per_minute: int = 12
     customer_limit_per_hour: int = 120
     customer_limit_per_day: int = 400
-
-    # Flood protection: a burst tighter than any human can type.
     flood_burst_messages: int = 5
     flood_burst_seconds: int = 10
-
-    # Spam: the same text over and over. A frustrated customer repeating
-    # themselves twice is normal; five identical messages is a script or a
-    # stuck client.
     duplicate_message_limit: int = 5
     duplicate_message_window_seconds: int = 300
-
-    # How long a customer stays blocked after tripping flood or spam
-    # detection. Long enough to break a loop, short enough that a real person
-    # who got carried away is not locked out of the business for the day.
     abuse_block_seconds: int = 900
 
-    # OpenAI spend protection -------------------------------------------------
-    # The circuit breaker that stops a runaway bill. Checked before every
-    # completion; past the ceiling the model is off for everyone and customers
-    # get approved copy pointing at a human.
+    # OpenAI spend protection
     spend_guard_enabled: bool = True
     daily_spend_limit_usd: float = 25.0
     daily_token_limit: int = 5_000_000
-    # Warn once at this fraction of either ceiling, so there is time to react
-    # before the bot goes quiet.
     spend_alert_threshold: float = 0.8
 
-    # Outbound retries (tenacity, exponential backoff with jitter)
+    # Outbound retries
     retry_max_attempts: int = 3
     retry_backoff_max_seconds: float = 8.0
 
     # Observability
     metrics_enabled: bool = True
     worker_metrics_port: int = 9100
-    # USD prices per 1M tokens. FALLBACK ONLY: spend is computed from the
-    # model_pricing table so historical figures stay correct across price
-    # changes. These apply only to a model with no pricing row at all.
     openai_input_price_per_1m: float = 0.40
     openai_output_price_per_1m: float = 1.60
 
-    # Reliability: deliveries that exhaust their Celery retries are pushed onto
-    # this Redis list instead of vanishing (see app/workers/tasks.py).
+    # Reliability
     dead_letter_key: str = "webhooks:dead-letter"
     dead_letter_max_entries: int = 1000
 
-    # Secret backends (see app/core/secrets.py)
+    # Secret backends
     secrets_dir: str = "/run/secrets"
     vault_enabled: bool = False
     vault_addr: str = ""
     vault_kv_mount: str = "secret"
     vault_secret_path: str = ""
 
-    # Knowledge base / RAG (see docs/RAG.md).
-    # Consumers: services/ingestion.py, services/retrieval.py,
-    # integrations/embeddings.py, core/chunking.py, scripts/ingest_knowledge.py.
+    # Knowledge base / RAG
     rag_enabled: bool = True
     knowledge_dir: str = "knowledge"
-    # Ingestion and retrieval must use the SAME embedding model, and
-    # embedding_dimensions must match the vector column width created by
-    # migration 0001_knowledge_base.
     embedding_model: str = "text-embedding-3-small"
     embedding_dimensions: int = 1536
     embedding_batch_size: int = 64
@@ -278,43 +214,26 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1-mini"
     system_prompt: str = "You are a helpful WhatsApp assistant for our business."
     company_info: str = ""
-    # Used only in fixed copy the bot sends without a model call -- currently
-    # the out-of-scope redirect (see app/services/intent.py). Unset is safe:
-    # the copy falls back to "our services" rather than printing a blank.
     company_name: str = ""
+    # Company website and portfolio URLs. When configured, the bot directs
+    # customers asking about designs, examples or previous work to these
+    # links instead of saying it has none. If company_portfolio_url is empty,
+    # the bot falls back to company_website. If both are empty, the portfolio
+    # section is omitted from the prompt entirely.
+    company_website: str = ""
+    company_portfolio_url: str = ""
     max_output_tokens: int = 512
     max_context_messages: int = 20
     max_context_tokens: int = 6000
 
-    # Sales (see app/services/price_policy.py and docs/PRICING_POLICY.md).
-    # The bot never states a price. Every pricing question is redirected to a
-    # person, and this is the number it offers. Leave it empty and the bot asks
-    # the customer for their number instead -- it will never invent one.
-    # This is contact information, not a credential: it is safe in .env and is
-    # deliberately not listed in REQUIRED_IN_PRODUCTION, because an unset
-    # number degrades gracefully rather than breaking the conversation.
+    # Sales
     sales_phone: str = ""
 
-    # WhatsApp Cloud API (Meta for Developers -> your app -> WhatsApp) ---------
-    # Consumers: routers/webhook.py uses whatsapp_verify_token for the
-    # subscription handshake and whatsapp_app_secret for the
-    # X-Hub-Signature-256 check; integrations/whatsapp.py uses whatsapp_token
-    # as the bearer credential and whatsapp_phone_number_id to address the
-    # messages endpoint.
-    #
-    # All four are listed in REQUIRED_IN_PRODUCTION, so production refuses to
-    # boot while any of them is still empty or a .env.example placeholder.
-    # They default to "" rather than to those placeholders so that a
-    # development stack starts, and only the endpoints that actually need a
-    # credential fail.
+    # WhatsApp Cloud API
     whatsapp_token: str = ""
     whatsapp_phone_number_id: str = ""
     whatsapp_verify_token: str = ""
     whatsapp_app_secret: str = ""
-    # Graph API version, pinned on purpose. Meta ships breaking changes between
-    # versions and keeps old ones serving, so this is bumped deliberately after
-    # reading the changelog rather than tracking whatever is current. Not a
-    # credential, and not required in production: the default works.
     whatsapp_api_version: str = "v21.0"
 
     # Admin API
@@ -441,12 +360,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _apply_redis_credentials(self) -> "Settings":
-        """Merge the Redis password and TLS setting into every Redis URL.
-
-        Applied to the Celery broker and backend as well, because those are
-        separate settings when set explicitly and would otherwise connect
-        unauthenticated while ``redis_url`` looked correct.
-        """
+        """Merge the Redis password and TLS setting into every Redis URL."""
         self.redis_url = apply_redis_credentials(
             self.redis_url,
             username=self.redis_username,
@@ -469,13 +383,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _require_redis_auth(self) -> "Settings":
-        """Refuse to boot production against an unauthenticated Redis.
-
-        Redis holds the per-customer rate limits, the spend counters and the
-        reply-idempotency keys. Reachable without a password, all three can be
-        cleared by anyone who can open the port -- and nothing in the
-        application would report a problem.
-        """
+        """Refuse to boot production against an unauthenticated Redis."""
         if self.environment.strip().lower() != "production":
             return self
         if not self.redis_auth_required:
@@ -505,6 +413,11 @@ class Settings(BaseSettings):
     def result_backend(self) -> str:
         """Celery result backend URL (falls back to Redis)."""
         return self.celery_result_backend or self.redis_url
+
+    @property
+    def portfolio_url(self) -> str:
+        """Portfolio URL, falling back to the company website if not set."""
+        return self.company_portfolio_url.strip() or self.company_website.strip()
 
 
 @lru_cache
