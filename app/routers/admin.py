@@ -110,9 +110,7 @@ async def get_conversation(
     )
 
 
-@router.get(
-    "/conversations/{conversation_id}/history", response_model=CustomerHistory
-)
+@router.get("/conversations/{conversation_id}/history", response_model=CustomerHistory)
 @limiter.limit(ADMIN_LIMIT)
 async def conversation_history(
     request: Request,
