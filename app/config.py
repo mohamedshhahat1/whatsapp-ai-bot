@@ -6,6 +6,7 @@ Actions secrets) -- see ``app/core/secrets.py`` and ``docs/SECRETS.md``.
 """
 
 import os
+from datetime import timedelta
 from functools import lru_cache
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -297,6 +298,34 @@ class Settings(BaseSettings):
     max_context_messages: int = 20
     max_context_tokens: int = 6000
 
+    # Conversation session lifecycle ------------------------------------------
+    # A session is one complete visit: welcome, questions, goodbye. See
+    # app/services/session_service.py and docs/SESSION_LIFECYCLE.md.
+    #
+    # A session goes idle after this many minutes with nothing happening in
+    # EITHER direction -- not merely nothing from the customer. A reply the
+    # bot is still composing is activity, and closing a conversation out from
+    # under an answer in flight would be absurd.
+    #
+    # Five minutes fits WhatsApp, where people read on a phone and answer
+    # within a minute or two. Raising it holds sessions open across longer
+    # gaps and keeps more context; below about two minutes the bot starts
+    # saying goodbye to customers who are still typing.
+    conversation_idle_timeout_minutes: int = 5
+    # Whether an idle session is given a goodbye at all. Turning this off
+    # still closes the session on schedule -- so the next message starts a
+    # fresh one and is greeted normally -- it just closes it silently.
+    enable_conversation_closing_message: bool = True
+    # Whether a returning customer whose previous session was closed is
+    # greeted again. Off means the welcome is sent once per customer ever,
+    # however long they have been away.
+    enable_repeat_welcome_after_new_session: bool = True
+    # Overrides the approved Arabic closing copy in app/services/persona.py.
+    # Empty means use that copy, exactly as system_prompt defers to the
+    # persona: the default is multi-line text a real customer reads, which
+    # wants version control and review far more than it wants a .env entry.
+    conversation_closing_message: str = ""
+
     # Sales (see app/services/price_policy.py and docs/PRICING_POLICY.md).
     # The bot never states a price. Every pricing question is redirected to a
     # person, and this is the number it offers. Leave it empty and the bot asks
@@ -526,6 +555,18 @@ class Settings(BaseSettings):
         entirely rather than sending the customer a broken link.
         """
         return self.company_portfolio_url.strip() or self.company_website.strip()
+
+    @property
+    def conversation_idle_timeout(self) -> timedelta:
+        """The idle timeout as a timedelta, floored at one minute.
+
+        The floor matters because the sweeper cannot run more often than its
+        Beat interval. A timeout of zero -- or a negative one from a typo in
+        .env -- would mark every conversation idle the instant it was
+        created, including the one whose reply is still being generated, and
+        the customer would be told goodbye before they were answered.
+        """
+        return timedelta(minutes=max(1, self.conversation_idle_timeout_minutes))
 
 
 @lru_cache
