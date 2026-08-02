@@ -100,9 +100,7 @@ class ConversationRead(BaseModel):
         every client that needs it already has this payload, and a second
         round trip to learn one integer is a worse trade than a few bytes.
         """
-        return int(
-            get_settings().conversation_idle_timeout.total_seconds() // 60
-        )
+        return int(get_settings().conversation_idle_timeout.total_seconds() // 60)
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -156,8 +154,7 @@ class CustomerHistory(BaseModel):
     wa_id: str
     name: str | None = None
     total_conversations: int = Field(
-        description="Every session this customer has ever had, including this "
-        "one."
+        description="Every session this customer has ever had, including this " "one."
     )
     previous: list[ConversationSummary] = Field(
         default_factory=list,

@@ -110,9 +110,7 @@ class Conversation(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
-    status: Mapped[str] = mapped_column(
-        String(16), default=STATUS_ACTIVE, index=True
-    )
+    status: Mapped[str] = mapped_column(String(16), default=STATUS_ACTIVE, index=True)
     # ``server_default`` as well as ``default``: get_or_create_active inserts
     # through pg_insert, which does not apply ORM-side defaults.
     mode: Mapped[str] = mapped_column(
@@ -178,9 +176,7 @@ class Conversation(Base):
         """True while this session can still be added to."""
         return self.status == STATUS_ACTIVE
 
-    def session_state(
-        self, idle_after: timedelta, now: datetime | None = None
-    ) -> str:
+    def session_state(self, idle_after: timedelta, now: datetime | None = None) -> str:
         """Which lifecycle state this conversation is in at ``now``.
 
         Thin wrapper over :func:`derive_session_state`, which is shared with
