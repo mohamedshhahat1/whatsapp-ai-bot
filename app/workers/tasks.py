@@ -35,7 +35,9 @@ logger = get_logger(__name__)
 MAX_RETRIES = 5
 
 
-async def _close_all(resources: tuple[tuple[str, Callable[[], Awaitable[Any]]], ...]) -> None:
+async def _close_all(
+    resources: tuple[tuple[str, Callable[[], Awaitable[Any]]], ...],
+) -> None:
     """Close each resource in the loop that created it, best-effort.
 
     A failure here must not mask the original exception, or a retriable error
