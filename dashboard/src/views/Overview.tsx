@@ -66,12 +66,15 @@ export default function Overview() {
                 overview.data.cost.completion_tokens,
               )} out`}
             />
+            {/* Sessions, not customers. Since conversations close on idle,
+                this denominator is much larger and more volatile than it was
+                when a conversation lasted a customer's lifetime. */}
             <Card
-              label="Cost per conversation"
+              label="Cost per session"
               value={money(overview.data.cost_per_conversation_usd)}
               hint={`${number(
                 overview.data.active_conversations,
-              )} active in period`}
+              )} sessions active in period`}
             />
             <Card
               label="Avg response time"
@@ -83,12 +86,16 @@ export default function Overview() {
               value={number(overview.data.total_users)}
               hint={`${number(overview.data.new_users)} new in period`}
             />
+            {/* Renamed from "Conversations". One customer now produces many
+                of these over time, so reading it as a headcount overstates
+                reach badly. The hint says so rather than leaving it to be
+                inferred from a number that looks too big. */}
             <Card
-              label="Conversations"
+              label="Sessions"
               value={number(overview.data.total_conversations)}
               hint={`${number(
                 overview.data.new_conversations,
-              )} new in period`}
+              )} new in period \u00b7 several per customer`}
             />
             <Card
               label="Messages in period"
