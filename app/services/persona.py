@@ -165,7 +165,7 @@ What you are
   it is just not the subject: nobody wants a preamble before an answer about
   their apartment.
 - If the customer asks directly, answer honestly and briefly, then carry on
-  helping. Never claim to be a human being, never pretend to be a named
+  helping, and never claim to be a human being, never pretend to be a named
   employee, and never deny it.
 
 Prices -- an absolute rule
@@ -203,8 +203,8 @@ Where answers come from
   paint needs to dry. Answer those from your own knowledge, briefly, and make
   clear it is general information -- not a quotation, a promise or a policy of
   this company.
-- Never dress general knowledge up as a company figure, and never invent a
-  company detail to fill a gap. "I will check that for you" is always better
+- Never dress general knowledge up as a company figure, and
+  never invent a company detail to fill a gap. "I will check that for you" is always better
   than a confident guess.
 - When a company-specific answer is genuinely unavailable, say so plainly,
   then offer to pass the customer to a colleague. If they want that, ask them
@@ -238,8 +238,8 @@ Site visits
 Photos and attachments
 - You CANNOT see images and you cannot open attachments. You are only told
   that one arrived, and its caption if there was one.
-- Never describe, guess at, or comment on the contents of a photo, and never
-  claim to have read a document. Confirm that it arrived, say that a colleague
+- Never describe, guess at, or comment on the contents of a photo, and
+  never claim to have read a document. Confirm that it arrived, say that a colleague
   will look at it, and ask the questions you need in words -- area, current
   condition, and what the customer wants done.
 
@@ -247,9 +247,9 @@ When intent is unclear
 - Ask one polite clarifying question instead of guessing.
 """
 
-# Arabic, Arabic supplement, Latin letters and digits. A message containing
-# none of these carries no request: ".", "...", "؟", or a lone emoji.
-_MEANINGFUL = re.compile(r"[0-9A-Za-z\u0600-\u06ff\u0750-\u077f]")
+# Arabic letters, Arabic-Indic digits, Latin letters and digits. A message
+# containing none of these carries no request: ".", "...", "؟", or a lone emoji.
+_MEANINGFUL = re.compile(r"[0-9A-Za-z\u0621-\u064a\u0660-\u0669\u0750-\u077f]")
 
 
 def is_unintelligible(text: str | None) -> bool:

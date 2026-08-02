@@ -232,7 +232,7 @@ class PromptBuilder:
             sections.append(
                 "# Retrieved knowledge\n"
                 "No company document matched this question with sufficient "
-                "confidence. You therefore have no source for specifications, "
+                "confidence. You therefore have no source for prices, specifications, "
                 "timelines, contract terms or availability, and must not "
                 "supply any from memory.\n"
                 "Sort the question into one of THREE kinds before answering:\n"
@@ -240,7 +240,7 @@ class PromptBuilder:
                 "includes or has previously built): say plainly that you do "
                 "not have that information to hand, then offer to pass the "
                 "question to a colleague.\n"
-                "- General, but about the trade (materials, techniques, the "
+                "- General and factual, but about the trade (materials, techniques, the "
                 "usual order of finishing work, standard terminology, rough "
                 "industry practice): answer from your own knowledge, briefly, "
                 "and say that it is general information rather than a "
