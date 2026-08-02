@@ -7,9 +7,31 @@ class ApiEndpoints {
       '/users?offset=$offset&limit=$limit';
 
   // Conversations
-  static String conversations({int offset = 0, int limit = 50}) =>
-      '/conversations?offset=$offset&limit=$limit';
+  //
+  // A conversation is one SESSION, not one customer: sessions close after a
+  // period of silence and a returning customer opens a new one, so the same
+  // person appears several times in this list over time.
+  //
+  // [status] is optional ('active' or 'closed'); omitting it returns every
+  // session, which is the behaviour this endpoint has always had.
+  static String conversations({
+    int offset = 0,
+    int limit = 50,
+    String? status,
+  }) {
+    final query = '/conversations?offset=$offset&limit=$limit';
+    if (status == null || status.isEmpty) return query;
+    return '$query&status=${Uri.encodeQueryComponent(status)}';
+  }
+
   static String conversation(int id) => '/conversations/$id';
+
+  /// The customer behind a session and their earlier ones. Sessions are never
+  /// merged, so this returns navigation between them rather than a combined
+  /// transcript.
+  static String conversationHistory(int id, {int limit = 20}) =>
+      '/conversations/$id/history?limit=$limit';
+
   static String takeOver(int id) => '/conversations/$id/takeover';
   static String resumeAi(int id) => '/conversations/$id/resume-ai';
   static String reply(int id) => '/conversations/$id/reply';
