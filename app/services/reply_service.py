@@ -5,10 +5,11 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
-from app.core.events import conversation_activity, publish
+from app.core.events import conversation_activity, conversation_reopened, publish
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
 from app.integrations.whatsapp import WhatsAppClient
+from app.models.conversation import STATUS_CLOSED, Conversation
 from app.models.message import Message
 from app.models.user import User
 from app.repositories.conversation import ConversationRepository
@@ -31,6 +32,87 @@ class OutsideServiceWindowError(ConflictError):
     """
 
     code = "outside_service_window"
+
+
+class ConversationSupersededError(ConflictError):
+    """Raised when a closed conversation cannot be revived to act on.
+
+    Only one conversation per customer may be active at a time -- the partial
+    unique index ``uq_active_conversation_per_user`` enforces it -- so a
+    session that closed and was then followed by a NEW session can never be
+    reopened. The customer has moved on to a different thread.
+
+    Refusing is the only honest outcome. Sending anyway would deliver the
+    message to the customer's phone but file it under a conversation they are
+    no longer replying to, which is the orphaned-reply bug this class exists
+    to prevent. The operator should open the customer's current conversation
+    instead, and the 409 body tells them so.
+    """
+
+    code = "conversation_superseded"
+
+
+async def revive_for_operator(
+    conversations: ConversationRepository,
+    conversation: Conversation,
+    settings: Settings,
+    session: AsyncSession,
+    *,
+    action: str,
+) -> Conversation:
+    """Ensure an operator is about to act on a live conversation.
+
+    Shared by every operator entry point that writes to a conversation --
+    manual reply, take over, resume AI -- because all of them had the same
+    hole: none checked ``status``, so all of them could write into a session
+    the sweeper had already closed.
+
+    Returns the conversation untouched when it is already active, so the
+    common path costs nothing. Otherwise it revives it through the single
+    shared ``ConversationRepository.reopen`` (which clears ``closed_at`` and
+    ``closing_sent_at`` while preserving ``welcome_sent_at`` and the whole
+    transcript) and COMMITS before returning.
+
+    Committing here rather than leaving it to the caller is deliberate: the
+    callers go on to make a WhatsApp API call, and a revive that is still
+    uncommitted when that call fails would roll back and leave the operator's
+    delivered message attached to a closed row -- the exact bug being fixed.
+
+    Raises :class:`ConversationSupersededError` when the customer has already
+    started a newer session, since only one can be active at a time.
+    """
+    if conversation.status != STATUS_CLOSED:
+        return conversation
+
+    revived = await conversations.reopen(conversation.id)
+    if revived is None:
+        logger.info(
+            "operator_action_on_superseded_conversation",
+            conversation_id=conversation.id,
+            action=action,
+        )
+        raise ConversationSupersededError(
+            "This conversation has ended and the customer has since started a "
+            "new one. Open their current conversation instead."
+        )
+
+    await session.commit()
+    logger.info(
+        "conversation_reopened_by_operator",
+        conversation_id=revived.id,
+        action=action,
+    )
+    await publish(
+        conversation_reopened(
+            conversation_id=revived.id,
+            user_id=revived.user_id,
+            status=revived.status,
+            reason="operator",
+            updated_at=revived.updated_at,
+        ),
+        settings,
+    )
+    return revived
 
 
 class ReplyService:
@@ -63,16 +145,30 @@ class ReplyService:
 
         The message is persisted only after the WhatsApp API accepts it, so a
         failed send never leaves a phantom message in the transcript.
+
+        A closed conversation is revived before anything is sent. Replying
+        into a closed session used to succeed and then strand the exchange:
+        the message reached the customer, but their answer opened a different
+        conversation, so the two halves of the same exchange lived in
+        different threads.
         """
         conversation = await self._conversations.get(conversation_id)
         if conversation is None:
             raise NotFoundError(f"Conversation {conversation_id} not found")
 
+        conversation = await revive_for_operator(
+            self._conversations,
+            conversation,
+            self._settings,
+            self._session,
+            action="reply",
+        )
+
         user = await self._session.get(User, conversation.user_id)
         if user is None:
             raise NotFoundError(f"User {conversation.user_id} not found")
 
-        last_inbound = await self._messages.last_inbound_at(conversation_id)
+        last_inbound = await self._messages.last_inbound_at(conversation.id)
         if last_inbound is None:
             raise OutsideServiceWindowError(
                 "This customer has never messaged in; a free-form reply cannot "
