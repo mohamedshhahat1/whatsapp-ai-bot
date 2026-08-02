@@ -93,9 +93,9 @@ _CURRENCY = (
     r"|\u062c\u0646\u064a\u0647"  # gunayh
     r"|\u062c\u0646\u062a\u0629"  # common misspelling
     r"|\u062c\.?\s?\u0645(?![\u0621-\u064a])"  # g.m
-    r"|\u0631\u064a\u0627\u0644"  # riyal
+    r"|\u0631\u062a\u0627\u0644"  # riyal
     r"|\u062f\u0648\u0644\u0627\u0631"  # dollar
-    r"|\u064a\u0648\u0631\u0648"  # euro
+    r"|\u062a\u0648\u0631\u0648"  # euro
     r"|\u062f\u0631\u0647\u0645"  # dirham
     r"|EGP|SAR|AED|KWD|USD|EUR|GBP"
     r"|L\.?E\.?(?![A-Za-z])|\bLE\b"
@@ -108,8 +108,8 @@ _UNIT = (
     r"\u0645\u062a\u0631"  # metre
     r"|\u0623\u0645\u062a\u0627\u0631|\u0627\u0645\u062a\u0627\u0631"  # metres
     r"|\u0645\u00b2|\u0645 ?2"  # m2
-    r"|\u064a\u0648\u0645|\u0623\u064a\u0627\u0645|\u0627\u064a\u0627\u0645"  # day(s)
-    r"|\u0623\u0633\u0628\u0648\u0639|\u0623\u0633\u0627\u0628\u064a\u0639"  # week(s)
+    r"|\u062a\u0648\u0645|\u0623\u064a\u0627\u0645|\u0627\u064a\u0627\u0645"  # day(s)
+    r"|\u0623\u0633\u0628\u0648\u0639|\u0623\u0633\u0627\u0628\u062a\u0639"  # week(s)
     r"|\u0634\u0647\u0631|\u0634\u0647\u0648\u0631|\u0623\u0634\u0647\u0631"  # month(s)
     r"|\u0633\u0646\u0629|\u0633\u0646\u0648\u0627\u062a|\u0633\u0646\u062a\u064a\u0646"  # year(s)
     r"|\u0633\u0627\u0639\u0629|\u0633\u0627\u0639\u0627\u062a"  # hour(s)
@@ -145,12 +145,15 @@ _PER_METRE = (
 _THOUSANDS = (
     r"\u0623\u0644\u0641|\u0627\u0644\u0641"  # alf
     r"|\u0622\u0644\u0627\u0641|\u0627\u0644\u0627\u0641"  # alaaf
-    r"|\u0645\u0644\u064a\u0648\u0646|\u0645\u0644\u0627\u064a\u064a\u0646"  # million(s)
+    r"|\u0645\u0644\u062a\u064a\u0648\u0646|\u0645\u0644\u0627\u064a\u062a\u0646"  # million(s)
     r"|k\b"
 )
 
 # Nothing that looks like a measurement may follow the number.
-_NOT_A_UNIT = rf"(?!\s*(?:{_UNIT})\b)"
+# The digit lookahead prevents regex backtracking: without it, "60 يوم"
+# matches "6" (backtracking from "60" because يوم is a unit) and the
+# next char "0" is not a unit, so the lookahead passes and "6" is redacted.
+_NOT_A_UNIT = rf"(?![0-9\u0660-\u0669])(?!\s*(?:{_UNIT})\b)"
 
 # --- Money patterns ----------------------------------------------------------
 # Every pattern captures the part to hide in a group named ``amt``. Only that
@@ -280,12 +283,12 @@ _NEGOTIATION_PATTERNS = tuple(
     for pattern in (
         # "expensive" / "too much" / "cheaper"
         r"\u063a\u0627\u0644\u064a|\u063a\u0627\u0644\u064a\u0629|\u0645\u0643\u0644\u0641",
-        r"\u0631\u062e\u062a\u0635|\u0627\u0631\u062e\u0635|\u0623\u0631\u062e\u0635",
+        r"\u0631\u062e\u062a\u0635|\u0627\u0631\u062a\u062e\u0635|\u0623\u0631\u062e\u0635",
         r"\bexpensive\b|\btoo\s+much\b|\bcheaper\b|\bpricey\b",
         # "final price" / "last word" / "best price"
         r"\u0622\u062e\u0631 \u0633\u0639\u0631|\u0627\u062e\u0631 \u0633\u0639\u0631",
         r"\u0622\u062e\u0631 \u0643\u0644\u0627\u0645|\u0627\u062e\u0631 \u0643\u0644\u0627\u0645",
-        r"\u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u0646\u0647\u0627\u0626\u062a",
+        "السعر النهائي",
         r"\u0623\u062d\u0633\u0646 \u0633\u0639\u0631|\u0627\u062d\u0633\u0646 \u0633\u0639\u0631",
         r"\bfinal\s+(?:price|offer)\b|\bbest\s+(?:price|offer)\b",
         r"\blast\s+price\b",
@@ -307,14 +310,14 @@ _NEGOTIATION_PATTERNS = tuple(
         r"\bany\s+(?:lower|less)\b|\bgo\s+lower\b|\bcome\s+down\b",
         r"\bwhat.{0,15}\baccept\b",
         # citing a competitor
-        r"\u0627\u0644\u0641\u064a\u0633|\u0641\u064a\u0633\u0628\u0648\u0643",  # Facebook
-        r"\u0634\u0631\u0643\u0629 \u062a\u0627\u0646\u064a\u0629"
+        r"\u0627\u0644\u0641\u062a\u0633|\u0641\u062a\u0633\u0628\u0648\u0643",  # Facebook
+        r"\u0634\u0631\u0643\u0629 \u062a\u0627\u0646\u062a\u0629"
         r"|\u062d\u062f \u062a\u0627\u0646\u062a",
         r"\u0646\u0641\u0633 \u0627\u0644\u0633\u0639\u0631|\u0632\u064a \u0633\u0639\u0631",
         r"\bfacebook\s+price\b|\bmatch\s+(?:the\s+)?price\b",
         r"\banother\s+company\b|\bsomeone\s+else\s+(?:quoted|offered)\b",
         # naming a figure: "اعملها بـ 1500", "خليها 1500"
-        rf"(?:\u0628\u0640?\s*|\u062e\u0644\u064a\u0647\u0627\s*|\u062e\u0644\u064a\u0647\s*)"
+        rf"(?:\u0628\u0640?\s*|\u062e\u0644\u062a\u0647\u0627\s*|\u062e\u0644\u062a\u0647\s*)"
         rf"{_DIGIT}{{3,}}",
     )
 )
