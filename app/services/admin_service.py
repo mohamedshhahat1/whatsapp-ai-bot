@@ -16,6 +16,7 @@ from app.repositories.document import DocumentRepository
 from app.repositories.message import MessageRepository
 from app.repositories.user import UserRepository
 from app.schemas.admin import StatsRead
+from app.services.reply_service import revive_for_operator
 from app.services.retrieval import RetrievedDocument, build_retriever
 
 
@@ -31,14 +32,60 @@ class AdminService:
     async def list_users(self, offset: int, limit: int) -> list[User]:
         return await self._users.list(offset=offset, limit=limit)
 
-    async def list_conversations(self, offset: int, limit: int) -> list[Conversation]:
-        return await self._conversations.list(offset=offset, limit=limit)
+    async def list_conversations(
+        self, offset: int, limit: int, status: str | None = None
+    ) -> list[Conversation]:
+        """Conversations for the operator list, newest-relevant first.
+
+        ``status`` is optional and defaults to everything, so existing clients
+        that never send it keep seeing exactly what they saw before. It exists
+        because sessions now end: the table gained one row per visit instead
+        of one per customer, and an operator looking for live work would
+        otherwise scroll past a day of closed history to find it.
+        """
+        return await self._conversations.list(
+            offset=offset, limit=limit, status=status
+        )
 
     async def get_conversation(self, conversation_id: int) -> Conversation:
         conversation = await self._conversations.get_with_messages(conversation_id)
         if conversation is None:
             raise NotFoundError(f"Conversation {conversation_id} not found")
         return conversation
+
+    async def conversation_history(
+        self, conversation_id: int, limit: int = 20
+    ) -> tuple[User, int, list[Conversation]]:
+        """The customer behind a conversation, and their other visits.
+
+        Returns the customer, how many conversations they have had in total,
+        and the most recent others -- enough for the operator panel to say
+        "5th visit" and link to the previous four.
+
+        Sessions are deliberately NOT merged. They are separate visits and
+        stitching them into one transcript would misrepresent what happened,
+        hiding the gaps that are the whole point of the lifecycle. The operator
+        gets navigation between them instead.
+
+        This is an operator affordance only. None of it reaches the model:
+        prompt context is still built from the current session alone, because
+        silently widening what the AI remembers would change its answers in
+        ways nobody asked for and would leak one visit's pricing talk into the
+        next.
+        """
+        conversation = await self._conversations.get(conversation_id)
+        if conversation is None:
+            raise NotFoundError(f"Conversation {conversation_id} not found")
+
+        user = await self._session.get(User, conversation.user_id)
+        if user is None:  # pragma: no cover - FK guarantees this
+            raise NotFoundError(f"User {conversation.user_id} not found")
+
+        total = await self._conversations.count_for_user(conversation.user_id)
+        others = await self._conversations.for_user(
+            conversation.user_id, limit=limit, exclude_id=conversation_id
+        )
+        return user, total, others
 
     async def delete_conversation(self, conversation_id: int) -> None:
         conversation = await self._conversations.get(conversation_id)
@@ -53,6 +100,22 @@ class AdminService:
         conversation = await self._conversations.get(conversation_id)
         if conversation is None:
             raise NotFoundError(f"Conversation {conversation_id} not found")
+
+        # A closed session is revived before its mode changes, using the same
+        # shared helper as the reply path. Without this the operator saw the
+        # badge flip to "human" and believed they owned the customer, while
+        # the customer's next message opened a different conversation in bot
+        # mode -- so the takeover silently applied to a row nobody would ever
+        # write to again. Raises ConversationSupersededError when the customer
+        # has already moved on to a newer session.
+        conversation = await revive_for_operator(
+            self._conversations,
+            conversation,
+            get_settings(),
+            self._session,
+            action=reason,
+        )
+
         await self._conversations.set_mode(conversation, mode, operator=operator)
         await self._session.commit()
         # ``Conversation.updated_at`` is declared with ``onupdate=func.now()``,
@@ -86,6 +149,9 @@ class AdminService:
 
         Idempotent: taking over a conversation that a human already owns just
         records the new operator.
+
+        Reopens the session first if it has closed, so that the operator is
+        never given a conversation the customer cannot reply into.
         """
         return await self._switch_mode(
             conversation_id,
@@ -100,6 +166,12 @@ class AdminService:
         The operator's messages stay in the transcript, so they are part of the
         history the model reads on the next turn: if a person corrected the
         bot, the bot sees the correction.
+
+        Note the interaction with the sweeper: resuming sets mode back to bot
+        and resets the idle timer, which makes the session eligible for
+        closing again from this moment. That is intended -- a conversation
+        nobody is working should end like any other -- and the reset is what
+        stops it ending immediately.
         """
         return await self._switch_mode(
             conversation_id,
@@ -120,6 +192,14 @@ class AdminService:
         return await retriever.retrieve(query, limit=limit)
 
     async def stats(self) -> StatsRead:
+        """Headline counters for the dashboard.
+
+        ``total_conversations`` counts SESSIONS, not customers, and has done
+        since sessions started closing themselves -- one returning customer
+        now produces several. ``total_users`` is the customer count. The two
+        used to be nearly interchangeable and no longer are; see
+        ``StatsRead`` for the field-level wording.
+        """
         since = datetime.now(UTC) - timedelta(hours=24)
         return StatsRead(
             total_users=await self._users.count(),
