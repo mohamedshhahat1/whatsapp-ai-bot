@@ -112,15 +112,36 @@ async function request<T>(
 type Loose<T extends string> = T | (string & Record<never, never>)
 
 export type ConversationMode = Loose<"bot" | "human">
-export type ConversationStatus = Loose<"active" | "archived">
+// "closed", not "archived". This union previously read `"active" | "archived"`
+// and the backend has never emitted "archived" in its life -- app.models.
+// conversation defines STATUS_ACTIVE and STATUS_CLOSED and nothing else. The
+// mistake survived because Loose<> widens to string, so the wrong literal
+// type-checked perfectly; it simply meant the one value the dashboard
+// actually receives was the one it offered no autocomplete for.
+export type ConversationStatus = Loose<"active" | "closed">
 export type ConversationTag = Loose<"sales_lead">
 export type MessageDirection = Loose<"inbound" | "outbound">
 export type MessageStatus = Loose<
   "pending" | "sent" | "unconfirmed" | "failed"
 >
 
+// Computed server-side from (status, mode, last_activity_at, closing_sent_at)
+// and never stored. WAITING_IDLE means past the idle timeout and due to be
+// closed by the next sweep -- not yet closed. CLOSING means a worker has
+// already claimed the goodbye and the close is moments away.
+export type SessionState = Loose<
+  "ACTIVE_BOT" | "ACTIVE_HUMAN" | "WAITING_IDLE" | "CLOSING" | "CLOSED"
+>
+
 export const TAG_SALES_LEAD = "sales_lead"
 export const MODE_HUMAN = "human"
+export const STATUS_ACTIVE = "active"
+export const STATUS_CLOSED = "closed"
+
+// Returned as `code` in the 409 body when an operator acts on a conversation
+// whose customer has already started a newer session. Distinct from an
+// ordinary conflict because the remedy is specific: open the newer session.
+export const CODE_SUPERSEDED = "conversation_superseded"
 
 export interface CostBreakdown {
   prompt_tokens: number
@@ -136,6 +157,8 @@ export interface Overview {
   since: string
   // Lifetime.
   total_users: number
+  // SESSIONS, not customers. Since sessions close themselves, one returning
+  // customer contributes several of these; total_users is the customer count.
   total_conversations: number
   total_messages: number
   // Scoped to period_days. Cost figures are window-scoped too, so these are
@@ -150,6 +173,8 @@ export interface Overview {
   avg_latency_ms: number
   p95_latency_ms: number
   cost: CostBreakdown
+  // Cost per SESSION. Sessions are shorter and more numerous than they were
+  // before the lifecycle shipped, so this figure fell without spend changing.
   cost_per_conversation_usd: number
   projected_monthly_cost_usd: number
 }
@@ -202,6 +227,8 @@ export interface Customer {
   user_id: number
   wa_id: string
   name: string | null
+  // Visit count. Reads as 1 for a customer who has been in touch once, and
+  // climbs each time they come back after a session has closed.
   conversations: number
   messages: number
   last_active: string | null
@@ -218,6 +245,7 @@ export interface User {
 // GET /admin/stats. Lifetime counters, cheaper than the analytics overview.
 export interface Stats {
   total_users: number
+  // Sessions, not customers -- see Overview.total_conversations.
   total_conversations: number
   total_messages: number
   messages_last_24h: number
@@ -259,10 +287,13 @@ export interface UnblockResponse {
   was_blocked: boolean
 }
 
+// One SESSION, not one customer. A customer who comes back after their
+// session closed gets a new row with a new id and its own transcript; the
+// two are never merged, and user_id is the only stable per-customer key.
 export interface Conversation {
   id: number
   user_id: number
-  // status is lifecycle (active / archived); mode is ownership (bot / human).
+  // status is lifecycle (active / closed); mode is ownership (bot / human).
   // They are independent: a conversation stays active the whole time a human
   // operator owns it.
   status: ConversationStatus
@@ -272,6 +303,29 @@ export interface Conversation {
   tag: ConversationTag | null
   assigned_operator: string | null
   handoff_at: string | null
+  // --- Session lifecycle -------------------------------------------------
+  // All optional: a dashboard built from this file still works against a
+  // backend deployed before the lifecycle shipped, which matters during a
+  // rolling deploy where both versions are briefly live.
+  //
+  // When the idle countdown last restarted. Both directions of traffic reset
+  // it, so this is not "last customer message".
+  last_activity_at?: string | null
+  // Non-null once this session has greeted its customer. Survives a reopen,
+  // which is exactly why nobody is greeted twice in one session.
+  welcome_sent_at?: string | null
+  // Non-null once a worker has CLAIMED the goodbye -- not necessarily once
+  // one has been delivered.
+  closing_sent_at?: string | null
+  closed_at?: string | null
+  session_state?: SessionState
+  // The server's effective configuration, so a countdown does not have to be
+  // hardcoded here and drift from CONVERSATION_IDLE_TIMEOUT_MINUTES.
+  idle_timeout_minutes?: number
+  // False when CONVERSATION_CLOSE_AFTER_IDLE is off, in which case
+  // WAITING_IDLE is a resting state rather than a countdown and the UI must
+  // not promise the session is about to close.
+  close_after_idle?: boolean
   created_at: string
   updated_at: string
 }
@@ -289,7 +343,32 @@ export interface Message {
 }
 
 export interface ConversationDetail extends Conversation {
+  // This session's messages only. Earlier visits are separate conversations
+  // with their own ids -- see conversationHistory to find them.
   messages: Message[]
+}
+
+// One of a customer's other visits, for the operator history panel. No
+// transcript: the panel lists several and loading every message of each
+// would be a large payload for a sidebar nobody has clicked yet.
+export interface ConversationSummary {
+  id: number
+  status: ConversationStatus
+  mode: ConversationMode
+  tag: ConversationTag | null
+  created_at: string
+  updated_at: string
+  closed_at: string | null
+}
+
+// GET /admin/conversations/{id}/history. Operator-facing only: none of this
+// is fed to the model, which still sees the current session alone.
+export interface CustomerHistory {
+  user_id: number
+  wa_id: string
+  name: string | null
+  total_conversations: number
+  previous: ConversationSummary[]
 }
 
 export interface ManualReply {
@@ -301,6 +380,9 @@ export interface ManualReply {
 
 export interface MessageHit {
   message_id: number
+  // The session the hit belongs to. The same customer can appear several
+  // times in one result set with different conversation ids -- they said it
+  // in different visits.
   conversation_id: number
   user_id: number
   wa_id: string
@@ -355,21 +437,40 @@ export const api = {
     }),
   deletePricing: (id: number) =>
     request<void>(`/admin/pricing/${id}`, { method: "DELETE" }),
-  conversations: (limit = PAGE_SIZE, offset = 0) =>
-    request<Conversation[]>(
-      `/admin/conversations?limit=${limit}&offset=${offset}`,
-    ),
+  // `status` is optional and omitted by default, which returns every session
+  // regardless of lifecycle -- the behaviour this call has always had.
+  conversations: (
+    limit = PAGE_SIZE,
+    offset = 0,
+    status?: ConversationStatus | null,
+  ) => {
+    const query = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    })
+    if (status) query.set("status", status)
+    return request<Conversation[]>(`/admin/conversations?${query}`)
+  },
   conversation: (id: number) =>
     request<ConversationDetail>(`/admin/conversations/${id}`),
+  // The customer behind a session and their previous ones. Sessions are not
+  // merged; this is navigation between them.
+  conversationHistory: (id: number, limit = 20) =>
+    request<CustomerHistory>(
+      `/admin/conversations/${id}/history?limit=${limit}`,
+    ),
   deleteConversation: (id: number) =>
     request<void>(`/admin/conversations/${id}`, { method: "DELETE" }),
+  // Reopens the session first if it has closed, so the reply and the
+  // customer's answer stay in the same conversation. Throws ApiError 409 when
+  // the customer has already started a newer session.
   reply: (id: number, text: string) =>
     request<ManualReply>(`/admin/conversations/${id}/reply`, {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
   // Stops the bot answering this conversation. The operator name is a label
-  // for other operators, not a credential.
+  // for other operators, not a credential. Also reopens a closed session.
   takeOver: (id: number, operator: string) =>
     request<Conversation>(`/admin/conversations/${id}/takeover`, {
       method: "POST",
