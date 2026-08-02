@@ -74,6 +74,7 @@ def humanize(stem: str) -> str:
     """'price_list-2026' -> 'Price List 2026'."""
     return stem.replace("_", " ").replace("-", " ").strip().title() or stem
 
+
 class KnowledgeIngestionService:
     """Builds and refreshes the vector index from the knowledge folder."""
 
