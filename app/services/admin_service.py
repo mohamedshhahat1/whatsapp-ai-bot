@@ -43,9 +43,7 @@ class AdminService:
         of one per customer, and an operator looking for live work would
         otherwise scroll past a day of closed history to find it.
         """
-        return await self._conversations.list(
-            offset=offset, limit=limit, status=status
-        )
+        return await self._conversations.list(offset=offset, limit=limit, status=status)
 
     async def get_conversation(self, conversation_id: int) -> Conversation:
         conversation = await self._conversations.get_with_messages(conversation_id)
