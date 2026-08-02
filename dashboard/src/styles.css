@@ -352,6 +352,30 @@ tr.lead-row:hover td {
   color: var(--muted);
 }
 
+/* A session that has ended.
+
+   Deliberately quiet rather than red. Sessions now close themselves after a
+   few idle minutes, so "closed" is the ordinary end of a conversation and by
+   far the most common state in the table -- styling it like .badge.danger
+   would paint most of the screen with alarm colours and teach operators to
+   ignore them. The dashed border reads as inactive instead of broken, and is
+   what distinguishes it from .badge.bot, which is otherwise identical. */
+.badge.closed {
+  background: transparent;
+  border-style: dashed;
+  border-color: var(--border);
+  color: var(--muted);
+}
+
+/* Still open, but the idle timer is running and it will close on its own
+   shortly. Warn-coloured because it is the last moment an operator can step
+   in before the session ends. */
+.badge.idle {
+  background: transparent;
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
 .badge.danger {
   border-color: var(--danger);
   color: var(--danger);
