@@ -4,6 +4,7 @@ Instructions are composed in labelled layers rather than as one blob of prose:
 
     system instructions     trusted, from configuration or the packaged persona
     company information     trusted, from configuration
+    portfolio links        trusted, from configuration (when COMPANY_WEBSITE is set)
     retrieved knowledge     UNTRUSTED reference material, fenced and redacted
     conversation context    customer name, channel, time
     first message           only on the customer's opening turn
@@ -180,6 +181,42 @@ class PromptBuilder:
         company_info = self._settings.company_info.strip()
         if company_info:
             sections.append("# Company information\n" + company_info)
+
+        # Portfolio and design showcase
+        # Only injected when COMPANY_WEBSITE is configured. If
+        # COMPANY_PORTFOLIO_URL is also set, it is included separately;
+        # otherwise the portfolio falls back to the website URL. When
+        # neither is set, the section is omitted entirely so the model
+        # never generates an invalid link.
+        website = self._settings.company_website.strip()
+        portfolio = self._settings.portfolio_url
+        if website:
+            portfolio_lines = [
+                "# Portfolio and design showcase",
+                "When the customer asks about 2D designs, 3D designs, a portfolio, "
+                "previous projects, examples, photos, a gallery, completed work, "
+                "interior designs, exterior designs, or whether they can see your "
+                "work or you can send pictures: NEVER say you do not have examples "
+                "or cannot send photos. Instead, explain that the company provides "
+                "professional 2D drawings and realistic 3D visualizations, and "
+                "invite the customer to explore the portfolio on the website.",
+                f"Website: {website}",
+            ]
+            if portfolio and portfolio != website:
+                portfolio_lines.append(f"Portfolio: {portfolio}")
+            portfolio_lines.append(
+                "If the customer mentions a specific project type (apartment, "
+                "villa, office, commercial space, landscape), send the most "
+                "relevant portfolio page if one exists. Otherwise send the "
+                "general portfolio URL above."
+            )
+            portfolio_lines.append(
+                "If the customer asks for pricing after viewing the portfolio, "
+                "do NOT provide prices. Explain that pricing depends on the "
+                "project's requirements and that the manager will contact them "
+                "with a customized quotation after discussing the project details."
+            )
+            sections.append("\n".join(portfolio_lines))
 
         if documents:
             rendered = "\n\n".join(
@@ -365,6 +402,16 @@ class PromptBuilder:
             "that service only -- what it covers and what the customer gets "
             "from it, taken from the sources and not from imagination -- "
             "rather than listing everything the company does.\n"
+            "- When the customer asks about designs, a portfolio, previous "
+            "projects, examples, photos, or completed work: NEVER say you do "
+            "not have examples or cannot send photos. Explain that the company "
+            "provides professional 2D drawings and 3D visualizations, and "
+            "direct the customer to the portfolio URL given in the portfolio "
+            "section above. If no portfolio URL was provided in the instructions, "
+            "offer to pass the question to a colleague. If the customer asks "
+            "about pricing after viewing the portfolio, do not provide prices -- "
+            "explain that pricing depends on the project and the manager will "
+            "prepare a customized quotation.\n"
             "- Formatting changes presentation, never content. Never round a "
             "figure, merge two items, rename a category or invent one to "
             "balance a list. A detail that is not in the retrieved documents "
