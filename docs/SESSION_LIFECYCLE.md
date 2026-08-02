@@ -5,6 +5,9 @@ who writes in March and again in July should be greeted twice and thanked
 twice, and the July conversation should not carry March's history into the
 model's context window.
 
+Every duration and every behaviour below is configuration. There are no
+timeouts in the code: see [Configuration](#configuration).
+
 ## The state model
 
 A session **is** a `conversations` row. There is no separate session table and
@@ -54,19 +57,52 @@ Partial because that predicate is the sweeper's entire query and it excludes
 almost every row in the table. The index stays small however large the history
 grows, and rows leave it permanently once closed.
 
-## Reopening takes no code
+## Coming back
+
+There are two ways a customer returns after a goodbye, and which one they get
+depends only on how long they took.
+
+### Straight back: the reopen window
+
+A goodbye followed thirty seconds later by "sorry, one more thing" is one
+conversation, not two. Within `CONVERSATION_REOPEN_WINDOW_MINUTES` of
+`closed_at`, `ConversationRepository.reopen_recent` **revives the same row**:
+status back to active, `closed_at` and `closing_sent_at` cleared, timer reset.
+
+Reviving rather than copying is the point. `welcome_sent_at` survives, so
+`should_welcome` already returns `False` and nothing has to remember to
+suppress a second greeting; the history survives too, so the model still knows
+what "it" refers to. Clearing `closing_sent_at` re-arms the goodbye — without
+that the resumed session could never be closed again, because a claimed
+session is permanently ineligible.
+
+Set the window to `0` to switch this off entirely and make every closed
+session final.
+
+### Later: a genuinely new session
 
 Migration `0003` already carried a partial unique index,
 `uq_active_conversation_per_user`, over `status = 'active'`. One open
 conversation per customer, enforced by Postgres.
 
-So closing a session **frees the slot**, and the next message reaches the
-existing `get_or_create_active` and mints a fresh row: new id, new history,
-`welcome_sent_at` NULL, `closing_sent_at` NULL, timer at now. Every clause of
-the "reopen session" requirement — new session, cleared closed state, reset
-timers, reset closing flag, welcome again, message processed normally — falls
-out of one index that already existed. Nothing special-cases it, which is why
-nothing can forget to.
+So closing a session **frees the slot**, and a message arriving past the
+reopen window reaches the existing `get_or_create_active` and mints a fresh
+row: new id, new history, `welcome_sent_at` NULL, `closing_sent_at` NULL,
+timer at now. Every clause of the "new session" requirement — cleared closed
+state, reset timers, reset closing flag, welcome again, message processed
+normally — falls out of one index that already existed. Nothing special-cases
+it, which is why nothing can forget to.
+
+`NEW_SESSION_AFTER_HOURS` is the outer bound on the above: the reopen window
+is clamped to it, so a window longer than the bound cannot let someone
+returning next week land in last week's thread. The two are reconciled in
+`Settings.new_session_after` rather than at the call site, so they cannot
+disagree depending on which check runs first.
+
+This is **unrelated** to Meta's 24-hour customer service window
+(`CUSTOMER_SERVICE_WINDOW` in `app/services/reply_service.py`), which is a
+platform rule rather than a preference and is deliberately not configurable.
+They share a number today by coincidence.
 
 ## The idle timer
 
@@ -80,6 +116,12 @@ nothing can forget to.
 Bumping on AI activity as well as customer activity is deliberate. If only
 inbound messages counted, a reply that took six minutes to generate would be
 overtaken by its own goodbye.
+
+The outbound bumps pass `outgoing=True`, which is what
+`RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE` switches off. Turning it off makes the
+timer measure silence from the customer alone and restores exactly the race
+described above; it exists to make the choice visible, not because there is a
+good reason to take it.
 
 ## Closing
 
@@ -115,6 +157,12 @@ This is the deliberate trade: **a missing goodbye is a non-event; a duplicate
 goodbye is the bot looking broken.** Retrying safely would need the claim to be
 releasable, which reopens the duplicate window.
 
+This is also why `PREVENT_DUPLICATE_CLOSING` is not read by
+`_should_send_closing`. The guarantee it names is structural rather than
+conditional: a second goodbye cannot be reached to be suppressed, because the
+claim never hands the same session out twice. The flag documents the promise;
+the claim keeps it.
+
 ### Two guards
 
 - **`mode = 'bot'` only.** The sweeper never closes a conversation an operator
@@ -131,15 +179,24 @@ releasable, which reopens the duplicate window.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
+| `ENABLE_CONVERSATION_SESSION` | `true` | Master switch. Off, conversations behave as they did before this feature: one endless thread per customer. |
 | `CONVERSATION_IDLE_TIMEOUT_MINUTES` | `5` | Floored at 1 minute. |
+| `CONVERSATION_CLOSE_AFTER_IDLE` | `true` | Off, the timer still runs and `WAITING_IDLE` is still reported, but nothing is closed. |
 | `ENABLE_CONVERSATION_CLOSING_MESSAGE` | `true` | Off still closes sessions, silently. |
+| `CONVERSATION_REOPEN_WINDOW_MINUTES` | `30` | `0` disables reopen; every closed session is final. |
+| `NEW_SESSION_AFTER_HOURS` | `24` | Outer bound; clamps the reopen window. |
+| `ENABLE_WELCOME_ON_NEW_SESSION` | `true` | Off, sessions begin with an answer and no greeting. |
 | `ENABLE_REPEAT_WELCOME_AFTER_NEW_SESSION` | `true` | Off greets each customer once, ever. |
+| `PREVENT_DUPLICATE_WELCOME` | `true` | Should stay on. |
+| `PREVENT_DUPLICATE_CLOSING` | `true` | Should stay on; see above for why it is structural. |
+| `RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE` | `true` | Off, the timer measures customer silence only. |
 | `CONVERSATION_CLOSING_MESSAGE` | *(empty)* | Empty uses `persona.CLOSING`. |
 
 The closing copy defaults to the Arabic in `app/services/persona.py`, matching
 `WELCOME` and `NOT_UNDERSTOOD`. It lives in code for the same reason they do:
 it is multi-line text a customer reads, it belongs in review, and a `.env`
-value cannot hold a newline without escaping games.
+value cannot hold a newline without escaping games. Set the variable to
+override it — for a different business, or to switch the closing language.
 
 ## Operational requirement
 
