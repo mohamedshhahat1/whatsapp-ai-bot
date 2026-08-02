@@ -18,10 +18,9 @@
 # Safe to re-run: it refuses to overwrite a real certificate unless you pass
 # FORCE=1.
 
-set -euo pipefail
+set -eu
 
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
-COMPOSE=(docker compose -f "${COMPOSE_FILE}")
 
 DOMAIN="${DOMAIN:-}"
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
@@ -31,12 +30,15 @@ STAGING="${STAGING:-0}"
 FORCE="${FORCE:-0}"
 RSA_KEY_SIZE=4096
 
-if [[ -z "${DOMAIN}" ]]; then
+# POSIX-compatible wrapper instead of a bash array.
+compose() { docker compose -f "${COMPOSE_FILE}" "$@"; }
+
+if [ -z "${DOMAIN}" ]; then
   echo "DOMAIN is required, e.g. DOMAIN=bot.example.com $0" >&2
   exit 1
 fi
 
-if [[ -z "${CERTBOT_EMAIL}" ]]; then
+if [ -z "${CERTBOT_EMAIL}" ]; then
   echo "CERTBOT_EMAIL is required. Let's Encrypt uses it for expiry warnings" >&2
   echo "-- the one mail that tells you a renewal has been silently failing." >&2
   exit 1
@@ -47,10 +49,10 @@ echo "==> Bootstrapping TLS for ${DOMAIN}"
 # --------------------------------------------------------------------------
 # Diffie-Hellman parameters, required by the DHE suites in nginx/tls.conf.
 # --------------------------------------------------------------------------
-if ! "${COMPOSE[@]}" run --rm --entrypoint sh certbot -c \
+if ! compose run --rm --entrypoint sh certbot -c \
   '[ -f /etc/letsencrypt/ssl-dhparams.pem ]' 2>/dev/null; then
   echo "==> Generating ssl-dhparams.pem (this takes a minute)"
-  "${COMPOSE[@]}" run --rm --entrypoint sh certbot -c \
+  compose run --rm --entrypoint sh certbot -c \
     'openssl dhparam -out /etc/letsencrypt/ssl-dhparams.pem 2048'
 fi
 
@@ -58,9 +60,9 @@ fi
 # Refuse to clobber a working certificate.
 # --------------------------------------------------------------------------
 live_path="/etc/letsencrypt/live/${DOMAIN}"
-if "${COMPOSE[@]}" run --rm --entrypoint sh certbot -c \
+if compose run --rm --entrypoint sh certbot -c \
   "[ -s ${live_path}/privkey.pem ]" 2>/dev/null; then
-  if [[ "${FORCE}" != "1" ]]; then
+  if [ "${FORCE}" != "1" ]; then
     echo "A certificate for ${DOMAIN} already exists."
     echo "Renewal is automatic. Re-run with FORCE=1 only if you know why."
     exit 0
@@ -72,7 +74,7 @@ fi
 # Plant a self-signed placeholder so nginx has something to open.
 # --------------------------------------------------------------------------
 echo "==> Creating a temporary self-signed certificate"
-"${COMPOSE[@]}" run --rm --entrypoint sh certbot -c "
+compose run --rm --entrypoint sh certbot -c "
   mkdir -p '${live_path}' &&
   openssl req -x509 -nodes -newkey rsa:${RSA_KEY_SIZE} -days 1 \
     -keyout '${live_path}/privkey.pem' \
@@ -82,7 +84,7 @@ echo "==> Creating a temporary self-signed certificate"
 "
 
 echo "==> Starting nginx against the placeholder"
-"${COMPOSE[@]}" up -d nginx
+compose up -d nginx
 
 # nginx needs a moment before it will answer the challenge.
 sleep 3
@@ -92,7 +94,7 @@ sleep 3
 # a self-signed file in live/ makes it think one is already there.
 # --------------------------------------------------------------------------
 echo "==> Removing the placeholder"
-"${COMPOSE[@]}" run --rm --entrypoint sh certbot -c "
+compose run --rm --entrypoint sh certbot -c "
   rm -rf '${live_path}' \
          '/etc/letsencrypt/archive/${DOMAIN}' \
          '/etc/letsencrypt/renewal/${DOMAIN}.conf'
@@ -102,13 +104,13 @@ echo "==> Removing the placeholder"
 # Request the real certificate over http-01.
 # --------------------------------------------------------------------------
 staging_arg=""
-if [[ "${STAGING}" != "0" ]]; then
+if [ "${STAGING}" != "0" ]; then
   echo "==> STAGING=1: issuing an untrusted certificate from the staging CA"
   staging_arg="--staging"
 fi
 
 echo "==> Requesting a certificate from Let's Encrypt"
-"${COMPOSE[@]}" run --rm --entrypoint certbot certbot \
+compose run --rm --entrypoint certbot certbot \
   certonly --webroot -w /var/www/certbot \
   ${staging_arg} \
   --email "${CERTBOT_EMAIL}" \
@@ -120,7 +122,7 @@ echo "==> Requesting a certificate from Let's Encrypt"
   --force-renewal
 
 echo "==> Reloading nginx with the real certificate"
-"${COMPOSE[@]}" exec nginx nginx -s reload
+compose exec nginx nginx -s reload
 
 cat <<EOF
 
