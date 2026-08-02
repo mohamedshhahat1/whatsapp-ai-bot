@@ -64,7 +64,7 @@ export function useAsync<T>(
           refreshing: false,
         }))
       })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line
   }, [...deps])
 
   useEffect(() => {

@@ -6,7 +6,9 @@ services:
   migrate:
     build: .
     command: alembic upgrade head
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/whatsapp_ai_bot
       REDIS_URL: redis://redis:6379/0
@@ -17,7 +19,9 @@ services:
 
   app:
     build: .
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/whatsapp_ai_bot
       REDIS_URL: redis://redis:6379/0
@@ -53,7 +57,9 @@ services:
     # threads pool: I/O-bound tasks + single process so Prometheus metrics
     # from all tasks are exposed on one port.
     command: celery -A app.workers.celery_app.celery_app worker --loglevel=info --pool=threads --concurrency=8 -Q webhooks
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db:5432/whatsapp_ai_bot
       REDIS_URL: redis://redis:6379/0
