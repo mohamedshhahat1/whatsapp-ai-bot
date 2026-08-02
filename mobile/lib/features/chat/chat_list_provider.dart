@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config/app_config.dart';
@@ -17,21 +19,28 @@ class ChatListState {
   final int offset;
   final String? searchQuery;
   final String? modeFilter;
+  /// 'active', 'closed', or null for every session. Applied server-side so
+  /// paging stays correct -- filtering a page after fetching it would return
+  /// short pages and break the hasMore calculation.
+  final String? statusFilter;
   final Set<int> unreadIds;
 
   const ChatListState({
     this.conversations = const [], this.status = ChatListStatus.idle,
     this.errorMessage, this.hasMore = true, this.offset = 0,
-    this.searchQuery, this.modeFilter, this.unreadIds = const {},
+    this.searchQuery, this.modeFilter, this.statusFilter,
+    this.unreadIds = const {},
   });
 
   ChatListState copyWith({
     List<Conversation>? conversations, ChatListStatus? status, String? errorMessage,
-    bool? hasMore, int? offset, String? searchQuery, String? modeFilter, Set<int>? unreadIds,
+    bool? hasMore, int? offset, String? searchQuery, String? modeFilter,
+    String? statusFilter, Set<int>? unreadIds,
   }) => ChatListState(
     conversations: conversations ?? this.conversations, status: status ?? this.status,
     errorMessage: errorMessage, hasMore: hasMore ?? this.hasMore, offset: offset ?? this.offset,
     searchQuery: searchQuery ?? this.searchQuery, modeFilter: modeFilter ?? this.modeFilter,
+    statusFilter: statusFilter ?? this.statusFilter,
     unreadIds: unreadIds ?? this.unreadIds,
   );
 }
@@ -57,6 +66,19 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
       case WsEventType.conversationHandoff:
         refresh();
         break;
+      // A session closing or reopening changes the badge, the ordering and
+      // whether the row belongs in the current filter at all. Without these
+      // the list showed sessions as active indefinitely after the sweep had
+      // ended them.
+      //
+      // Deliberately NOT marked unread, unlike an inbound message: a session
+      // timing out is not something the customer said, and lighting up an
+      // unread badge for it would send operators to conversations where
+      // nobody is waiting.
+      case WsEventType.conversationClosed:
+      case WsEventType.conversationReopened:
+        refresh();
+        break;
       default: break;
     }
   }
@@ -64,12 +86,15 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
   Future<void> refresh() async {
     state = state.copyWith(status: ChatListStatus.refreshing, errorMessage: null);
     try {
-      final conversations = await _repo.listConversations(offset: 0, limit: AppConfig.pageSize);
+      final conversations = await _repo.listConversations(
+        offset: 0, limit: AppConfig.pageSize, status: state.statusFilter,
+      );
       _sortConversations(conversations);
       state = ChatListState(
         conversations: conversations, status: ChatListStatus.idle,
         hasMore: conversations.length >= AppConfig.pageSize, offset: conversations.length,
-        modeFilter: state.modeFilter, searchQuery: state.searchQuery, unreadIds: state.unreadIds,
+        modeFilter: state.modeFilter, searchQuery: state.searchQuery,
+        statusFilter: state.statusFilter, unreadIds: state.unreadIds,
       );
     } on Failure catch (e) { state = state.copyWith(status: ChatListStatus.error, errorMessage: e.message); }
   }
@@ -78,7 +103,9 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
     if (!state.hasMore || state.status == ChatListStatus.loadingMore) return;
     state = state.copyWith(status: ChatListStatus.loadingMore);
     try {
-      final more = await _repo.listConversations(offset: state.offset, limit: AppConfig.pageSize);
+      final more = await _repo.listConversations(
+        offset: state.offset, limit: AppConfig.pageSize, status: state.statusFilter,
+      );
       _sortConversations(more);
       state = state.copyWith(
         conversations: [...state.conversations, ...more], status: ChatListStatus.idle,
@@ -89,12 +116,30 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
 
   void setSearch(String? query) { state = state.copyWith(searchQuery: query); }
   void setModeFilter(String? mode) { state = state.copyWith(modeFilter: mode); }
+
+  /// Filters by lifecycle status. Refetches because the filter is applied
+  /// server-side; filtering the loaded page locally would silently drop rows
+  /// that paging has not reached yet.
+  void setStatusFilter(String? status) {
+    state = state.copyWith(statusFilter: status, offset: 0);
+    refresh();
+  }
+
   void markRead(int conversationId) { state = state.copyWith(unreadIds: state.unreadIds.where((id) => id != conversationId).toSet()); }
 
+  /// Unclaimed sales leads first, then most recently updated.
+  ///
+  /// The lead pin applies only to ACTIVE sessions. It used to apply to all of
+  /// them, and because the sales_lead tag is sticky -- it records what the
+  /// conversation turned out to be, not who is answering it -- a closed lead
+  /// from last week sat permanently above a live customer waiting right now,
+  /// with nothing an operator could do to shift it. This matches the
+  /// backend's _UNCLAIMED_LEAD ordering, so the two agree about what belongs
+  /// at the top.
   void _sortConversations(List<Conversation> list) {
     list.sort((a, b) {
-      final aLead = a.tag == tagSalesLead ? 1 : 0;
-      final bLead = b.tag == tagSalesLead ? 1 : 0;
+      final aLead = (a.tag == tagSalesLead && a.status == statusActive) ? 1 : 0;
+      final bLead = (b.tag == tagSalesLead && b.status == statusActive) ? 1 : 0;
       if (aLead != bLead) return bLead - aLead;
       return b.updatedAt.compareTo(a.updatedAt);
     });
