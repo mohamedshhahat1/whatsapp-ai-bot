@@ -238,9 +238,9 @@ _ASK_PATTERNS = tuple(
     for pattern in (
         r"\u0633\u0639\u0631|\u0627\u0633\u0639\u0627\u0631|\u0623\u0633\u0639\u0627\u0631",
         r"\u0628\u0643\u0627\u0645|\u0628\u0643\u0645",  # bekaam
-        r"\u062a\u0643\u0644\u0641|\u062a\u0643\u0627\u0644\u064a\u0641",
+        r"\u062a\u0643\u0644\u0641|\u062a\u0643\u0627\u0644\u062a\u064a\u0641",
         r"\u0645\u062a\u0632\u0627\u0646\u062a\u0629",  # budget
-        r"\u062a\u0642\u0633\u062a\u0637|\u0623\u0642\u0633\u0627\u0637|\u0627\u0642\u0633\u0627\u0637",
+        r"\u062a\u0642\u0633\u0637|\u0623\u0642\u0633\u0627\u0637|\u0627\u0642\u0633\u0627\u0637",
         r"\u062f\u0641\u0639\u0629|\u0645\u0642\u062f\u0645",
         r"\bhow\s+much\b",
         r"\bpric\w*\b",
@@ -319,7 +319,11 @@ _BARE_NUMBER = re.compile(rf"^\W*(?P<n>{_NUMBER})\W*$")
 
 def _numeric_value(raw: str) -> int | None:
     """Parse an Arabic or Latin numeral into an int, ignoring separators."""
-    translated = raw.translate(str.maketrans("\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669", "0123456789"))
+    translated = raw.translate(
+        str.maketrans(
+            "\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669", "0123456789"
+        )
+    )
     digits = re.sub(r"[^0-9]", "", translated)
     return int(digits) if digits else None
 
