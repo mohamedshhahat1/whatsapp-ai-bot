@@ -12,6 +12,7 @@ from app.dependencies.deps import (
     get_reply_service,
     require_admin,
 )
+from app.models.conversation import STATUS_ACTIVE, STATUS_CLOSED
 from app.schemas.admin import StatsRead
 from app.schemas.analytics import (
     AnalyticsOverview,
@@ -25,6 +26,8 @@ from app.schemas.analytics import (
 from app.schemas.conversation import (
     ConversationDetail,
     ConversationRead,
+    ConversationSummary,
+    CustomerHistory,
     HandoffRequest,
 )
 from app.schemas.knowledge import KnowledgeDocumentRead, KnowledgeSearchHit
@@ -63,11 +66,29 @@ async def list_conversations(
     request: Request,
     offset: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    status_filter: str | None = Query(
+        None,
+        alias="status",
+        pattern=f"^({STATUS_ACTIVE}|{STATUS_CLOSED})$",
+        description=(
+            "Limit to one lifecycle status. Omit for every conversation. "
+            "Note that a conversation is one SESSION, not one customer: a "
+            "returning customer has several, and they are not merged."
+        ),
+    ),
     service: AdminService = Depends(get_admin_service),
 ) -> list[ConversationRead]:
+    """Conversations for the operator list.
+
+    Ordered unclaimed-sales-leads first (active ones only), then by recency.
+    Recency deliberately outranks status within the second group: a session
+    that ended four minutes ago is more interesting to an operator scanning
+    the list than one that has been open and silent since yesterday. Filter
+    with ``status=active`` for live work only.
+    """
     return [
         ConversationRead.model_validate(c)
-        for c in await service.list_conversations(offset, limit)
+        for c in await service.list_conversations(offset, limit, status=status_filter)
     ]
 
 
@@ -78,8 +99,46 @@ async def get_conversation(
     conversation_id: int,
     service: AdminService = Depends(get_admin_service),
 ) -> ConversationDetail:
+    """One session and its full transcript.
+
+    The transcript is this session's messages only. Earlier visits by the same
+    customer are separate conversations with their own ids; see the
+    ``/history`` endpoint below to find them.
+    """
     return ConversationDetail.model_validate(
         await service.get_conversation(conversation_id)
+    )
+
+
+@router.get(
+    "/conversations/{conversation_id}/history", response_model=CustomerHistory
+)
+@limiter.limit(ADMIN_LIMIT)
+async def conversation_history(
+    request: Request,
+    conversation_id: int,
+    limit: int = Query(20, ge=1, le=100),
+    service: AdminService = Depends(get_admin_service),
+) -> CustomerHistory:
+    """The customer behind this session, and their previous ones.
+
+    Sessions are never merged -- the gaps between them are meaningful -- so
+    this returns navigation rather than a combined transcript: who the
+    customer is, how many times they have been in touch, and their other
+    sessions newest first.
+
+    Operator-facing only. None of this is fed to the model, which still sees
+    the current session alone.
+    """
+    user, total, previous = await service.conversation_history(
+        conversation_id, limit=limit
+    )
+    return CustomerHistory(
+        user_id=user.id,
+        wa_id=user.wa_id,
+        name=user.name,
+        total_conversations=total,
+        previous=[ConversationSummary.model_validate(c) for c in previous],
     )
 
 
@@ -107,6 +166,11 @@ async def take_over_conversation(
 
     The body is optional: an operator name is a label for other operators, not
     a credential, and omitting it still stops the bot.
+
+    A session that has already closed is REOPENED first, so the operator is
+    never handed a conversation the customer cannot reply into. Returns 409
+    ``conversation_superseded`` when that is impossible because the customer
+    has since started a newer session -- open that one instead.
     """
     conversation = await service.take_over(
         conversation_id, operator=payload.operator if payload else None
@@ -123,7 +187,12 @@ async def resume_ai(
     conversation_id: int,
     service: AdminService = Depends(get_admin_service),
 ) -> ConversationRead:
-    """Hand the conversation back to the bot."""
+    """Hand the conversation back to the bot.
+
+    Reopens a closed session first, on the same terms as ``/takeover``.
+    Resuming also resets the idle timer, so the session becomes eligible for
+    automatic closing again from this moment rather than immediately.
+    """
     conversation = await service.resume_ai(conversation_id)
     return ConversationRead.model_validate(conversation)
 
@@ -143,6 +212,13 @@ async def send_manual_reply(
     Sending a reply does NOT stop the bot on its own: use /takeover for that.
     Coupling them would mean a single clarifying message silences the assistant
     permanently without the operator choosing to.
+
+    A closed session is reopened before the message is sent, so the reply and
+    the customer's answer stay in the same conversation. Two 409s are possible
+    and mean different things: ``conversation_superseded`` (the customer has
+    started a newer session -- reply there) and ``outside_service_window``
+    (Meta will not accept a free-form message this long after the customer's
+    last one -- use a template).
     """
     message = await service.send_manual_reply(conversation_id, payload.text)
     return ManualReplyResponse(
@@ -159,6 +235,11 @@ async def stats(
     request: Request,
     service: AdminService = Depends(get_admin_service),
 ) -> StatsRead:
+    """Headline counters.
+
+    ``total_conversations`` counts SESSIONS, not customers -- one returning
+    customer contributes several. ``total_users`` is the customer count.
+    """
     return await service.stats()
 
 
@@ -170,7 +251,12 @@ async def search_messages(
     limit: int = Query(50, ge=1, le=200),
     service: AnalyticsService = Depends(get_analytics_service),
 ) -> list[MessageHitRead]:
-    """Full conversation search across inbound and outbound message bodies."""
+    """Full conversation search across inbound and outbound message bodies.
+
+    Hits carry the id of the session they belong to, so the same customer can
+    appear several times with different conversation ids. That is correct:
+    they said it in different visits.
+    """
     return await service.search_messages(q, limit=limit)
 
 
@@ -227,7 +313,12 @@ async def analytics_customers(
     limit: int = Query(50, ge=1, le=200),
     service: AnalyticsService = Depends(get_analytics_service),
 ) -> list[CustomerActivityRead]:
-    """Conversation and message counts per customer."""
+    """Conversation and message counts per customer.
+
+    The per-customer aggregate. Since sessions close, ``conversations`` here
+    is a visit count rather than always 1, which makes this the right place
+    to see repeat customers.
+    """
     return await service.customers(offset=offset, limit=limit)
 
 
