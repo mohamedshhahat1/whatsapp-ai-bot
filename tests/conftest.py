@@ -21,7 +21,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db.session import SessionLocal, engine
@@ -67,22 +67,16 @@ def admin_headers() -> dict[str, str]:
 
 
 async def database_reachable() -> bool:
-    """Check connectivity using a throwaway engine.
-
-    A separate engine is used so the module-level engine's connection pool is
-    never bound to the throwaway event loop that asyncio.run() creates in
-    synchronous fixtures -- that caused "Event loop is closed" errors when
-    the next test reused the module-level engine on a different loop.
+    """Check connectivity. NullPool (set on the engine) means no connections
+    are pooled, so the check never leaves a stale connection bound to a
+    closed event loop.
     """
-    test_engine = create_async_engine(engine.url)
     try:
-        async with test_engine.connect() as connection:
+        async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
         return True
     except Exception:
         return False
-    finally:
-        await test_engine.dispose()
 
 
 def run_db[T](operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
@@ -90,16 +84,14 @@ def run_db[T](operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
 
     A synchronous test that also uses TestClient cannot share a pool with the
     application: TestClient runs the app in its own event loop on another
-    thread, and asyncpg connections belong to the loop that opened them. Each
-    call therefore gets a fresh pool and disposes it on the way out.
+    thread, and asyncpg connections belong to the loop that opened them.
+    NullPool means each call gets a fresh connection with no pool state
+    shared across event loops.
     """
 
     async def runner() -> T:
-        try:
-            async with SessionLocal() as session:
-                return await operation(session)
-        finally:
-            await engine.dispose()
+        async with SessionLocal() as session:
+            return await operation(session)
 
     return asyncio.run(runner())
 
@@ -117,19 +109,14 @@ async def db() -> AsyncIterator[AsyncSession]:
 
     CI provisions Postgres and applies the migrations before pytest runs, so
     these tests exercise the actual schema, indexes and ON CONFLICT clauses.
-    The engine is disposed afterwards because pytest-asyncio gives each test
-    its own event loop, and an asyncpg pool cannot be reused across loops.
 
     Do not combine this fixture with TestClient in one test; use ``run_db``
     from a synchronous test instead.
     """
     if not await database_reachable():
         pytest.skip("No database reachable at DATABASE_URL")
-    try:
-        async with SessionLocal() as session:
-            yield session
-    finally:
-        await engine.dispose()
+    async with SessionLocal() as session:
+        yield session
 
 
 @dataclass
