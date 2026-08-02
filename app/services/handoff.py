@@ -57,7 +57,7 @@ _ASK = (
 
 # modeer (manager) / mowazzaf (employee) / mas'ool (person in charge) /
 # bashar (human) / insaan (human)
-_MODEER = "\u0645\u062f\u062a\u0631"
+_MODEER = "\u0645\u062f\u064a\u0631"
 _MOWAZZAF = "\u0645\u0648\u0638\u0641"
 _MASOOL = "\u0645\u0633\u0624\u0648\u0644"
 _BASHAR = "\u0628\u0634\u0631"
@@ -77,7 +77,7 @@ _CUSTOMER_SERVICE = (
 )
 
 # kallemni - call me
-_CALL_ME = "\u0643\u0644\u0645\u0646\u062a"
+_CALL_ME = "\u0643\u0644\u0645\u0646\u064a"
 
 # The word the bot asks a customer to send when it offers a transfer. Exported
 # so the prompt and the detector can never drift apart: an offer naming a word
@@ -97,6 +97,8 @@ _PATTERNS = tuple(
         r"\bcustomer\s+(service|support|care)\b",
         r"\b(call|phone|ring)\s+me\b",
         r"\bsomeone\s+(call|contact|phone|reach)\b",
+        # "contact the sales manager", "contact a representative"
+        r"\bcontact\s+(a|an|the)?\s*(manager|supervisor|representative|agent|operator|sales)\b",
         # "I want the manager", "I need an agent". A verb is required, so
         # "a project manager" and "the sales rep visited" do not match.
         r"\b(want|need|get|give)\s+(me\s+)?(a|an|the)?\s*"
@@ -144,7 +146,7 @@ HANDOFF_ACK = (
     "\u0633\u064a\u062a\u0645 \u0627\u0644\u0631\u062f "
     "\u0639\u0644\u064a\u0643 \u0645\u0646 \u0627\u062d\u062f "
     "\u0645\u0648\u0638\u0641\u064a\u0646\u0627 "
-    "\u0642\u0631\u062a\u0628\u0627.\n"
+    "\u0642\u0631\u064a\u0628\u0627.\n"
     "Thanks - I am passing you to a colleague. "
     "Someone will reply here shortly."
 )
@@ -155,7 +157,7 @@ HANDOFF_ACK = (
 # speak to a person about buying something.
 
 # el-mabee'aat - sales
-_SALES = "\u0627\u0644\u0645\u0628\u062a\u0639\u0627\u062a|\u0645\u0628\u062a\u0639\u0627\u062a"
+_SALES = "\u0627\u0644\u0645\u0628\u064a\u0639\u0627\u062a|\u0645\u0628\u064a\u0639\u0627\u062a"
 
 _SALES_LEAD_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
@@ -176,9 +178,9 @@ _SALES_LEAD_PATTERNS = tuple(
         "\u0627\u062a\u0635\u0644\u0648\\s*\u0628\u064a\u0627",
         # tawasal / tawasaloo ma'aya - get in touch with me
         "\u062a\u0648\u0627\u0635\u0644.{0,6}\u0645\u0639\u0627\u064a\u0627|"
-        "\u062a\u0648\u0627\u0635\u0644.{0,6}\u0645\u0639\u064a",
+        "\u062a\u0648\u0627\u0635\u0644.{0,6}\u0645\u0639\u0627\u064a\u0627",
         # rakmi / rakam telifoni - my number
-        "\u0631\u0642\u0645\u062a|\u0631\u0642\u0645 \u062a\u0644\u064a\u0641\u0648\u0646\u064a",
+        "\u0631\u0642\u0645\u064a|\u0631\u0642\u0645 \u062a\u0644\u064a\u0641\u0648\u0646\u064a",
         # wanting to talk to a person, which in this business is a buyer
         r"\b(speak|talk)\w*\s+(to|with)\s+(a|an|the)?\s*"
         r"(someone|somebody|person|human|representative|rep)\b",
