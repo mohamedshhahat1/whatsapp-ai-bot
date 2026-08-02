@@ -66,24 +66,18 @@ def admin_headers() -> dict[str, str]:
     return {"X-API-Key": get_settings().admin_api_key}
 
 
-def database_reachable() -> bool:
-    """Check connectivity in a throwaway event loop.
-
-    The engine is disposed afterwards so no connection pool stays bound to a
-    loop that is about to be closed.
+async def database_reachable() -> bool:
+    """Check connectivity, disposing the engine afterwards so no connection
+    pool stays bound to a loop that is about to be closed.
     """
-
-    async def check() -> bool:
-        try:
-            async with engine.connect() as connection:
-                await connection.execute(text("SELECT 1"))
-            return True
-        except Exception:
-            return False
-        finally:
-            await engine.dispose()
-
-    return asyncio.run(check())
+    try:
+        async with engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+        return True
+    except Exception:
+        return False
+    finally:
+        await engine.dispose()
 
 
 def run_db[T](operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
@@ -108,7 +102,7 @@ def run_db[T](operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
 @pytest.fixture
 def requires_database() -> None:
     """Skip a synchronous test when no database is configured."""
-    if not database_reachable():
+    if not asyncio.run(database_reachable()):
         pytest.skip("No database reachable at DATABASE_URL")
 
 
@@ -124,7 +118,7 @@ async def db() -> AsyncIterator[AsyncSession]:
     Do not combine this fixture with TestClient in one test; use ``run_db``
     from a synchronous test instead.
     """
-    if not database_reachable():
+    if not await database_reachable():
         pytest.skip("No database reachable at DATABASE_URL")
     try:
         async with SessionLocal() as session:
