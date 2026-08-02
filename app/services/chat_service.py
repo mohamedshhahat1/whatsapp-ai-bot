@@ -38,6 +38,10 @@ conversation that is still being worked on. The timer is touched at stages 1,
 4 and 6 rather than only on inbound: a completion can take several seconds,
 and a timer that counted only from the customer's last message could expire
 while their answer was still being written.
+
+The stage 4 and 6 touches pass ``outgoing=True``, which is what
+RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE switches off. Turning it off restores
+exactly the race described above, and is not recommended.
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -144,7 +148,7 @@ class ChatService:
             await self._conversations.save_outbound(
                 conversation_id, text, wa_message_id=out_id
             )
-            await self._sessions.touch(conversation_id)
+            await self._sessions.touch(conversation_id, outgoing=True)
             await self._session.commit()
             return True
 
@@ -164,7 +168,7 @@ class ChatService:
         # from the customer's message, and a slow completion plus a retry could
         # let the sweeper close the conversation in the gap between deciding to
         # reply and the reply landing -- so the goodbye would arrive first.
-        await self._sessions.touch(conversation_id)
+        await self._sessions.touch(conversation_id, outgoing=True)
         await self._session.commit()
 
         try:
@@ -186,7 +190,7 @@ class ChatService:
         await self._conversations.messages.confirm_reply(
             reserved_id, out_id, status=STATUS_SENT
         )
-        await self._sessions.touch(conversation_id)
+        await self._sessions.touch(conversation_id, outgoing=True)
         await self._session.commit()
         return True
 
@@ -428,6 +432,10 @@ class ChatService:
         new one here -- new history, no welcome flag, no closing flag. That is
         the whole reopen path; there is no state to clear because closing the
         old session released it.
+
+        The exception is a customer who comes straight back: inside
+        CONVERSATION_REOPEN_WINDOW_MINUTES, get_context revives the previous
+        session instead, so they keep their history and are not greeted twice.
         """
         _, conversation = await self._conversations.get_context(wa_id, name)
         claimed = await self._conversations.claim_inbound(
