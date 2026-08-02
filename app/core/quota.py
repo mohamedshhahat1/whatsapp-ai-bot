@@ -28,6 +28,7 @@ customers when a cache is unavailable is worse than the abuse it prevents.
 """
 
 import hashlib
+import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -48,7 +49,7 @@ logger = get_logger(__name__)
 # Key namespace. Everything is prefixed so a shared Redis stays legible and
 # `redis-cli --scan --pattern 'quota:*'` shows the whole subsystem.
 _MESSAGES = "quota:msgs:"  # sorted set, one member per message, 24h of history
-_DUPLICATE = "quota:dup:"  # counter per (customer, message body)
+_DUPLICATE = "quota:dup:"  # sorted set per (customer, message body), sliding window
 _BLOCKED = "quota:blocked:"  # presence = temporarily blocked
 _SPEND = "quota:spend:"  # daily USD, float
 _TOKENS = "quota:tokens:"  # daily tokens, int
@@ -103,8 +104,8 @@ RATE_LIMIT_MESSAGE = (
 )
 
 ABUSE_MESSAGE = (
-    "\u0644\u0627\u062d\u0638\u0646\u0627 \u0639\u062f\u062f\u064b\u0627 \u0643\u0628\u064a\u0631\u064b\u0627 \u0645\u0646 \u0627\u0644\u0631\u0633\u0627\u0626\u0644 \u0627\u0644\u0645\u062a\u0643\u0631\u0631\u0629. "
-    "\u0633\u0646\u062a\u0648\u0642\u0641 \u0645\u0624\u0642\u062a\u064b\u0627 \u0639\u0646 \u0627\u0644\u0631\u062f \u0627\u0644\u0622\u0644\u064a \u0644\u0641\u062a\u0631\u0629 \u0642\u0635\u064a\u0631\u0629. "
+    "\u0644\u0627\u062d\u0638\u0646\u0627 \u0639\u062f\u062f\u064b\u0627 \u0643\u0628\u062a\u0631\u064b\u0627 \u0645\u0646 \u0627\u0644\u0631\u0633\u0627\u0626\u0644 \u0627\u0644\u0645\u062a\u0643\u0631\u0631\u0629. "
+    "\u0633\u0646\u062a\u0648\u0642\u0641 \u0645\u0624\u0642\u062a\u064b\u0627 \u0639\u0646 \u0627\u0644\u0631\u062f \u0627\u0644\u0622\u0644\u064a \u0644\u0641\u062a\u0631\u0629 \u0642\u0635\u062a\u0631\u0629. "
     "\u0625\u0630\u0627 \u0643\u0646\u062a \u062a\u062d\u062a\u0627\u062c \u0645\u0633\u0627\u0639\u062f\u0629 \u0639\u0627\u062c\u0644\u0629 \u0641\u0627\u0643\u062a\u0628 \u0643\u0644\u0645\u0629 \u0645\u0648\u0638\u0641 "
     "\u0648\u0633\u064a\u062a\u0648\u0627\u0635\u0644 \u0645\u0639\u0643 \u0623\u062d\u062f \u0632\u0645\u0644\u0627\u0626\u0646\u0627."
 )
@@ -118,8 +119,8 @@ def capacity_message(sales_phone: str = "") -> str:
     it is, and it is the one path that still works when the AI is disabled.
     """
     base = (
-        "\u0634\u0643\u0631\u064b\u0627 \u0644\u062a\u0648\u0627\u0635\u0644\u0643 \u0645\u0639\u0646\u0627. \u0627\u0644\u062e\u062f\u0645\u0629 \u0627\u0644\u0622\u0644\u064a\u0629 \u063a\u064a\u0631 \u0645\u062a\u0627\u062d\u0629 "
-        "\u062d\u0627\u0644\u064a\u064b\u0627\u060c \u0648\u0633\u064a\u062a\u0648\u0627\u0635\u0644 \u0645\u0639\u0643 \u0623\u062d\u062f \u0632\u0645\u0644\u0627\u0626\u0646\u0627 \u0641\u064a \u0623\u0642\u0631\u0628 \u0648\u0642\u062a."
+        "\u0634\u0643\u0631\u064b\u0627 \u0644\u062a\u0648\u0627\u0635\u0644\u0643 \u0645\u0639\u0646\u0627. \u0627\u0644\u062e\u062f\u0645\u0629 \u0627\u0644\u0622\u0644\u062a\u064a\u0629 \u063a\u062a\u0631 \u0645\u062a\u0627\u062d\u0629 "
+        "\u062d\u0627\u0644\u062a\u064b\u0627\u060c \u0648\u0633\u064a\u062a\u0648\u0627\u0635\u0644 \u0645\u0639\u0643 \u0623\u062d\u062f \u0632\u0645\u0644\u0627\u0626\u0646\u0627 \u0641\u064a \u0623\u0642\u0631\u0628 \u0648\u0642\u062a."
     )
     if sales_phone:
         return f"{base}\n\n\U0001f4de \u0644\u0644\u062a\u0648\u0627\u0635\u0644 \u0627\u0644\u0645\u0628\u0627\u0634\u0631: {sales_phone}"
@@ -147,10 +148,12 @@ def _fingerprint(text: str | None) -> str:
 
     Hashed rather than stored: the key would otherwise contain the customer's
     own words, and Redis is not where customer message content belongs.
-    Normalised for whitespace and case so "PRICE?" and "price ?" count as the
-    same message, which is what a script sending them looks like.
+    Normalised for whitespace, case and spacing before punctuation so
+    "PRICE?" and "price ?" count as the same message, which is what a script
+    sending them looks like.
     """
     normalised = " ".join((text or "").lower().split())
+    normalised = re.sub(r"\s+([?!,.;:])", r"\1", normalised)
     return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:16]
 
 
@@ -325,10 +328,23 @@ async def _check_customer(
         pipe.zcount(messages_key, now - 3600, now)
         pipe.zcount(messages_key, day_ago, now)
         pipe.expire(messages_key, 86400)
-        _, _, burst, per_minute, per_hour, per_day, _ = await pipe.execute()
+        _, added, burst, per_minute, per_hour, per_day, _ = await pipe.execute()
+
+    # Redeliveries: the same message ID was already counted.  ``zadd`` with
+    # ``nx=True`` returns 0 when the member already exists, so we can detect a
+    # redelivery without an extra round trip.
+    if added == 0:
+        return ALLOWED
 
     # --- Flood: faster than a person can type. Earns a block, not a refusal.
     if burst > settings.flood_burst_messages:
+        # Do not notify if the customer was already being rate-limited --
+        # they were told once, and repeating the refusal is itself a flood.
+        already_refused = (
+            per_minute > settings.customer_limit_per_minute
+            or per_hour > settings.customer_limit_per_hour
+            or per_day > settings.customer_limit_per_day
+        )
         await client.setex(blocked_key, settings.abuse_block_seconds, FLOODING)
         CUSTOMER_ABUSE_BLOCKS_TOTAL.labels(reason=FLOODING).inc()
         logger.warning(
@@ -341,26 +357,36 @@ async def _check_customer(
         return QuotaDecision(
             allowed=False,
             reason=FLOODING,
-            notify=True,
+            notify=not already_refused,
             retry_after_seconds=settings.abuse_block_seconds,
         )
 
     # --- Spam: the same text over and over.
+    #
+    # Uses a sliding-window sorted set (like the message history) instead of a
+    # simple counter, so messages spaced well apart are not flagged as spam
+    # even when the overall duplicate window has not expired.  The window is
+    # the duplicate_message_window_seconds setting.
+    #
+    # No block is set for spam: the behaviour is annoying but not a flood, and
+    # setting a block here would make the next genuinely different message
+    # return BLOCKED instead of being answered.
     if text:
         dup_key = f"{_DUPLICATE}{wa_id}:{_fingerprint(text)}"
+        dup_window = settings.duplicate_message_window_seconds
         async with client.pipeline(transaction=True) as pipe:
-            pipe.incr(dup_key)
-            pipe.expire(dup_key, settings.duplicate_message_window_seconds)
-            repeats, _ = await pipe.execute()
+            pipe.zremrangebyscore(dup_key, 0, now - dup_window)
+            pipe.zadd(dup_key, {wa_message_id or f"t{now}": now}, nx=True)
+            pipe.zcount(dup_key, now - dup_window, now)
+            pipe.expire(dup_key, dup_window)
+            _, _, repeats, _ = await pipe.execute()
 
         if repeats > settings.duplicate_message_limit:
-            await client.setex(blocked_key, settings.abuse_block_seconds, SPAMMING)
             CUSTOMER_ABUSE_BLOCKS_TOTAL.labels(reason=SPAMMING).inc()
             logger.warning(
                 "customer_spam_blocked",
                 wa_id_hash=_fingerprint(wa_id),
                 repeats=repeats,
-                block_seconds=settings.abuse_block_seconds,
             )
             return QuotaDecision(
                 allowed=False,
@@ -546,11 +572,15 @@ async def unblock(wa_id: str, settings: Settings) -> bool:
     photos of a damaged wall in ten seconds looks exactly like a flood, and an
     operator must be able to undo that immediately rather than explaining to
     them that they have to wait fifteen minutes.
+
+    Also clears the message history so the customer is not immediately
+    re-blocked by the burst counter that still holds the old entries.
     """
     client = await _client(settings)
     try:
         removed = await client.delete(f"{_BLOCKED}{wa_id}")
         if removed:
+            await client.delete(f"{_MESSAGES}{wa_id}")
             logger.info("customer_unblocked", wa_id_hash=_fingerprint(wa_id))
         return bool(removed)
     finally:

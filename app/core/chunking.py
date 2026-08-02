@@ -87,8 +87,12 @@ def chunk_text(
 
     encoding = _encoding(encoding_name)
     separator = encoding.encode("\n\n")
+    sep_len = len(separator)
 
     # Paragraphs are the atomic units; oversized ones are pre-split.
+    # The window size accounts for the overlap and separator that will be
+    # prepended when the window is packed into a chunk, so the final chunk
+    # never exceeds max_tokens.
     units: list[list[int]] = []
     for paragraph in _PARAGRAPH_SPLIT.split(cleaned):
         stripped = paragraph.strip()
@@ -98,7 +102,9 @@ def chunk_text(
         if len(tokens) <= max_tokens:
             units.append(tokens)
         else:
-            units.extend(_windows(tokens, max_tokens, max_tokens - overlap))
+            window_size = max(1, max_tokens - overlap - sep_len)
+            step = max(1, window_size - overlap)
+            units.extend(_windows(tokens, window_size, step))
 
     chunks: list[list[int]] = []
     current: list[int] = []

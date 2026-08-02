@@ -12,6 +12,9 @@ os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
 os.environ.setdefault("WHATSAPP_APP_SECRET", "")
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("USE_TASK_QUEUE", "false")
+# CI sets REDIS_PASSWORD for the integration pipeline, but the unit tests
+# that construct Settings(environment="development") must not inherit it.
+os.environ.pop("REDIS_PASSWORD", None)
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
