@@ -1,12 +1,13 @@
 """Conversation data access."""
 
 from datetime import UTC, datetime, timedelta
-from typing import NamedTuple
+from typing import Any, NamedTuple, Sequence
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.core.exceptions import ConflictError
 from app.models.conversation import (
@@ -20,26 +21,57 @@ from app.models.conversation import (
 from app.models.user import User
 from app.repositories.base import BaseRepository
 
-# A sales lead nobody has claimed yet sorts above everything else. All three
+# A sales lead nobody has claimed yet sorts above everything else. All four
 # conditions matter:
 #
+#   status = active    -- a closed session is nobody's outstanding work. This
+#                         condition was added with the session lifecycle and
+#                         is load-bearing: before sessions closed themselves a
+#                         lead stayed active until an operator claimed it, but
+#                         now it closes after five idle minutes and without
+#                         this it would stay pinned to the top of every
+#                         operator's screen forever -- precisely the failure
+#                         the rest of this comment was written to prevent.
 #   tag                -- only leads jump the queue
 #   mode = human       -- a conversation the AI has resumed is handled
 #   no operator        -- once someone presses Take Over it is theirs, and
 #                         leaving it pinned would keep drawing other operators
 #                         to a row that is already being answered
 #
-# Without the last two the row would stay at the top of every operator's
-# screen forever, which trains people to ignore the top of the list.
-_UNCLAIMED_LEAD_FIRST = case(
-    (
-        (Conversation.tag == TAG_SALES_LEAD)
-        & (Conversation.mode == MODE_HUMAN)
-        & (Conversation.assigned_operator.is_(None)),
-        0,
-    ),
-    else_=1,
+# Without these the row would stay at the top of every operator's screen
+# forever, which trains people to ignore the top of the list.
+_UNCLAIMED_LEAD = (
+    (Conversation.status == STATUS_ACTIVE)
+    & (Conversation.tag == TAG_SALES_LEAD)
+    & (Conversation.mode == MODE_HUMAN)
+    & (Conversation.assigned_operator.is_(None))
 )
+
+_UNCLAIMED_LEAD_FIRST = case((_UNCLAIMED_LEAD, 0), else_=1)
+
+# What it means to revive a closed session, in one place.
+#
+# Two callers need this -- a customer coming back inside the reopen window,
+# and an operator acting on a session the sweeper already closed -- and they
+# must agree exactly, because the difference between them would be silent:
+#
+#   status         -- back to active, which retakes the customer's slot in
+#                     uq_active_conversation_per_user
+#   closed_at      -- cleared; the session has not ended
+#   closing_sent_at-- cleared, which RE-ARMS the goodbye. Without this the
+#                     revived session could never be closed again, because
+#                     claim_idle_sessions only ever considers rows where this
+#                     column is null.
+#
+# welcome_sent_at is conspicuously absent, and that is the point: it survives,
+# so should_welcome() already returns False for a revived session and no
+# caller has to remember to suppress a second greeting. History survives for
+# the same reason -- the messages hang off this row and it is the same row.
+_REVIVE: dict[str, Any] = {
+    "status": STATUS_ACTIVE,
+    "closed_at": None,
+    "closing_sent_at": None,
+}
 
 
 class IdleSession(NamedTuple):
@@ -81,6 +113,37 @@ class ConversationRepository(BaseRepository):
             .limit(1)
         )
 
+    async def _revive(self, criteria: Sequence[ColumnElement[bool]]) -> int | None:
+        """Apply :data:`_REVIVE` to the one row matching ``criteria``.
+
+        Shared by both reopen paths so that reviving a session means exactly
+        the same thing however it is triggered.
+
+        The conditional UPDATE and the nested transaction are both about the
+        partial unique index. Two concurrent callers could each find no active
+        conversation for a customer and both try to revive a row, and the
+        second would violate ``uq_active_conversation_per_user``. Rolling back
+        only the savepoint lets the loser fall through and re-read the
+        winner's row rather than poisoning the whole surrounding transaction --
+        which matters because one of those callers is holding an inbound
+        message that still has to be committed.
+
+        Returns the revived id, or ``None`` if nothing matched or somebody
+        else won the race.
+        """
+        try:
+            async with self.session.begin_nested():
+                return await self.session.scalar(
+                    update(Conversation)
+                    .where(*criteria, Conversation.status == STATUS_CLOSED)
+                    .values(**_REVIVE, last_activity_at=datetime.now(UTC))
+                    .returning(Conversation.id)
+                    .execution_options(synchronize_session=False)
+                )
+        except IntegrityError:
+            # Someone else opened a session for this customer first.
+            return None
+
     async def reopen_recent(
         self, user_id: int, not_before: datetime
     ) -> Conversation | None:
@@ -92,22 +155,8 @@ class ConversationRepository(BaseRepository):
         what "it" refers to, so within the reopen window the old session is
         revived instead.
 
-        Reviving rather than copying is what keeps this cheap and correct:
-        ``welcome_sent_at`` survives, so ``should_welcome`` already returns
-        False and nothing has to remember to suppress a second greeting.
-        ``closing_sent_at`` is cleared, which re-arms the goodbye for the
-        resumed session -- otherwise the conversation could never be closed
-        again, because a claimed session is permanently ineligible.
-
         Returns ``None`` when there is nothing recent enough, and the caller
         opens a new session as usual.
-
-        The conditional UPDATE and the nested transaction are both about the
-        partial unique index: two concurrent messages could each find no
-        active conversation and both try to revive the same row, and the
-        second would violate ``uq_active_conversation_per_user``. Rolling back
-        only the savepoint lets the loser fall through and re-read the
-        winner's row rather than poisoning the whole transaction.
         """
         candidate = (
             select(Conversation.id)
@@ -121,30 +170,41 @@ class ConversationRepository(BaseRepository):
             .limit(1)
             .scalar_subquery()
         )
-        try:
-            async with self.session.begin_nested():
-                reopened_id = await self.session.scalar(
-                    update(Conversation)
-                    .where(
-                        Conversation.id == candidate,
-                        Conversation.status == STATUS_CLOSED,
-                    )
-                    .values(
-                        status=STATUS_ACTIVE,
-                        closed_at=None,
-                        closing_sent_at=None,
-                        last_activity_at=datetime.now(UTC),
-                    )
-                    .returning(Conversation.id)
-                    .execution_options(synchronize_session=False)
-                )
-        except IntegrityError:
-            # Someone else opened a session for this customer first.
-            return None
-
+        reopened_id = await self._revive([Conversation.id == candidate])
         if reopened_id is None:
             return None
         return await self.session.get(Conversation, reopened_id)
+
+    async def reopen(self, conversation_id: int) -> Conversation | None:
+        """Revive one specific closed session, regardless of its age.
+
+        For operator actions. An operator replying to, or taking over, a
+        session the sweeper has already closed used to write into a dead row:
+        the message went out, but the customer's answer either revived a
+        different session or created one, so the operator's question and the
+        reply to it ended up in two separate conversations. Reviving first
+        keeps the exchange in one place.
+
+        No window is applied on purpose. The reopen window exists to decide
+        whether a returning CUSTOMER is continuing their visit or starting a
+        new one, which is a guess about intent. An operator deliberately
+        opening a specific conversation and replying to it has stated their
+        intent, and second-guessing it after an arbitrary number of minutes
+        would just resurrect the orphaned-reply bug for older sessions.
+
+        Returns ``None`` when the customer has since started another session,
+        because the partial unique index permits only one active conversation
+        per customer. That is not a failure to handle quietly: the caller must
+        refuse the action, since writing into this row would put the operator's
+        message somewhere the customer is no longer reading.
+        """
+        reopened_id = await self._revive([Conversation.id == conversation_id])
+        if reopened_id is None:
+            return None
+        conversation = await self.session.get(Conversation, reopened_id)
+        if conversation is not None:
+            await self.session.refresh(conversation)
+        return conversation
 
     async def get_or_create_active(
         self, user_id: int, reopen_within: timedelta | None = None
@@ -292,8 +352,9 @@ class ConversationRepository(BaseRepository):
     async def count_for_user(self, user_id: int) -> int:
         """How many conversations this customer has ever had.
 
-        Used only when ENABLE_REPEAT_WELCOME_AFTER_NEW_SESSION is off, to tell
-        a genuinely new customer from a returning one.
+        Used when ENABLE_REPEAT_WELCOME_AFTER_NEW_SESSION is off, to tell a
+        genuinely new customer from a returning one, and by the operator's
+        customer history panel.
         """
         return int(
             await self.session.scalar(
@@ -303,6 +364,28 @@ class ConversationRepository(BaseRepository):
             )
             or 0
         )
+
+    async def for_user(
+        self, user_id: int, limit: int = 20, exclude_id: int | None = None
+    ) -> list[Conversation]:
+        """This customer's other sessions, most recent first.
+
+        For the operator's history panel. Sessions stay separate rows -- they
+        are separate visits and merging them would misrepresent what happened
+        -- but an operator answering someone needs to know they have been here
+        four times before, so the panel links across them.
+
+        Explicitly NOT used to build model context: the AI still sees only the
+        current session, because silently widening what it remembers would
+        change its answers in ways nobody asked for.
+        """
+        stmt = select(Conversation).where(Conversation.user_id == user_id)
+        if exclude_id is not None:
+            stmt = stmt.where(Conversation.id != exclude_id)
+        result = await self.session.scalars(
+            stmt.order_by(Conversation.created_at.desc()).limit(limit)
+        )
+        return list(result)
 
     async def claim_idle_sessions(
         self, idle_before: datetime, limit: int = 200
@@ -387,18 +470,40 @@ class ConversationRepository(BaseRepository):
             .execution_options(synchronize_session=False)
         )
 
-    async def list(self, offset: int = 0, limit: int = 50) -> list[Conversation]:
+    async def list(
+        self, offset: int = 0, limit: int = 50, status: str | None = None
+    ) -> list[Conversation]:
         """Conversations for the operator list.
 
-        Unclaimed sales leads first, then everything else by recency. Sorting
-        here rather than in the dashboard means every client -- the web UI, a
-        future mobile view, anyone reading the admin API -- gets the same
+        Ordering, in full: unclaimed sales leads first, then everything else
+        by recency, newest first.
+
+        Recency deliberately dominates within the second group rather than
+        status. Pushing every closed session below every active one sounds
+        tidier and is worse in practice -- an operator scanning the list is
+        looking for what happened recently, and a conversation that ended four
+        minutes ago is far more interesting to them than one that has been
+        sitting open and silent since yesterday. Operators who want only live
+        work filter for it instead, which is what ``status`` is for.
+
+        Note that only ACTIVE unclaimed leads are pinned; see
+        ``_UNCLAIMED_LEAD``. A closed lead is not outstanding work.
+
+        Sorting here rather than in the dashboard means every client -- the web
+        UI, the mobile app, anyone reading the admin API -- gets the same
         order, and that pagination stays correct: ordering a page after it has
         been fetched only sorts the fifty rows that happened to be on it.
+
+        ``status`` filters to one lifecycle status. It exists because sessions
+        now end: with one row per visit rather than one per customer, an
+        operator's live work is a shrinking minority of the table and would
+        otherwise be buried under closed history within a day.
         """
+        stmt = select(Conversation)
+        if status is not None:
+            stmt = stmt.where(Conversation.status == status)
         result = await self.session.scalars(
-            select(Conversation)
-            .order_by(_UNCLAIMED_LEAD_FIRST, Conversation.updated_at.desc())
+            stmt.order_by(_UNCLAIMED_LEAD_FIRST, Conversation.updated_at.desc())
             .offset(offset)
             .limit(limit)
         )
@@ -407,18 +512,29 @@ class ConversationRepository(BaseRepository):
     async def delete(self, conversation: Conversation) -> None:
         await self.session.delete(conversation)
 
-    async def count(self) -> int:
-        return int(await self.session.scalar(select(func.count(Conversation.id))) or 0)
+    async def count(self, status: str | None = None) -> int:
+        """How many conversations exist, optionally within one status.
+
+        The unfiltered count is a count of SESSIONS, not of customers, and has
+        been since sessions started closing themselves. Callers that want
+        customers should count users.
+        """
+        stmt = select(func.count(Conversation.id))
+        if status is not None:
+            stmt = stmt.where(Conversation.status == status)
+        return int(await self.session.scalar(stmt) or 0)
 
     async def count_unclaimed_leads(self) -> int:
-        """Open sales leads with nobody on them -- the dashboard badge."""
+        """Open sales leads with nobody on them -- the dashboard badge.
+
+        Scoped to active sessions by ``_UNCLAIMED_LEAD``, so a lead that went
+        idle and closed stops inflating the badge. An operator cannot pick up
+        a closed session's lead, and a badge counting work nobody can do is a
+        badge people learn to ignore.
+        """
         return int(
             await self.session.scalar(
-                select(func.count(Conversation.id)).where(
-                    Conversation.tag == TAG_SALES_LEAD,
-                    Conversation.mode == MODE_HUMAN,
-                    Conversation.assigned_operator.is_(None),
-                )
+                select(func.count(Conversation.id)).where(_UNCLAIMED_LEAD)
             )
             or 0
         )
