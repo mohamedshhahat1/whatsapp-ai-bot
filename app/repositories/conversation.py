@@ -1,7 +1,8 @@
 """Conversation data access."""
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, NamedTuple, Sequence
+from typing import Any, NamedTuple
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
