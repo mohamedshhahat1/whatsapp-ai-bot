@@ -8,37 +8,72 @@ import '../config/app_config.dart';
 import '../storage/secure_storage.dart';
 
 /// WebSocket event types from the backend.
+///
+/// Anything not listed here parses as [unknown] and is dropped by listeners,
+/// so a backend event with no member below is invisible to this app no matter
+/// how faithfully it is published. That is how the session lifecycle events
+/// went unnoticed on both clients.
 enum WsEventType {
   ready,
   heartbeat,
   conversationActivity,
   conversationHandoff,
+
+  /// The idle sweep ended a session. Carries status, closed_at and user_id.
+  conversationClosed,
+
+  /// A customer came back, or an operator revived a closed session.
+  conversationReopened,
+
   unknown,
 }
 
-extension on WsEventType {
-  static WsEventType fromString(String s) => switch (s) {
-    'ready' => WsEventType.ready,
-    'heartbeat' => WsEventType.heartbeat,
-    'conversation.activity' => WsEventType.conversationActivity,
-    'conversation.handoff' => WsEventType.conversationHandoff,
-    _ => WsEventType.unknown,
-  };
-}
+/// Maps the backend's wire strings onto [WsEventType].
+///
+/// A top-level function rather than a static on an extension. It was
+/// previously declared `static` inside an UNNAMED `extension on WsEventType`,
+/// and Dart resolves static extension members through the extension's own
+/// name -- which an unnamed extension does not have -- so `WsEventType
+/// .fromString(...)` could never compile.
+WsEventType wsEventTypeFromString(String s) => switch (s) {
+  'ready' => WsEventType.ready,
+  'heartbeat' => WsEventType.heartbeat,
+  'conversation.activity' => WsEventType.conversationActivity,
+  'conversation.handoff' => WsEventType.conversationHandoff,
+  'conversation.closed' => WsEventType.conversationClosed,
+  'conversation.reopened' => WsEventType.conversationReopened,
+  _ => WsEventType.unknown,
+};
 
 /// Parsed WebSocket event.
+///
+/// Every getter is nullable and read defensively: the bus carries several
+/// event shapes and a field belonging to one is simply absent from the
+/// others.
 class WsEvent {
   final WsEventType type;
   final Map<String, dynamic> raw;
   WsEvent(this.type, this.raw);
 
   int? get conversationId => raw['conversation_id'] as int?;
+  int? get userId => raw['user_id'] as int?;
   bool? get inbound => raw['inbound'] as bool?;
   String? get mode => raw['mode'] as String?;
   String? get assignedOperator => raw['assigned_operator'] as String?;
   String? get reason => raw['reason'] as String?;
   String? get tag => raw['tag'] as String?;
   String? get at => raw['at'] as String?;
+
+  /// 'active' or 'closed'. Present on closed and reopened events.
+  String? get status => raw['status'] as String?;
+  String? get closedAt => raw['closed_at'] as String?;
+  String? get updatedAt => raw['updated_at'] as String?;
+
+  /// True for events that change a conversation's lifecycle state, as opposed
+  /// to adding a message or moving ownership.
+  bool get isLifecycle =>
+      type == WsEventType.conversationClosed ||
+      type == WsEventType.conversationReopened;
 }
 
 enum WsConnectionState {
@@ -116,7 +151,7 @@ class WebSocketService {
     }
 
     final typeStr = json['type'] as String? ?? '';
-    final type = WsEventType.fromString(typeStr);
+    final type = wsEventTypeFromString(typeStr);
     final event = WsEvent(type, json);
 
     switch (type) {
@@ -128,8 +163,13 @@ class WebSocketService {
         break;
       case WsEventType.heartbeat:
         // Backend heartbeat — connection is alive.
+        _startHeartbeat();
         break;
       default:
+        // Everything else, including unknown types, reaches listeners. A
+        // future backend event should make this app refresh rather than
+        // ignore it.
+        _startHeartbeat();
         _eventController.add(event);
     }
   }
@@ -146,10 +186,13 @@ class WebSocketService {
   void _scheduleReconnect() {
     _setState(WsConnectionState.reconnecting);
     _reconnectAttempts++;
-    final delay = Duration(seconds:
-      (AppConfig.wsInitialReconnectDelay.inSeconds *
-          (1 << (_reconnectAttempts - 1).clamp(0, 5))).
-      .clamp(1, AppConfig.wsMaxReconnectDelay.inSeconds),
+    // Exponential backoff, doubling per attempt and capped both ways. The
+    // shift is clamped to 5 so the multiplier cannot overflow after a long
+    // outage.
+    final backoffSeconds = AppConfig.wsInitialReconnectDelay.inSeconds *
+        (1 << (_reconnectAttempts - 1).clamp(0, 5));
+    final delay = Duration(
+      seconds: backoffSeconds.clamp(1, AppConfig.wsMaxReconnectDelay.inSeconds),
     );
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(delay, () => _doConnect());
@@ -157,9 +200,11 @@ class WebSocketService {
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    // Backend sends heartbeats every 20s. We just need to track that we're alive.
+    // The backend sends a heartbeat every 20s. Any frame at all resets this
+    // watchdog, so 30s of total silence means the connection is stale even
+    // though the socket has not reported an error -- which is the usual way a
+    // mobile connection dies.
     _heartbeatTimer = Timer(const Duration(seconds: 30), () {
-      // If no message in 30s, consider connection stale.
       _onDone();
     });
   }
