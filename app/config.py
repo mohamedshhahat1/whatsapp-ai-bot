@@ -320,6 +320,86 @@ class Settings(BaseSettings):
     # Admin API
     admin_api_key: str = "change-me"
 
+    # TLS / Let's Encrypt
+    domain: str = ""
+    certbot_email: str = ""
+
+    # Backup retention (local)
+    backup_hour: int = 2
+    retain_daily: int = 14
+    retain_weekly: int = 8
+    retain_monthly: int = 12
+    backup_max_age_hours: int = 30
+
+    # Backup remote storage
+    backup_remote_provider: str = "none"
+    backup_remote_bucket: str = ""
+    backup_remote_prefix: str = "whatsapp-ai-bot"
+    retain_remote_daily: int = 30
+    retain_remote_weekly: int = 12
+    retain_remote_monthly: int = 24
+    backup_remote_retry_attempts: int = 5
+    backup_remote_retry_base_seconds: int = 3
+    backup_remote_retry_max_seconds: int = 60
+    backup_remote_max_age_hours: int = 30
+
+    # Backup encryption
+    backup_encryption_passphrase: str = ""
+    backup_age_recipient: str = ""
+    backup_age_identity_file: str = ""
+    backup_compress_before_encrypt: bool = False
+
+    # Backup S3
+    backup_s3_access_key_id: str = ""
+    backup_s3_secret_access_key: str = ""
+    backup_s3_region: str = "us-east-1"
+    backup_s3_endpoint: str = ""
+    backup_s3_storage_class: str = ""
+
+    # Backup GCS
+    backup_gcs_credentials_file: str = ""
+    backup_gcs_project: str = ""
+
+    # Backup Azure
+    backup_azure_account: str = ""
+    backup_azure_sas_token: str = ""
+    backup_azure_account_key: str = ""
+
+    # Backup misc
+    backup_metrics_dir: str = "/backups/metrics"
+    backup_download_dir: str = ""
+
+    # Restore drill
+    restore_drill_enabled: bool = True
+    restore_drill_days: int = 7
+    restore_drill_db: str = "restore_drill"
+    restore_drill_image: str = "pgvector/pgvector:pg16"
+    restore_drill_port: int = 55432
+    restore_drill_app_port: int = 58000
+    restore_drill_password: str = "drillpass"
+    restore_drill_app_image: str = ""
+    restore_drill_tables: str = (
+        "users conversations messages ai_logs documents model_pricing"
+    )
+
+    # Alerting: Telegram
+    alert_telegram_bot_token: str = ""
+    alert_telegram_chat_id: str = ""
+
+    # Alerting: Slack
+    alert_slack_webhook_url: str = ""
+    alert_slack_channel: str = "#alerts"
+    alert_slack_channel_backup: str = ""
+    alert_slack_channel_cost: str = ""
+
+    # Alerting: Email (SMTP)
+    alert_smtp_host: str = ""
+    alert_smtp_port: int = 587
+    alert_smtp_user: str = ""
+    alert_smtp_password: str = ""
+    alert_email_from: str = ""
+    alert_email_to: str = ""
+
     @classmethod
     def settings_customise_sources(
         cls,
