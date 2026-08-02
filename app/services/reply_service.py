@@ -87,11 +87,13 @@ class ReplyService:
             status="sent",
         )
         # An operator reply is activity like any other, so it resets the idle
-        # timer. This matters most after the AI resumes: without it, a
+        # timer -- unless RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE says otherwise,
+        # which is why this goes through SessionService rather than straight to
+        # the repository. It matters most after the AI resumes: without it, a
         # conversation a person had been working for twenty minutes would be
         # eligible for closing the instant it went back to the bot, and the
         # customer would get a goodbye seconds after the operator's last word.
-        await self._conversations.touch(conversation.id)
+        await self._sessions.touch(conversation.id, outgoing=True)
         await self._session.commit()
         logger.info(
             "manual_reply_sent",

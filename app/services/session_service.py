@@ -36,6 +36,14 @@ finds the claim and declines, trading a rare missing goodbye for a goodbye
 that is never sent twice. For a closing message that trade is even easier than
 it is for a reply: nobody minds an absent pleasantry, and everybody notices
 being thanked for their enquiry twice.
+
+Configuration
+-------------
+Every duration and every behaviour here comes from ``Settings``; there are no
+timeouts in this module. ``enable_conversation_session`` is the master switch
+and is checked at each of the three entry points below rather than at the
+call sites, so turning the feature off cannot be defeated by a caller that
+forgot to ask. See ``docs/SESSION_LIFECYCLE.md``.
 """
 
 from datetime import UTC, datetime
@@ -76,6 +84,17 @@ class SessionService:
         self._conversations = ConversationRepository(session)
         self._messages = MessageRepository(session)
 
+    @property
+    def enabled(self) -> bool:
+        """Whether the lifecycle runs at all (ENABLE_CONVERSATION_SESSION).
+
+        Off, conversations behave exactly as they did before this feature
+        existed: one endless thread per customer, greeted once when it is
+        created and never closed. That is the point -- it is a way to switch
+        the whole thing off in an incident without a rollback.
+        """
+        return self._settings.enable_conversation_session
+
     # --- Welcome ------------------------------------------------------------
 
     async def should_welcome(self, conversation: Conversation) -> bool:
@@ -86,8 +105,20 @@ class SessionService:
         message?" -- and the two diverge in the case that matters: if the reply
         carrying the welcome fails to send, the count is still one, the next
         message makes it two, and that customer is never greeted at all.
+
+        A session resumed inside the reopen window arrives here with
+        ``welcome_sent_at`` still set, which is exactly why resuming rather
+        than copying was the right shape: the "do not greet them twice" rule
+        needs no special case for it.
         """
-        if conversation.welcome_sent_at is not None:
+        if not self.enabled:
+            return False
+        if not self._settings.enable_welcome_on_new_session:
+            return False
+        if (
+            self._settings.prevent_duplicate_welcome
+            and conversation.welcome_sent_at is not None
+        ):
             return False
         if self._settings.enable_repeat_welcome_after_new_session:
             return True
@@ -101,14 +132,24 @@ class SessionService:
 
     # --- Idle timer ---------------------------------------------------------
 
-    async def touch(self, conversation_id: int) -> None:
+    async def touch(self, conversation_id: int, *, outgoing: bool = False) -> None:
         """Reset the idle timer. Does not commit.
 
         Deliberately called for activity in BOTH directions. Counting only
         customer messages would start the clock the moment they stopped
         typing, so a long answer -- a retrieval, a completion and two API
         calls -- could be overtaken by the sweeper and followed by a goodbye.
+
+        ``outgoing`` marks a reply rather than a customer message, so that
+        RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE can switch that behaviour off and
+        make the timer measure silence from the customer alone. Leaving it off
+        is not recommended and the flag exists mainly to make the choice
+        visible: with it off, the race described above is live again.
         """
+        if not self.enabled:
+            return
+        if outgoing and not self._settings.reset_idle_timer_on_outgoing_message:
+            return
         await self._conversations.touch(conversation_id)
 
     # --- Closing ------------------------------------------------------------
@@ -139,7 +180,17 @@ class SessionService:
         a candidate. It is then closed by the reopen path instead -- the
         customer's next message finds an open session and simply continues it,
         which is a strictly better failure than a duplicate goodbye.
+
+        Returns 0 without touching the database when the lifecycle is off, or
+        when CONVERSATION_CLOSE_AFTER_IDLE says idle sessions should simply be
+        left open. Note that the two differ: the second still tracks the idle
+        timer and still reports WAITING_IDLE, it just never acts on it.
         """
+        if not self.enabled:
+            return 0
+        if not self._settings.conversation_close_after_idle:
+            return 0
+
         idle_before = datetime.now(UTC) - self._settings.conversation_idle_timeout
         claimed = await self._conversations.claim_idle_sessions(
             idle_before, limit=SWEEP_BATCH_SIZE
@@ -181,6 +232,13 @@ class SessionService:
         eligible at once, and without this check the sweeper would attempt a
         send for each one, be rejected by Meta each time, and turn a routine
         deploy into thousands of failing API calls.
+
+        Note that PREVENT_DUPLICATE_CLOSING is not consulted here. The
+        guarantee it names is structural rather than conditional: this method
+        only ever runs for an id that ``claim_idle_sessions`` has already won
+        with a committed conditional UPDATE, so a second goodbye cannot be
+        reached to be suppressed. The flag documents the promise; the claim
+        keeps it.
         """
         if not self._settings.enable_conversation_closing_message:
             return False
