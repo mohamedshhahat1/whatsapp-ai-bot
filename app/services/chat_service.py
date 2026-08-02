@@ -29,6 +29,15 @@ a rare unanswered message in exchange for never sending two. A customer who
 gets no reply sends "?" and gets one; a customer who gets two different
 answers about their quotation stops trusting the business, and every duplicate
 is a second OpenAI charge.
+
+Session lifecycle
+-----------------
+Each of those transactions also resets the conversation's idle timer, which is
+what keeps the sweeper in app/services/session_service.py from closing a
+conversation that is still being worked on. The timer is touched at stages 1,
+4 and 6 rather than only on inbound: a completion can take several seconds,
+and a timer that counted only from the customer's last message could expire
+while their answer was still being written.
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -60,6 +69,7 @@ from app.services.retrieval import (
     RetrievedDocument,
     build_retriever,
 )
+from app.services.session_service import SessionService
 
 logger = get_logger(__name__)
 
@@ -84,6 +94,7 @@ class ChatService:
         self._ai = ai
         self._settings = settings
         self._conversations = ConversationService(session, settings)
+        self._sessions = SessionService(session, settings)
         self._ai_logs = AILogRepository(session)
         self._prompts = PromptBuilder(settings)
         self._retriever = retriever or build_retriever(session, settings)
@@ -99,10 +110,25 @@ class ChatService:
             self._settings,
         )
 
-    async def _is_first_customer_message(self, conversation_id: int) -> bool:
-        """True when the message just stored is the customer's first one here."""
-        sent = await self._conversations.messages.count_inbound(conversation_id)
-        return sent == 1
+    async def _needs_welcome(self, conversation: Conversation) -> bool:
+        """True when this session still owes its customer a greeting.
+
+        Replaces a count of inbound messages. The count answered a subtly
+        different question -- "is this their first message?" -- and the two
+        part company exactly where it hurts: when the reply carrying the
+        welcome fails to send, the count is still one, the next message makes
+        it two, and that customer is never greeted at all.
+        """
+        return await self._sessions.should_welcome(conversation)
+
+    async def _record_welcome(self, conversation_id: int) -> None:
+        """Persist that the welcome actually reached the customer.
+
+        Committed separately because it can only be known after the send, by
+        which point _send_once has already closed its own transaction.
+        """
+        await self._sessions.mark_welcome_sent(conversation_id)
+        await self._session.commit()
 
     async def _send_once(
         self,
@@ -118,6 +144,7 @@ class ChatService:
             await self._conversations.save_outbound(
                 conversation_id, text, wa_message_id=out_id
             )
+            await self._sessions.touch(conversation_id)
             await self._session.commit()
             return True
 
@@ -133,6 +160,11 @@ class ChatService:
                 reply_to=reply_to,
             )
             return False
+        # Reserving is activity. Without this the timer would still be running
+        # from the customer's message, and a slow completion plus a retry could
+        # let the sweeper close the conversation in the gap between deciding to
+        # reply and the reply landing -- so the goodbye would arrive first.
+        await self._sessions.touch(conversation_id)
         await self._session.commit()
 
         try:
@@ -154,6 +186,7 @@ class ChatService:
         await self._conversations.messages.confirm_reply(
             reserved_id, out_id, status=STATUS_SENT
         )
+        await self._sessions.touch(conversation_id)
         await self._session.commit()
         return True
 
@@ -163,9 +196,16 @@ class ChatService:
         conversation_id: int,
         text: str,
         reply_to: str | None = None,
+        welcome: bool = False,
     ) -> None:
-        """Send company copy that needs no model call, and persist it."""
+        """Send company copy that needs no model call, and persist it.
+
+        ``welcome`` says whether ``text`` has the welcome prepended to it, so
+        the flag is only set once the customer has actually been greeted.
+        """
         if await self._send_once(wa_id, conversation_id, text, reply_to):
+            if welcome:
+                await self._record_welcome(conversation_id)
             await self._announce(conversation_id)
 
     async def _begin_handoff(
@@ -178,6 +218,8 @@ class ChatService:
         reply_to: str | None = None,
     ) -> None:
         """Switch a conversation to a human at the customer's request."""
+        # set_mode resets the idle timer: switching direction is activity, and
+        # a conversation just handed to a person must not be swept.
         await self._conversations.conversations.set_mode(
             conversation, MODE_HUMAN, operator=None, tag=tag
         )
@@ -370,6 +412,8 @@ class ChatService:
         sent = await self._send_once(wa_id, conversation_id, reply_text, reply_to)
 
         if sent:
+            if welcome:
+                await self._record_welcome(conversation_id)
             if reply_to:
                 await clear_generation(reply_to, self._settings)
             await self._announce(conversation_id)
@@ -377,7 +421,14 @@ class ChatService:
     async def handle_text_message(
         self, wa_id: str, name: str | None, wa_message_id: str, text: str
     ) -> None:
-        """Persist an inbound text, generate an AI reply, and send it back."""
+        """Persist an inbound text, generate an AI reply, and send it back.
+
+        get_context returns the customer's ACTIVE conversation, so a customer
+        writing in after their previous session was closed transparently gets a
+        new one here -- new history, no welcome flag, no closing flag. That is
+        the whole reopen path; there is no state to clear because closing the
+        old session released it.
+        """
         _, conversation = await self._conversations.get_context(wa_id, name)
         claimed = await self._conversations.claim_inbound(
             conversation.id, wa_message_id, type="text", content=text
@@ -387,6 +438,7 @@ class ChatService:
             DUPLICATE_DELIVERIES_TOTAL.labels(stage="inbound_claim").inc()
             logger.info("duplicate_webhook_delivery", wa_message_id=wa_message_id)
             return
+        await self._sessions.touch(conversation.id)
         await self._session.commit()
 
         await self._announce(conversation.id)
@@ -400,7 +452,7 @@ class ChatService:
         if not await self._within_quota(wa_id, conversation.id, wa_message_id, text):
             return
 
-        first = await self._is_first_customer_message(conversation.id)
+        first = await self._needs_welcome(conversation)
 
         if first and is_unintelligible(text):
             await self._send_fixed(
@@ -408,6 +460,7 @@ class ChatService:
                 conversation.id,
                 f"{WELCOME}\n\n{NOT_UNDERSTOOD}",
                 reply_to=wa_message_id,
+                welcome=True,
             )
             return
 
@@ -419,7 +472,11 @@ class ChatService:
             if first:
                 reply = f"{WELCOME}\n\n{reply}"
             await self._send_fixed(
-                wa_id, conversation.id, reply, reply_to=wa_message_id
+                wa_id,
+                conversation.id,
+                reply,
+                reply_to=wa_message_id,
+                welcome=first,
             )
             return
 
@@ -459,6 +516,7 @@ class ChatService:
             DUPLICATE_DELIVERIES_TOTAL.labels(stage="inbound_claim").inc()
             logger.info("duplicate_webhook_delivery", wa_message_id=wa_message_id)
             return
+        await self._sessions.touch(conversation.id)
         await self._session.commit()
 
         await self._announce(conversation.id)
@@ -472,7 +530,7 @@ class ChatService:
         if not await self._within_quota(wa_id, conversation.id, wa_message_id, caption):
             return
 
-        first = await self._is_first_customer_message(conversation.id)
+        first = await self._needs_welcome(conversation)
 
         history = await self._conversations.build_history(conversation.id)
         history.append(
@@ -509,6 +567,7 @@ class ChatService:
             await self._session.rollback()
             DUPLICATE_DELIVERIES_TOTAL.labels(stage="inbound_claim").inc()
             return
+        await self._sessions.touch(conversation.id)
         await self._session.commit()
 
         await self._announce(conversation.id)
@@ -518,11 +577,17 @@ class ChatService:
         ):
             return
 
-        first = await self._is_first_customer_message(conversation.id)
+        first = await self._needs_welcome(conversation)
         reply = "Sorry, I can't process that type of message yet. Please send text."
         if first:
             reply = f"{WELCOME}\n\n{reply}"
-        await self._send_fixed(wa_id, conversation.id, reply, reply_to=wa_message_id)
+        await self._send_fixed(
+            wa_id,
+            conversation.id,
+            reply,
+            reply_to=wa_message_id,
+            welcome=first,
+        )
 
     async def handle_status_update(self, wa_message_id: str, status: str) -> None:
         """Record delivery/read/failed status updates for outbound messages."""
