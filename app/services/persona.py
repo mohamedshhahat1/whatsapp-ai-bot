@@ -6,12 +6,12 @@ Two different kinds of text live here, and the distinction is the whole point.
 to speak, and what it must never invent. Wording drift there costs a little
 quality and nothing else.
 
-``WELCOME`` and ``NOT_UNDERSTOOD`` are *company copy*: approved wording that
-real customers read. These are never produced by the model. The code sends
-them verbatim (see ``ChatService``), because "always start with this welcome"
-is a promise a language model cannot keep -- given twenty messages of history
-it will eventually paraphrase it, translate it, or skip it on the one
-conversation that mattered.
+``WELCOME``, ``NOT_UNDERSTOOD`` and ``CLOSING`` are *company copy*: approved
+wording that real customers read. These are never produced by the model. The
+code sends them verbatim (see ``ChatService`` and ``SessionService``), because
+"always start with this welcome" is a promise a language model cannot keep --
+given twenty messages of history it will eventually paraphrase it, translate
+it, or skip it on the one conversation that mattered.
 
 Why this is a Python module and not SYSTEM_PROMPT
 -------------------------------------------------
@@ -81,6 +81,29 @@ WELCOME = (
 # Follows the welcome when the very first message carries no words at all.
 NOT_UNDERSTOOD = (
     "لم أتمكن من فهم رسالتك بشكل كافٍ، من فضلك أخبرني بما تحتاج وسأساعدك بكل سرور."
+)
+
+# Sent by the code, at most once per session, when a session has been idle for
+# CONVERSATION_IDLE_TIMEOUT_MINUTES. Company copy for the same reason WELCOME
+# is: a goodbye the model writes is a goodbye that will eventually arrive
+# twice, or arrive curt, on the conversation that mattered.
+#
+# It deliberately does not announce that the conversation is over or tell the
+# customer the session has expired. Nobody has been shown the door -- they put
+# their phone down mid-errand. The wording closes the session on our side
+# while making plain that writing again is welcome, because writing again is
+# exactly what a good proportion of customers do next, and the reply they get
+# then is a fresh welcome.
+#
+# Overridden entirely by CONVERSATION_CLOSING_MESSAGE. Reusing this codebase
+# for another business needs no Python edit.
+CLOSING = (
+    "شكراً لتواصلك مع شركة الكيان للتشطيبات والمقاولات العامة. \U0001f90d\n"
+    "\n"
+    "لو احتجت أي مساعدة أخرى، أو كان عندك أي استفسار، أو حابب تطلب معاينة أو "
+    "عرض سعر في أي وقت، يسعدنا دائماً خدمتك.\n"
+    "\n"
+    "نتمنى لحضرتك يوماً سعيداً."
 )
 
 SYSTEM_PROMPT = f"""You are the official AI customer assistant for
