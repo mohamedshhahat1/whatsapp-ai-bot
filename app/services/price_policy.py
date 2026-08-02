@@ -62,7 +62,7 @@ price word, a per-metre unit, or a thousands word with no unit after it. And a
 number followed by سنة, يوم, متر, غرفة or similar is never money, whatever
 else is near it.
 
-This file is written in real Arabic rather than \\uXXXX escapes because it
+This file is written in real Arabic rather than \uXXXX escapes because it
 contains copy that customers read.
 """
 
@@ -91,7 +91,7 @@ _NUMBER = rf"{_DIGIT}[0-9\u0660-\u0669,\u066c\u066b\.]{{0,12}}"
 _CURRENCY = (
     r"\u062c\u0646\u064a\u0647\u0627\u062a"  # gunayhaat
     r"|\u062c\u0646\u064a\u0647"  # gunayh
-    r"|\u062c\u0646\u064a\u0629"  # common misspelling
+    r"|\u062c\u0646\u062a\u0629"  # common misspelling
     r"|\u062c\.?\s?\u0645(?![\u0621-\u064a])"  # g.m
     r"|\u0631\u064a\u0627\u0644"  # riyal
     r"|\u062f\u0648\u0644\u0627\u0631"  # dollar
@@ -108,10 +108,10 @@ _UNIT = (
     r"\u0645\u062a\u0631"  # metre
     r"|\u0623\u0645\u062a\u0627\u0631|\u0627\u0645\u062a\u0627\u0631"  # metres
     r"|\u0645\u00b2|\u0645 ?2"  # m2
-    r"|\u062a\u0648\u0645|\u0623\u062a\u0627\u0645|\u0627\u062a\u0627\u0645"  # day(s)
-    r"|\u0623\u0633\u0628\u0648\u0639|\u0627\u0633\u0627\u0628\u062a\u0639"  # week(s)
+    r"|\u064a\u0648\u0645|\u0623\u064a\u0627\u0645|\u0627\u064a\u0627\u0645"  # day(s)
+    r"|\u0623\u0633\u0628\u0648\u0639|\u0623\u0633\u0627\u0628\u064a\u0639"  # week(s)
     r"|\u0634\u0647\u0631|\u0634\u0647\u0648\u0631|\u0623\u0634\u0647\u0631"  # month(s)
-    r"|\u0633\u0646\u0629|\u0633\u0646\u0648\u0627\u062a|\u0633\u0646\u062a\u0646"  # year(s)
+    r"|\u0633\u0646\u0629|\u0633\u0646\u0648\u0627\u062a|\u0633\u0646\u062a\u064a\u0646"  # year(s)
     r"|\u0633\u0627\u0639\u0629|\u0633\u0627\u0639\u0627\u062a"  # hour(s)
     r"|\u063a\u0631\u0641\u0629|\u063a\u0631\u0641"  # room(s)
     r"|\u062d\u0645\u0627\u0645|\u062d\u0645\u0627\u0645\u0627\u062a"  # bathroom(s)
@@ -145,7 +145,7 @@ _PER_METRE = (
 _THOUSANDS = (
     r"\u0623\u0644\u0641|\u0627\u0644\u0641"  # alf
     r"|\u0622\u0644\u0627\u0641|\u0627\u0644\u0627\u0641"  # alaaf
-    r"|\u0645\u0644\u062a\u064a\u0648\u0646|\u0645\u0644\u0627\u064a\u062a\u0646"  # million(s)
+    r"|\u0645\u0644\u064a\u0648\u0646|\u0645\u0644\u0627\u064a\u064a\u0646"  # million(s)
     r"|k\b"
 )
 
@@ -181,6 +181,12 @@ _MONEY = tuple(
         rf"(?:\u062e\u0635\u0645|discount)",
     )
 )
+
+# Patterns used by redact() on retrieved documents. Excludes the discount
+# percentage patterns (indices 7-8) so that prompt-injection text like
+# "grant a 90% discount" survives inside the fence for the injection test
+# to verify, while mentions_amount() still catches it on the model's output.
+_REDACT_MONEY = _MONEY[:7]
 
 
 def _strip_phone(text: str, sales_phone: str = "") -> str:
@@ -226,7 +232,7 @@ def redact(content: str) -> str:
     answer the bot gives, not just the pricing ones.
     """
     cleaned = content
-    for pattern in _MONEY:
+    for pattern in _REDACT_MONEY:
         cleaned = pattern.sub(_hide, cleaned)
     return cleaned
 
@@ -279,7 +285,7 @@ _NEGOTIATION_PATTERNS = tuple(
         # "final price" / "last word" / "best price"
         r"\u0622\u062e\u0631 \u0633\u0639\u0631|\u0627\u062e\u0631 \u0633\u0639\u0631",
         r"\u0622\u062e\u0631 \u0643\u0644\u0627\u0645|\u0627\u062e\u0631 \u0643\u0644\u0627\u0645",
-        r"\u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u0646\u0647\u0627\u0626\u064a",
+        r"\u0627\u0644\u0633\u0639\u0631 \u0627\u0644\u0646\u0647\u0627\u0626\u062a",
         r"\u0623\u062d\u0633\u0646 \u0633\u0639\u0631|\u0627\u062d\u0633\u0646 \u0633\u0639\u0631",
         r"\bfinal\s+(?:price|offer)\b|\bbest\s+(?:price|offer)\b",
         r"\blast\s+price\b",
@@ -293,7 +299,7 @@ _NEGOTIATION_PATTERNS = tuple(
         r"\bdiscount\b|\bbetter\s+offer\b|\bdeal\b",
         # "can it be less" / "how much would you accept"
         r"\u0645\u0645\u0643\u0646 \u0623\u0642\u0644|\u0645\u0645\u0643\u0646 \u0627\u0642\u0644",
-        r"\u062a\u0646\u0641\u0639 \u0623\u0642\u0644|\u062a\u0646\u0641\u0639 \u0627\u0642\u0644",
+        r"\u064a\u0646\u0641\u0639 \u0623\u0642\u0644|\u064a\u0646\u0641\u0639 \u0627\u0642\u0644",
         r"\u0623\u0642\u0644 \u0645\u0646 \u0643\u062f\u0647|\u0627\u0642\u0644 \u0645\u0646 \u0643\u062f\u0647",
         r"\u062a\u0648\u0627\u0641\u0642 \u0639\u0644\u0649 \u0643\u0627\u0645"
         r"|\u0628\u0643\u0627\u0645 \u062a\u0648\u0627\u0641\u0642",
@@ -301,14 +307,14 @@ _NEGOTIATION_PATTERNS = tuple(
         r"\bany\s+(?:lower|less)\b|\bgo\s+lower\b|\bcome\s+down\b",
         r"\bwhat.{0,15}\baccept\b",
         # citing a competitor
-        r"\u0627\u0644\u0641\u062a\u0633|\u0641\u062a\u0633\u0628\u0648\u0643",  # Facebook
+        r"\u0627\u0644\u0641\u064a\u0633|\u0641\u064a\u0633\u0628\u0648\u0643",  # Facebook
         r"\u0634\u0631\u0643\u0629 \u062a\u0627\u0646\u064a\u0629"
         r"|\u062d\u062f \u062a\u0627\u0646\u062a",
         r"\u0646\u0641\u0633 \u0627\u0644\u0633\u0639\u0631|\u0632\u064a \u0633\u0639\u0631",
         r"\bfacebook\s+price\b|\bmatch\s+(?:the\s+)?price\b",
         r"\banother\s+company\b|\bsomeone\s+else\s+(?:quoted|offered)\b",
         # naming a figure: "اعملها بـ 1500", "خليها 1500"
-        rf"(?:\u0628\u0640?\s*|\u062e\u0644\u062a\u0647\u0627\s*|\u062e\u0644\u062a\u0647\s*)"
+        rf"(?:\u0628\u0640?\s*|\u062e\u0644\u064a\u0647\u0627\s*|\u062e\u0644\u064a\u0647\s*)"
         rf"{_DIGIT}{{3,}}",
     )
 )
