@@ -358,7 +358,7 @@ class ChatService:
                 prompt_tokens=generation.prompt_tokens,
                 completion_tokens=generation.completion_tokens,
                 total_tokens=generation.total_tokens,
-                latency_ms=generation.latency_ms,
+                latency_ms=generation.latency_ms or 0,
             )
         elif error is not None:
             await self._ai_logs.create(
