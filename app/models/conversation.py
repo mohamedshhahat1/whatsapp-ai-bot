@@ -40,14 +40,67 @@ STATUS_CLOSED = "closed"
 TAG_SALES_LEAD = "sales_lead"
 
 # The session lifecycle as operators and the admin API see it. These are
-# derived from (status, mode, last_activity_at) by ``session_state`` below and
-# never stored. A stored copy would need something to keep it true, and the
-# moment it disagreed with the columns it came from there would be no way to
-# tell which of the two had gone wrong.
+# derived from (status, mode, last_activity_at, closing_sent_at) by
+# ``derive_session_state`` below and never stored. A stored copy would need
+# something to keep it true, and the moment it disagreed with the columns it
+# came from there would be no way to tell which of the two had gone wrong.
 SESSION_ACTIVE_BOT = "ACTIVE_BOT"
 SESSION_ACTIVE_HUMAN = "ACTIVE_HUMAN"
 SESSION_WAITING_IDLE = "WAITING_IDLE"
+SESSION_CLOSING = "CLOSING"
 SESSION_CLOSED = "CLOSED"
+
+
+def derive_session_state(
+    *,
+    status: str,
+    mode: str,
+    last_activity_at: datetime | None,
+    closing_sent_at: datetime | None,
+    idle_after: timedelta,
+    now: datetime | None = None,
+) -> str:
+    """Which lifecycle state these column values describe.
+
+    A free function over primitives rather than a method, because two callers
+    need it and only one of them has an ORM object: the admin API serialises
+    ``ConversationRead`` from plain fields. Reimplementing the rule there --
+    the obvious alternative -- would put two copies of it in the codebase, and
+    the drift between them would be silent in the worst way: the sweeper would
+    close a session the dashboard was still calling active, and nothing would
+    indicate which of the two was wrong.
+
+    ``idle_after`` is passed in rather than read from settings so this stays
+    free of configuration, and so a caller rendering fifty conversations
+    resolves the timeout once instead of per row.
+
+    Order matters. Each check below claims a state the later ones would
+    otherwise also match:
+
+    * CLOSED wins outright -- the session is over.
+    * CLOSING is the window between a worker claiming the goodbye and the
+      close committing. Short, but it is the only honest answer while it
+      lasts, and it used to render as ACTIVE_BOT: an operator could open a
+      conversation that was already being said goodbye to and reply into it.
+    * ACTIVE_HUMAN outranks WAITING_IDLE even when the conversation is quiet.
+      That is not an oversight. WAITING_IDLE means "nobody is coming back to
+      this and it is due to be closed", and a conversation an operator has
+      taken is somebody's open work. ``claim_idle_sessions`` applies exactly
+      the same rule -- it only considers ``mode = bot`` -- so the state an
+      operator reads and the state the closing logic acts on cannot disagree.
+    """
+    if status != STATUS_ACTIVE:
+        return SESSION_CLOSED
+    if closing_sent_at is not None:
+        return SESSION_CLOSING
+    if mode == MODE_HUMAN:
+        return SESSION_ACTIVE_HUMAN
+    if last_activity_at is None:  # pragma: no cover - column is NOT NULL
+        return SESSION_ACTIVE_BOT
+    moment = now or datetime.now(UTC)
+    if moment - last_activity_at >= idle_after:
+        return SESSION_WAITING_IDLE
+    return SESSION_ACTIVE_BOT
 
 
 class Conversation(Base):
@@ -130,22 +183,14 @@ class Conversation(Base):
     ) -> str:
         """Which lifecycle state this conversation is in at ``now``.
 
-        ``idle_after`` is passed in rather than read from settings so the
-        model stays free of configuration, and so a caller listing fifty
-        conversations resolves the timeout once instead of per row.
-
-        A conversation held by a human is reported as ACTIVE_HUMAN even once
-        it is quiet. That is not an oversight: WAITING_IDLE means "nobody is
-        coming back to this and it is due to be closed", and a conversation
-        an operator has taken is somebody's open work. The sweeper applies
-        the same rule, so the state an operator reads and the state the
-        closing logic acts on cannot drift apart.
+        Thin wrapper over :func:`derive_session_state`, which is shared with
+        the admin API serializer so both answer this question identically.
         """
-        if self.status != STATUS_ACTIVE:
-            return SESSION_CLOSED
-        if self.mode == MODE_HUMAN:
-            return SESSION_ACTIVE_HUMAN
-        moment = now or datetime.now(UTC)
-        if moment - self.last_activity_at >= idle_after:
-            return SESSION_WAITING_IDLE
-        return SESSION_ACTIVE_BOT
+        return derive_session_state(
+            status=self.status,
+            mode=self.mode,
+            last_activity_at=self.last_activity_at,
+            closing_sent_at=self.closing_sent_at,
+            idle_after=idle_after,
+            now=now,
+        )
