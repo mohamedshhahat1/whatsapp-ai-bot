@@ -6,12 +6,31 @@ Two different kinds of text live here, and the distinction is the whole point.
 to speak, and what it must never invent. Wording drift there costs a little
 quality and nothing else.
 
-``WELCOME``, ``NOT_UNDERSTOOD`` and ``CLOSING`` are *company copy*: approved
-wording that real customers read. These are never produced by the model. The
-code sends them verbatim (see ``ChatService`` and ``SessionService``), because
-"always start with this welcome" is a promise a language model cannot keep --
-given twenty messages of history it will eventually paraphrase it, translate
-it, or skip it on the one conversation that mattered.
+``WELCOME``, ``WELCOME_PREFIX``, ``NOT_UNDERSTOOD`` and ``CLOSING`` are
+*company copy*: approved wording that real customers read. These are never
+produced by the model. The code sends them verbatim (see ``ChatService`` and
+``SessionService``), because "always start with this welcome" is a promise a
+language model cannot keep -- given twenty messages of history it will
+eventually paraphrase it, translate it, or skip it on the one conversation
+that mattered.
+
+Two welcomes, one opening line
+------------------------------
+The welcome is used in two situations that want different lengths, which is
+why there are two constants rather than one.
+
+``WELCOME`` is the full greeting, ending in a menu of what the company can
+help with. It is sent alone, when the customer's opening message is only a
+greeting: they have asked for nothing yet, so the menu is the most useful
+thing that can be said back.
+
+``WELCOME_PREFIX`` is two lines, and is prepended to a real answer. Putting
+the full menu there would be actively wrong -- it asks "tell me how I can help
+you, whether you want a flat finished, a quotation, a site visit..." directly
+above a reply that just answered exactly that question.
+
+Both are built from the same ``_OPENING`` line so the company name, the
+wording and the emoji cannot drift apart between them.
 
 Why this is a Python module and not SYSTEM_PROMPT
 -------------------------------------------------
@@ -30,11 +49,11 @@ cannot live in a paragraph that configuration can delete. See
 A note on the emoji budget
 --------------------------
 Emoji are structural here: one may sit beside a section heading to make a long
-list scannable, and five in a message is the ceiling. ``WELCOME`` spends one on
-the waving hand before the model writes a word, which is why the first-message
-layer in ``PromptBuilder`` tells the model not to open with a second one. The
-budget is a property of the message the customer receives, not of the model's
-share of it.
+list scannable, and five in a message is the ceiling. The opening line spends
+one on the waving hand before the model writes a word, which is why the
+first-message layer in ``PromptBuilder`` tells the model not to open with a
+second one. The budget is a property of the message the customer receives, not
+of the model's share of it.
 
 Why the formatting syntax is spelled out
 ----------------------------------------
@@ -56,16 +75,21 @@ from app.services.handoff import HANDOFF_KEYWORD
 
 COMPANY_NAME = "شركة الكيان للتشطيبات والمقاولات العامة"
 
-# Sent by the code, exactly once per conversation, before anything the model
-# produces. Changing this text changes what every new customer sees first.
+# The one line both welcomes start with. Shared so the name, the wording and
+# the emoji cannot drift between the standalone welcome and the prefix.
+_OPENING = "أهلاً وسهلاً بحضرتك في شركة الكيان للتشطيبات والمقاولات العامة. \U0001f44b"
+
+# Sent by the code, exactly once per session, when the customer's opening
+# message is ONLY a greeting. Nothing has been asked, so the menu below is the
+# reply rather than an accompaniment to one.
 #
 # The old third bullet read "معرفة الأسعار" -- know the prices. Under the
 # pricing policy the bot cannot do that, and an opening menu that advertises
 # it guarantees the very question the bot has to refuse, in the first thirty
 # seconds, to every new customer. It now offers the thing the company actually
 # provides: a quotation, prepared by a person.
-WELCOME = (
-    "أهلاً وسهلاً بحضرتك في شركة الكيان للتشطيبات والمقاولات العامة. \U0001f44b\n"
+WELCOME = _OPENING + (
+    "\n"
     "\n"
     "يسعدنا مساعدتك في كل ما يخص أعمال التشطيبات والمقاولات.\n"
     "\n"
@@ -77,6 +101,11 @@ WELCOME = (
     "• الاستفسار عن خدماتنا\n"
     "أو أي استفسار آخر."
 )
+
+# Prepended to a real answer when the customer's opening message already
+# contained a question. Deliberately short: the customer asked something, and
+# the thing they are waiting for is the answer, not a menu.
+WELCOME_PREFIX = _OPENING + "\n\nشكراً لتواصلك معنا."
 
 # Follows the welcome when the very first message carries no words at all.
 NOT_UNDERSTOOD = (
@@ -299,6 +328,9 @@ def is_unintelligible(text: str | None) -> bool:
     not "does this sentence make sense" -- judging the latter in code would
     silence answerable questions, and the persona already tells the model to
     ask a clarifying question when intent is unclear.
+
+    Distinct from ``greeting.is_greeting_only``, which answers the next
+    question along: there are words here, but do any of them ask for anything?
     """
     if not text or not text.strip():
         return True
