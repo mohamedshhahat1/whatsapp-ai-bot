@@ -8,6 +8,9 @@ These endpoints are limited as a single shared bucket, not per IP: every
 delivery comes from Meta, so an IP key would throttle the whole customer base
 together. Per-customer limits live in ``app/core/quota.py`` and run inside the
 worker, once the payload has been parsed and the sender is known.
+
+Unsigned deliveries are accepted ONLY outside production, and only when no app
+secret is configured. See ``verify_meta_signature``.
 """
 
 import json
@@ -19,7 +22,7 @@ from fastapi.responses import PlainTextResponse
 from app.config import get_settings
 from app.core.logging import get_logger
 from app.core.ratelimit import WEBHOOK_LIMIT, limiter, webhook_key
-from app.core.security import verify_meta_signature
+from app.core.security import verify_meta_signature, verify_token_matches
 from app.db.session import SessionLocal
 from app.dependencies.deps import get_openai_client, get_whatsapp_client
 from app.services.webhook_processor import process_webhook_payload
@@ -34,9 +37,8 @@ router = APIRouter(prefix="/webhook", tags=["webhook"])
 async def verify_webhook(request: Request) -> PlainTextResponse:
     """Meta webhook verification handshake (hub.challenge echo)."""
     params = request.query_params
-    if (
-        params.get("hub.mode") == "subscribe"
-        and params.get("hub.verify_token") == get_settings().whatsapp_verify_token
+    if params.get("hub.mode") == "subscribe" and verify_token_matches(
+        get_settings().whatsapp_verify_token, params.get("hub.verify_token")
     ):
         return PlainTextResponse(params.get("hub.challenge", ""))
     raise HTTPException(status_code=403, detail="Verification failed")
@@ -53,11 +55,19 @@ async def receive_webhook(
     delivery it does not see acknowledged within a few seconds, so doing real
     work here would turn one slow completion into several duplicate
     deliveries -- which the idempotency guards would then have to absorb.
+
+    ``allow_unsigned`` is granted only outside production. A production stack
+    with an empty app secret now rejects every delivery, which is loud and
+    fixable; the alternative was accepting forged ones in silence.
     """
+    settings = get_settings()
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
     if not verify_meta_signature(
-        get_settings().whatsapp_app_secret, raw_body, signature
+        settings.whatsapp_app_secret,
+        raw_body,
+        signature,
+        allow_unsigned=settings.environment != "production",
     ):
         raise HTTPException(status_code=403, detail="Invalid signature")
 
@@ -66,7 +76,7 @@ async def receive_webhook(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
 
-    if get_settings().use_task_queue:
+    if settings.use_task_queue:
         process_webhook_event.delay(payload)
     else:
         background_tasks.add_task(_process_inline, payload)
