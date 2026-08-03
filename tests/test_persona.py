@@ -11,6 +11,14 @@ ends in a menu and is sent alone, to a customer who has only said hello.
 ``WELCOME_PREFIX`` is two lines and is prepended to a real answer, in ONE
 message -- prepending the menu there would ask "how can I help you?" directly
 above the answer to that question. A courtesy opening gets neither.
+
+A note on ``db.expire_all()`` below. Production gives every webhook its own
+session, so each delivery re-reads the conversation row. These tests drive
+several deliveries through ONE session, and ``mark_welcome_sent`` is a Core
+UPDATE with ``synchronize_session=False`` against a sessionmaker configured
+``expire_on_commit=False`` -- so an already-loaded Conversation keeps a stale
+``welcome_sent_at``. Expiring between deliveries is how the test sees what the
+next webhook really would.
 """
 
 from typing import Any
@@ -142,6 +150,7 @@ async def test_a_first_question_gets_one_message_with_the_short_welcome(
                 "\u0639\u0627\u064a\u0632 \u0623\u0639\u0631\u0641 \u0633\u0639\u0631 \u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629",
             ),
         )
+        db.expire_all()
         await process_webhook_payload(
             db,
             whatsapp,
@@ -187,6 +196,7 @@ async def test_a_greeting_gets_the_full_welcome_and_costs_no_tokens(
         assert whatsapp.sent == [(wa_id, WELCOME)]
 
         # The question they send next is answered, with no second welcome.
+        db.expire_all()
         await process_webhook_payload(
             db,
             whatsapp,
@@ -231,6 +241,7 @@ async def test_a_courtesy_opening_is_never_welcomed(db: AsyncSession) -> None:
 
         # The welcome is still OWED, not consumed: a real question next gets
         # it. Greeted once, late, rather than never.
+        db.expire_all()
         await process_webhook_payload(
             db,
             whatsapp,

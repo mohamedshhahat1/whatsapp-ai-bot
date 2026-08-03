@@ -4,8 +4,15 @@ This is the path every customer message takes. OpenAI and WhatsApp are the
 only things faked; the session, repositories, prompt builder and dedupe logic
 are all real, running against the migrated database.
 
-Note that these payloads are each a customer's FIRST message, so the approved
-welcome is prepended to the reply by ChatService. See tests/test_persona.py.
+These payloads are each a customer's FIRST message, so ChatService prepends
+``WELCOME_PREFIX`` -- the two-line welcome, not the full menu -- to the reply,
+and sends the two as ONE message. See tests/test_persona.py for why there are
+two welcomes.
+
+One payload below is worth flagging: "Hello there" is a greeting-only opening,
+so it takes the greeting branch, answers with the full ``WELCOME`` and never
+reaches the model. That is deliberate -- the test using it only needs an
+outbound message to exist so it can check status updates against its id.
 """
 
 from typing import Any
@@ -16,7 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.integrations.openai import AIResult
-from app.services.persona import WELCOME
+from app.services.persona import WELCOME_PREFIX
 from app.services.webhook_processor import process_webhook_payload
 from tests.conftest import new_wa_id, purge
 
@@ -103,7 +110,7 @@ async def _rows(session: AsyncSession, wa_id: str) -> list[tuple[str, str]]:
 async def test_message_is_stored_answered_and_replied_to(db: AsyncSession) -> None:
     wa_id = new_wa_id()
     question = "What time do you open?"
-    expected = f"{WELCOME}\n\n{REPLY}"
+    expected = f"{WELCOME_PREFIX}\n\n{REPLY}"
     whatsapp = FakeWhatsApp()
     ai = FakeOpenAI()
 
@@ -121,7 +128,7 @@ async def test_message_is_stored_answered_and_replied_to(db: AsyncSession) -> No
         assert ("inbound", question) in stored
         assert ("outbound", expected) in stored
 
-        # The reply actually went out, to the right number.
+        # The reply actually went out, to the right number, as ONE message.
         assert whatsapp.sent == [(wa_id, expected)]
         assert whatsapp.read == [f"wamid.in.{wa_id}"]
 
@@ -187,6 +194,11 @@ async def test_a_redelivered_webhook_is_processed_once(db: AsyncSession) -> None
 
 
 async def test_status_updates_are_recorded(db: AsyncSession) -> None:
+    """"Hello there" is a greeting, so the outbound row here is the welcome.
+
+    Which one it is does not matter to this test: it needs an outbound
+    message to exist so it can match a status update against its id.
+    """
     wa_id = new_wa_id()
     whatsapp = FakeWhatsApp()
 
