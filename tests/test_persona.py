@@ -273,4 +273,3 @@ async def test_an_opening_message_with_no_words_skips_the_model(
         assert whatsapp.sent == [(wa_id, f"{WELCOME}\n\n{NOT_UNDERSTOOD}")]
     finally:
         await purge(db, wa_id)
-""
