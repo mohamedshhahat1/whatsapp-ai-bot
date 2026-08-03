@@ -1,9 +1,16 @@
 """The welcome is approved company copy, so its guarantees are tested.
 
 "Always start with this welcome, and never repeat it" is a counting rule. A
-prompt cannot enforce it; the code prepends the text once, decided by a
-database count. These tests are what keep that true, and they also pin the two
-places where the persona must stay honest about what the bot can actually do.
+prompt cannot enforce it; the code sends the text once, decided by a timestamp
+on the conversation row. These tests are what keep that true, and they also
+pin the two places where the persona must stay honest about what the bot can
+actually do.
+
+There are two welcomes and they are not interchangeable. The full ``WELCOME``
+ends in a menu and is sent alone, to a customer who has only said hello.
+``WELCOME_PREFIX`` is two lines and is prepended to a real answer, in ONE
+message -- prepending the menu there would ask "how can I help you?" directly
+above the answer to that question.
 """
 
 from typing import Any
@@ -15,6 +22,7 @@ from app.services.persona import (
     NOT_UNDERSTOOD,
     SYSTEM_PROMPT,
     WELCOME,
+    WELCOME_PREFIX,
     is_unintelligible,
 )
 from app.services.prompt_builder import PromptBuilder
@@ -61,10 +69,24 @@ def test_messages_without_letters_or_digits_are_unintelligible() -> None:
     assert is_unintelligible(None)
 
 
-def test_anything_with_words_is_left_to_the_model() -> None:
-    """Only emptiness is decided in code; judging meaning is the model's job."""
+def test_anything_with_words_is_intelligible() -> None:
+    """Only emptiness is decided here.
+
+    "مرحبا" is intelligible AND a greeting: the two questions are separate,
+    and greeting.is_greeting_only answers the second one.
+    """
     for text in REAL_REQUESTS:
         assert not is_unintelligible(text), text
+
+
+def test_both_welcomes_share_one_opening_line() -> None:
+    """The company name and the emoji must never drift between the two."""
+    opening = WELCOME_PREFIX.split("\n\n")[0]
+    assert WELCOME.startswith(opening)
+    # The prefix is the short one: no menu, or it would not be worth having.
+    assert "•" in WELCOME
+    assert "•" not in WELCOME_PREFIX
+    assert len(WELCOME_PREFIX) < len(WELCOME)
 
 
 def test_the_packaged_persona_is_used_when_nothing_overrides_it() -> None:
@@ -100,9 +122,10 @@ def test_the_model_is_told_the_welcome_was_already_sent() -> None:
     assert "Never write a welcome" in later
 
 
-async def test_the_welcome_is_sent_once_and_only_on_the_first_message(
+async def test_a_first_question_gets_one_message_with_the_short_welcome(
     db: AsyncSession,
 ) -> None:
+    """Never welcome, wait, then answer. One notification, in order."""
     wa_id = new_wa_id()
     whatsapp = FakeWhatsApp()
     ai = FakeOpenAI()
@@ -124,9 +147,45 @@ async def test_the_welcome_is_sent_once_and_only_on_the_first_message(
         )
 
         assert len(whatsapp.sent) == 2
-        assert whatsapp.sent[0] == (wa_id, f"{WELCOME}\n\n{REPLY}")
+        assert whatsapp.sent[0] == (wa_id, f"{WELCOME_PREFIX}\n\n{REPLY}")
         # The second answer carries no welcome at all.
         assert whatsapp.sent[1] == (wa_id, REPLY)
+    finally:
+        await purge(db, wa_id)
+
+
+async def test_a_greeting_gets_the_full_welcome_and_costs_no_tokens(
+    db: AsyncSession,
+) -> None:
+    """Nothing was asked, so there is nothing for the model to answer."""
+    wa_id = new_wa_id()
+    whatsapp = FakeWhatsApp()
+    ai = FakeOpenAI()
+
+    try:
+        await process_webhook_payload(
+            db,
+            whatsapp,
+            ai,
+            get_settings(),
+            _payload(wa_id, f"wamid.in.{wa_id}.1", "السلام عليكم"),
+        )
+
+        assert ai.calls == []
+        assert whatsapp.sent == [(wa_id, WELCOME)]
+
+        # The question they send next is answered, with no second welcome.
+        await process_webhook_payload(
+            db,
+            whatsapp,
+            ai,
+            get_settings(),
+            _payload(wa_id, f"wamid.in.{wa_id}.2", "عايز أعرف سعر تشطيب شقة"),
+        )
+
+        assert len(ai.calls) == 1
+        assert whatsapp.sent[1] == (wa_id, REPLY)
+        assert WELCOME_PREFIX not in whatsapp.sent[1][1]
     finally:
         await purge(db, wa_id)
 
@@ -134,7 +193,11 @@ async def test_the_welcome_is_sent_once_and_only_on_the_first_message(
 async def test_an_opening_message_with_no_words_skips_the_model(
     db: AsyncSession,
 ) -> None:
-    """A thumbs-up costs no tokens and still gets the approved wording."""
+    """A thumbs-up costs no tokens and still gets the approved wording.
+
+    Distinct from the greeting case above: there are no words at all here, so
+    the welcome is followed by an invitation to say what is needed.
+    """
     wa_id = new_wa_id()
     whatsapp = FakeWhatsApp()
     ai = FakeOpenAI()
