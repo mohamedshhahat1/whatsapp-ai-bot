@@ -10,7 +10,7 @@ There are two welcomes and they are not interchangeable. The full ``WELCOME``
 ends in a menu and is sent alone, to a customer who has only said hello.
 ``WELCOME_PREFIX`` is two lines and is prepended to a real answer, in ONE
 message -- prepending the menu there would ask "how can I help you?" directly
-above the answer to that question.
+above the answer to that question. A courtesy opening gets neither.
 """
 
 from typing import Any
@@ -30,10 +30,10 @@ from app.services.webhook_processor import process_webhook_payload
 from tests.conftest import new_wa_id, purge
 from tests.test_webhook_integration import REPLY, FakeOpenAI, FakeWhatsApp
 
-NO_WORDS = (".", "...", "؟", "\U0001f44d", "\u2764\ufe0f", "!!", "   ", "")
+NO_WORDS = (".", "...", "\u061f", "\U0001f44d", "\u2764\ufe0f", "!!", "   ", "")
 REAL_REQUESTS = (
-    "عايز أعرف سعر تشطيب شقة",
-    "مرحبا",
+    "\u0639\u0627\u064a\u0632 \u0623\u0639\u0631\u0641 \u0633\u0639\u0631 \u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629",
+    "\u0645\u0631\u062d\u0628\u0627",
     "Hello",
     "120",
 )
@@ -72,8 +72,8 @@ def test_messages_without_letters_or_digits_are_unintelligible() -> None:
 def test_anything_with_words_is_intelligible() -> None:
     """Only emptiness is decided here.
 
-    "مرحبا" is intelligible AND a greeting: the two questions are separate,
-    and greeting.is_greeting_only answers the second one.
+    "\u0645\u0631\u062d\u0628\u0627" is intelligible AND a greeting: the two questions are separate,
+    and app/services/greeting.py answers the second one.
     """
     for text in REAL_REQUESTS:
         assert not is_unintelligible(text), text
@@ -84,8 +84,8 @@ def test_both_welcomes_share_one_opening_line() -> None:
     opening = WELCOME_PREFIX.split("\n\n")[0]
     assert WELCOME.startswith(opening)
     # The prefix is the short one: no menu, or it would not be worth having.
-    assert "•" in WELCOME
-    assert "•" not in WELCOME_PREFIX
+    assert "\u2022" in WELCOME
+    assert "\u2022" not in WELCOME_PREFIX
     assert len(WELCOME_PREFIX) < len(WELCOME)
 
 
@@ -136,14 +136,18 @@ async def test_a_first_question_gets_one_message_with_the_short_welcome(
             whatsapp,
             ai,
             get_settings(),
-            _payload(wa_id, f"wamid.in.{wa_id}.1", "عايز أعرف سعر تشطيب شقة"),
+            _payload(
+                wa_id,
+                f"wamid.in.{wa_id}.1",
+                "\u0639\u0627\u064a\u0632 \u0623\u0639\u0631\u0641 \u0633\u0639\u0631 \u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629",
+            ),
         )
         await process_webhook_payload(
             db,
             whatsapp,
             ai,
             get_settings(),
-            _payload(wa_id, f"wamid.in.{wa_id}.2", "والفيلا؟"),
+            _payload(wa_id, f"wamid.in.{wa_id}.2", "\u0648\u0627\u0644\u0641\u064a\u0644\u0627\u061f"),
         )
 
         assert len(whatsapp.sent) == 2
@@ -168,7 +172,11 @@ async def test_a_greeting_gets_the_full_welcome_and_costs_no_tokens(
             whatsapp,
             ai,
             get_settings(),
-            _payload(wa_id, f"wamid.in.{wa_id}.1", "السلام عليكم"),
+            _payload(
+                wa_id,
+                f"wamid.in.{wa_id}.1",
+                "\u0627\u0644\u0633\u0644\u0627\u0645 \u0639\u0644\u064a\u0643\u0645",
+            ),
         )
 
         assert ai.calls == []
@@ -180,12 +188,58 @@ async def test_a_greeting_gets_the_full_welcome_and_costs_no_tokens(
             whatsapp,
             ai,
             get_settings(),
-            _payload(wa_id, f"wamid.in.{wa_id}.2", "عايز أعرف سعر تشطيب شقة"),
+            _payload(
+                wa_id,
+                f"wamid.in.{wa_id}.2",
+                "\u0639\u0627\u064a\u0632 \u0623\u0639\u0631\u0641 \u0633\u0639\u0631 \u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629",
+            ),
         )
 
         assert len(ai.calls) == 1
         assert whatsapp.sent[1] == (wa_id, REPLY)
-        assert WELCOME_PREFIX not in whatsapp.sent[1][1]
+    finally:
+        await purge(db, wa_id)
+
+
+async def test_a_courtesy_opening_is_never_welcomed(db: AsyncSession) -> None:
+    """Greeting somebody who just thanked you is unmistakably robotic.
+
+    Asserts the ABSENCE of a welcome rather than an exact reply body, so it
+    does not depend on how intent.classify routes a bare thank-you.
+    """
+    wa_id = new_wa_id()
+    whatsapp = FakeWhatsApp()
+    ai = FakeOpenAI()
+
+    try:
+        await process_webhook_payload(
+            db,
+            whatsapp,
+            ai,
+            get_settings(),
+            _payload(wa_id, f"wamid.in.{wa_id}.1", "\u0634\u0643\u0631\u0627\u064b"),
+        )
+
+        assert len(whatsapp.sent) == 1
+        body = whatsapp.sent[0][1]
+        assert WELCOME not in body
+        assert WELCOME_PREFIX not in body
+
+        # The welcome is still OWED, not consumed: a real question next gets
+        # it. Greeted once, late, rather than never.
+        await process_webhook_payload(
+            db,
+            whatsapp,
+            ai,
+            get_settings(),
+            _payload(
+                wa_id,
+                f"wamid.in.{wa_id}.2",
+                "\u0639\u0627\u064a\u0632 \u0623\u0639\u0631\u0641 \u0633\u0639\u0631 \u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629",
+            ),
+        )
+
+        assert whatsapp.sent[1] == (wa_id, f"{WELCOME_PREFIX}\n\n{REPLY}")
     finally:
         await purge(db, wa_id)
 
