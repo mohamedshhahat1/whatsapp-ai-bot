@@ -32,24 +32,35 @@ is a second OpenAI charge.
 
 The welcome
 -----------
-A session's opening message is one of two things, and they take different
-paths through this module.
+A session's opening message is one of three things, and each takes a different
+path through ``handle_text_message``. The classifiers live in
+app/services/greeting.py; the decisions they drive are here.
 
-If it is only a greeting, ``is_greeting_only`` sends the full ``WELCOME`` on
-its own and returns before the model is reached. Nothing has been asked, so
-there is nothing to answer, and the menu in the welcome is the most useful
-reply available.
+* COURTESY -- "shukran", "tamam", "thank you". Not an opening at all. The
+  welcome flag is cleared and the message continues down the normal path, so
+  it is answered with no welcome attached in any form. Welcoming somebody who
+  just thanked you is the most obviously robotic thing this bot could do.
+* GREETING -- "mrhba", "good morning", "ya basha izzayak". The full ``WELCOME``
+  is sent on its own and the model is never reached. Nothing has been asked,
+  so there is nothing to answer, and the menu the welcome ends with is the
+  most useful reply available.
+* REQUEST -- everything else, including a greeting with a question attached.
+  ``WELCOME_PREFIX`` is prepended to the answer and the two go out as ONE
+  message. Never two: a welcome followed by an answer is two notifications,
+  arrives out of order often enough to matter, and reads as a bot working
+  through a script.
 
-If it contains a real request, ``WELCOME_PREFIX`` is prepended to the answer
-and the two go out as ONE message. Never two: a welcome followed by an answer
-is two notifications, arrives out of order often enough to matter, and reads
-as a bot working through a script.
+Which of the three applies is decided per message, but whether a welcome is
+owed at all is decided by ``SessionService.should_welcome`` from
+``welcome_sent_at`` on the conversation row. That is what makes "once per
+session" hold across AI replies, human handoff, resume-ai and any number of
+customer messages -- none of those clear the timestamp, so none of them can
+produce a second welcome.
 
-Which of the two applies is decided per message, but whether a welcome is owed
-at all is decided by ``SessionService.should_welcome`` from ``welcome_sent_at``
-on the conversation row. That is what makes "once per session" hold across AI
-replies, human handoff, resume-ai and any number of customer messages -- none
-of those clear the timestamp, so none of them can produce a second welcome.
+The courtesy branch clears the flag locally without setting that timestamp, so
+the welcome stays owed. A customer who opens with "thanks" and then asks a
+real question gets the prefix on that answer: greeted once, late rather than
+never.
 
 Session lifecycle
 -----------------
@@ -86,7 +97,7 @@ from app.models.message import STATUS_SENT, STATUS_UNCONFIRMED
 from app.repositories.ai_log import AILogRepository
 from app.services import intent, price_policy
 from app.services.conversation_service import ConversationService
-from app.services.greeting import is_greeting_only
+from app.services.greeting import is_courtesy_only, is_greeting_only
 from app.services.handoff import HANDOFF_ACK, is_sales_lead, wants_human
 from app.services.persona import (
     NOT_UNDERSTOOD,
@@ -493,6 +504,20 @@ class ChatService:
             return
 
         first = await self._needs_welcome(conversation)
+
+        if first and is_courtesy_only(text):
+            # "shukran", "tamam", "thank you". A session can open on one of
+            # these -- after a closing message, or when the customer picks up
+            # a thread they consider finished -- but it is not an opening, and
+            # greeting somebody who just thanked you is unmistakably robotic.
+            #
+            # Clearing the flag rather than taking a branch keeps the message
+            # on the normal path: classified, given history, answered by the
+            # model, with no welcome in any form. It also leaves
+            # welcome_sent_at unset, so the welcome is still owed -- if a real
+            # question follows, that answer carries the prefix.
+            logger.info("courtesy_opening", conversation_id=conversation.id)
+            first = False
 
         if first and is_unintelligible(text):
             await self._send_fixed(
