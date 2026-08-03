@@ -184,10 +184,14 @@ def test_the_two_kheirs_are_different_words() -> None:
     two categories does not collide.
     """
     assert is_greeting_only("\u0635\u0628\u0627\u062d \u0627\u0644\u062e\u064a\u0631")
-    assert is_courtesy_only("\u062c\u0632\u0627\u0643 \u0627\u0644\u0644\u0647 \u062e\u064a\u0631")
+    assert is_courtesy_only(
+        "\u062c\u0632\u0627\u0643 \u0627\u0644\u0644\u0647 \u062e\u064a\u0631"
+    )
 
 
 def test_digits_survive_folding() -> None:
     """A number is a request -- an area, a phone, an answer to a question."""
     assert not is_greeting_only("hi 120")
-    assert not is_greeting_only("\u0623\u0647\u0644\u0627\u064b \u0661\u0662\u0660 \u0645\u062a\u0631")
+    assert not is_greeting_only(
+        "\u0623\u0647\u0644\u0627\u064b \u0661\u0662\u0660 \u0645\u062a\u0631"
+    )

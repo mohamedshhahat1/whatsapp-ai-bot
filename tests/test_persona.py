@@ -147,7 +147,11 @@ async def test_a_first_question_gets_one_message_with_the_short_welcome(
             whatsapp,
             ai,
             get_settings(),
-            _payload(wa_id, f"wamid.in.{wa_id}.2", "\u0648\u0627\u0644\u0641\u064a\u0644\u0627\u061f"),
+            _payload(
+                wa_id,
+                f"wamid.in.{wa_id}.2",
+                "\u0648\u0627\u0644\u0641\u064a\u0644\u0627\u061f",
+            ),
         )
 
         assert len(whatsapp.sent) == 2
@@ -269,3 +273,4 @@ async def test_an_opening_message_with_no_words_skips_the_model(
         assert whatsapp.sent == [(wa_id, f"{WELCOME}\n\n{NOT_UNDERSTOOD}")]
     finally:
         await purge(db, wa_id)
+""
