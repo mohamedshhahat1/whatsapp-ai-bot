@@ -194,9 +194,9 @@ async def test_a_redelivered_webhook_is_processed_once(db: AsyncSession) -> None
 
 
 async def test_status_updates_are_recorded(db: AsyncSession) -> None:
-    """"Hello there" is a greeting, so the outbound row here is the welcome.
+    """The outbound row here is the welcome, because the payload is a greeting.
 
-    Which one it is does not matter to this test: it needs an outbound
+    Which message it is does not matter to this test: it needs an outbound
     message to exist so it can match a status update against its id.
     """
     wa_id = new_wa_id()
