@@ -6,13 +6,18 @@ Two different kinds of text live here, and the distinction is the whole point.
 to speak, and what it must never invent. Wording drift there costs a little
 quality and nothing else.
 
-``WELCOME``, ``WELCOME_PREFIX``, ``NOT_UNDERSTOOD`` and ``CLOSING`` are
-*company copy*: approved wording that real customers read. These are never
-produced by the model. The code sends them verbatim (see ``ChatService`` and
-``SessionService``), because "always start with this welcome" is a promise a
-language model cannot keep -- given twenty messages of history it will
-eventually paraphrase it, translate it, or skip it on the one conversation
-that mattered.
+``WELCOME``, ``WELCOME_PREFIX``, ``NOT_UNDERSTOOD``, ``CLOSING``,
+``SERVICE_BUSY`` and ``UNSUPPORTED_MESSAGE`` are *company copy*: approved
+wording that real customers read. These are never produced by the model. The
+code sends them verbatim (see ``ChatService`` and ``SessionService``), because
+"always start with this welcome" is a promise a language model cannot keep --
+given twenty messages of history it will eventually paraphrase it, translate
+it, or skip it on the one conversation that mattered.
+
+The last two are the ones a customer sees when something has gone wrong, which
+is exactly when English would be most conspicuous: a customer who has been
+spoken to in Egyptian Arabic for five messages and then receives an English
+apology has been shown the machinery behind the conversation.
 
 Two welcomes, one opening line
 ------------------------------
@@ -54,6 +59,9 @@ one on the waving hand before the model writes a word, which is why the
 first-message layer in ``PromptBuilder`` tells the model not to open with a
 second one. The budget is a property of the message the customer receives, not
 of the model's share of it.
+
+The two error messages carry no emoji at all, for the reason the persona gives
+for an angry customer: a friendly glyph beside an apology reads as flippant.
 
 Why the formatting syntax is spelled out
 ----------------------------------------
@@ -133,6 +141,36 @@ CLOSING = (
     "عرض سعر في أي وقت، يسعدنا دائماً خدمتك.\n"
     "\n"
     "نتمنى لحضرتك يوماً سعيداً."
+)
+
+# Sent instead of an answer when the model cannot be reached at all: OpenAI
+# down, timing out, or refusing the request. See ``ChatService``.
+#
+# This is the message a customer receives on the worst day this system has,
+# which is precisely why it belongs here rather than inline in the service.
+# It was English -- "Sorry, I'm having trouble responding right now" -- sent to
+# customers who had been addressed in Egyptian Arabic up to that point. An
+# outage is survivable; an outage that also reveals the machinery is what
+# makes a customer stop trusting the business.
+#
+# It promises a follow-up because one is genuinely possible: the conversation
+# stays open, the dashboard shows it, and a colleague can pick it up. No
+# emoji, on the same principle the persona applies to an angry customer.
+SERVICE_BUSY = (
+    "نعتذر لحضرتك، يوجد ضغط مؤقت على النظام في الوقت الحالي. "
+    "سنعاود التواصل معك في أقرب وقت ممكن."
+)
+
+# Sent when the customer sends a message type the bot cannot handle at all --
+# audio, video, a location, a contact card.
+#
+# Distinct from NOT_UNDERSTOOD, which answers a TEXT message that carried no
+# words. The two are close enough in spirit to look mergeable and must not be
+# merged: this one has to tell the customer what to do instead, because the
+# thing they tried is not going to start working if they repeat it.
+UNSUPPORTED_MESSAGE = (
+    "نعتذر لحضرتك، لا أستطيع التعامل مع هذا النوع من الرسائل حالياً. "
+    "من فضلك أرسل استفسارك في رسالة نصية وسأساعدك بكل سرور."
 )
 
 SYSTEM_PROMPT = f"""You are the official AI customer assistant for
