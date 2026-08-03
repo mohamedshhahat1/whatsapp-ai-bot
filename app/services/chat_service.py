@@ -30,6 +30,27 @@ gets no reply sends "?" and gets one; a customer who gets two different
 answers about their quotation stops trusting the business, and every duplicate
 is a second OpenAI charge.
 
+The welcome
+-----------
+A session's opening message is one of two things, and they take different
+paths through this module.
+
+If it is only a greeting, ``is_greeting_only`` sends the full ``WELCOME`` on
+its own and returns before the model is reached. Nothing has been asked, so
+there is nothing to answer, and the menu in the welcome is the most useful
+reply available.
+
+If it contains a real request, ``WELCOME_PREFIX`` is prepended to the answer
+and the two go out as ONE message. Never two: a welcome followed by an answer
+is two notifications, arrives out of order often enough to matter, and reads
+as a bot working through a script.
+
+Which of the two applies is decided per message, but whether a welcome is owed
+at all is decided by ``SessionService.should_welcome`` from ``welcome_sent_at``
+on the conversation row. That is what makes "once per session" hold across AI
+replies, human handoff, resume-ai and any number of customer messages -- none
+of those clear the timestamp, so none of them can produce a second welcome.
+
 Session lifecycle
 -----------------
 Each of those transactions also resets the conversation's idle timer, which is
@@ -65,8 +86,14 @@ from app.models.message import STATUS_SENT, STATUS_UNCONFIRMED
 from app.repositories.ai_log import AILogRepository
 from app.services import intent, price_policy
 from app.services.conversation_service import ConversationService
+from app.services.greeting import is_greeting_only
 from app.services.handoff import HANDOFF_ACK, is_sales_lead, wants_human
-from app.services.persona import NOT_UNDERSTOOD, WELCOME, is_unintelligible
+from app.services.persona import (
+    NOT_UNDERSTOOD,
+    WELCOME,
+    WELCOME_PREFIX,
+    is_unintelligible,
+)
 from app.services.prompt_builder import PromptBuilder
 from app.services.retrieval import (
     DocumentRetriever,
@@ -204,8 +231,9 @@ class ChatService:
     ) -> None:
         """Send company copy that needs no model call, and persist it.
 
-        ``welcome`` says whether ``text`` has the welcome prepended to it, so
-        the flag is only set once the customer has actually been greeted.
+        ``welcome`` says whether ``text`` carries the welcome -- either as a
+        prefix or as the whole message -- so the flag is only set once the
+        customer has actually been greeted.
         """
         if await self._send_once(wa_id, conversation_id, text, reply_to):
             if welcome:
@@ -394,8 +422,11 @@ class ChatService:
             )
             reply_text = price_policy.deflection(self._settings.sales_phone)
 
+        # The short prefix, not the full welcome. This customer asked a
+        # question, and the menu at the end of WELCOME asks them what they
+        # need -- directly above the answer to what they needed.
         if welcome:
-            reply_text = f"{WELCOME}\n\n{reply_text}"
+            reply_text = f"{WELCOME_PREFIX}\n\n{reply_text}"
 
         if generation is not None:
             await self._ai_logs.create(
@@ -431,7 +462,8 @@ class ChatService:
         writing in after their previous session was closed transparently gets a
         new one here -- new history, no welcome flag, no closing flag. That is
         the whole reopen path; there is no state to clear because closing the
-        old session released it.
+        old session released it. The opening logic below then runs again from
+        scratch, which is what makes a returning customer feel like a new one.
 
         The exception is a customer who comes straight back: inside
         CONVERSATION_REOPEN_WINDOW_MINUTES, get_context revives the previous
@@ -472,13 +504,32 @@ class ChatService:
             )
             return
 
+        if first and is_greeting_only(text):
+            # An opening with no request in it. The welcome IS the answer, and
+            # the menu it ends with is the most useful thing that can be said
+            # to somebody who has not yet said what they want.
+            #
+            # Returning here also keeps the model away from a message it
+            # cannot do anything sensible with: told the welcome had been
+            # prepended and asked to continue, it would either invent a topic
+            # or re-ask the question the menu just asked.
+            logger.info("greeting_only_opening", conversation_id=conversation.id)
+            await self._send_fixed(
+                wa_id,
+                conversation.id,
+                WELCOME,
+                reply_to=wa_message_id,
+                welcome=True,
+            )
+            return
+
         scope = intent.classify(text)
 
         if scope == intent.OUT:
             logger.info("out_of_scope_message", conversation_id=conversation.id)
             reply = intent.out_of_scope_reply(self._settings.company_name)
             if first:
-                reply = f"{WELCOME}\n\n{reply}"
+                reply = f"{WELCOME_PREFIX}\n\n{reply}"
             await self._send_fixed(
                 wa_id,
                 conversation.id,
@@ -588,7 +639,7 @@ class ChatService:
         first = await self._needs_welcome(conversation)
         reply = "Sorry, I can't process that type of message yet. Please send text."
         if first:
-            reply = f"{WELCOME}\n\n{reply}"
+            reply = f"{WELCOME_PREFIX}\n\n{reply}"
         await self._send_fixed(
             wa_id,
             conversation.id,
