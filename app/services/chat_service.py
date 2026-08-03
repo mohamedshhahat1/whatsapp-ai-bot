@@ -101,6 +101,8 @@ from app.services.greeting import is_courtesy_only, is_greeting_only
 from app.services.handoff import HANDOFF_ACK, is_sales_lead, wants_human
 from app.services.persona import (
     NOT_UNDERSTOOD,
+    SERVICE_BUSY,
+    UNSUPPORTED_MESSAGE,
     WELCOME,
     WELCOME_PREFIX,
     is_unintelligible,
@@ -115,9 +117,13 @@ from app.services.session_service import SessionService
 
 logger = get_logger(__name__)
 
-FALLBACK_REPLY = (
-    "Sorry, I'm having trouble responding right now. Please try again in a moment."
-)
+# What the customer gets when the model cannot be reached. The wording lives
+# in persona.py with the rest of the copy a customer can actually receive --
+# it used to be an English literal defined here, which meant the one message
+# sent on the worst day this system has was also the only one nobody had
+# proofread. Kept as a module-level name because three places in the
+# generation path fall back to it.
+FALLBACK_REPLY = SERVICE_BUSY
 
 
 class ChatService:
@@ -662,7 +668,7 @@ class ChatService:
             return
 
         first = await self._needs_welcome(conversation)
-        reply = "Sorry, I can't process that type of message yet. Please send text."
+        reply = UNSUPPORTED_MESSAGE
         if first:
             reply = f"{WELCOME_PREFIX}\n\n{reply}"
         await self._send_fixed(
