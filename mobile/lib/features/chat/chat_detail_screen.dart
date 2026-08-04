@@ -253,7 +253,7 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                             ),
                             title: Text('#${previous.id}'),
                             subtitle: Text(
-                              formatDateTime(previous.createdAt),
+                              Formatters.fullDate(previous.createdAt),
                               style: theme.textTheme.bodySmall,
                             ),
                             trailing: previous.tag == tagSalesLead
