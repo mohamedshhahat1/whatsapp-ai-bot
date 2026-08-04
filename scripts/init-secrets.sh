@@ -117,6 +117,25 @@ placeholder_secret backup_s3_secret_access_key
 placeholder_secret backup_gcs_credentials
 placeholder_secret backup_azure_sas_token
 
+# Mobile push notifications (docs/PUSH_NOTIFICATIONS.md).
+#
+# The Firebase service-account JSON, which cannot be generated or typed at a
+# prompt -- it is a multi-line file downloaded from the Firebase console under
+# Project settings -> Service accounts -> Generate new private key. Left as an
+# empty placeholder because push is optional and off by default: an operator
+# who does not use it must not be blocked from bringing the stack up, and the
+# app treats missing credentials as "push disabled" rather than an error.
+#
+# To enable it later:
+#   cp ~/Downloads/<project>-firebase-adminsdk-*.json ./secrets/fcm_credentials
+#   chmod 600 ./secrets/fcm_credentials
+# then set PUSH_ENABLED=true and FCM_PROJECT_ID in the deployment environment.
+#
+# This key can send a notification to every device registered against your
+# project. It belongs here and nowhere else -- never in the repository, and
+# never in the mobile app, which uses a different file (google-services.json).
+placeholder_secret fcm_credentials
+
 # Values only you can provide
 prompt_secret openai_api_key "OpenAI API key (sk-...)"
 prompt_secret whatsapp_token "WhatsApp Cloud API token"
