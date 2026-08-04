@@ -70,7 +70,7 @@ class _AnalyticsScreenState extends ConsumerState<AnalyticsScreen> {
               const SizedBox(height: 16),
               if (state.topQuestions.isNotEmpty) _TopQuestionsList(questions: state.topQuestions).animate().fadeIn(delay: 600.ms).slideY(begin: 0.1),
             ]),
-          ),
+          )),
         ],
       ),
     );

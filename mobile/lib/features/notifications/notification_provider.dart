@@ -38,7 +38,7 @@ class NotificationNotifier extends StateNotifier<List<AppNotification>> {
     }
   }
 
-  void markRead(int id) { state = state.map((n) => n.id == id ? n..isRead = true : n).toList(); }
+  void markRead(int id) { state = state.map((n) => n.id == id ? (n..isRead = true) : n).toList(); }
   void markAllRead() { state = state.map((n) => n..isRead = true).toList(); }
   void clear() { state = []; }
   int get unreadCount => state.where((n) => !n.isRead).length;
