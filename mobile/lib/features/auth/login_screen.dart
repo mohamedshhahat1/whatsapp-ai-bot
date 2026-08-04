@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../core/theme/app_colors.dart';
-import '../../core/config/app_config.dart';
 import '../../core/storage/secure_storage.dart';
 import 'auth_provider.dart';
 
@@ -27,11 +26,13 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
   @override
   void initState() {
     super.initState();
+    // Prefilled ONLY from a URL this operator has used before. No fallback
+    // default on purpose: a placeholder would pass the validator, get saved on
+    // the first tap, and leave the app timing out against a domain nobody
+    // owns. Blank forces the decision, and the validator refuses empty.
     final initialUrl = ref.read(initialBaseUrlProvider);
     if (initialUrl != null && initialUrl.isNotEmpty) {
       _urlController.text = initialUrl;
-    } else {
-      _urlController.text = AppConfig.defaultBaseUrl;
     }
   }
 
@@ -103,7 +104,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   const SizedBox(height: 40),
                   TextFormField(
                     controller: _urlController,
-                    decoration: const InputDecoration(labelText: 'Server URL', hintText: 'https://your-api.com', prefixIcon: Icon(Icons.dns)),
+                    keyboardType: TextInputType.url,
+                    autocorrect: false,
+                    decoration: const InputDecoration(
+                      labelText: 'Server URL',
+                      hintText: 'https://api.yourdomain.com',
+                      helperText: 'Without /admin. Same Wi-Fi: http://192.168.x.x:8000',
+                      helperMaxLines: 2,
+                      prefixIcon: Icon(Icons.dns),
+                    ),
                     validator: (v) {
                       if (v == null || v.trim().isEmpty) return 'Required';
                       if (!v.startsWith('http://') && !v.startsWith('https://')) return 'Must start with http:// or https://';
@@ -114,6 +123,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   TextFormField(
                     controller: _keyController,
                     obscureText: _obscureKey,
+                    autocorrect: false,
+                    enableSuggestions: false,
                     decoration: InputDecoration(
                       labelText: 'API Key', hintText: 'Your admin API key', prefixIcon: const Icon(Icons.key),
                       suffixIcon: IconButton(icon: Icon(_obscureKey ? Icons.visibility : Icons.visibility_off), onPressed: () => setState(() => _obscureKey = !_obscureKey)),

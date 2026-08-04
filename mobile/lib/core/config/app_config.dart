@@ -1,12 +1,17 @@
 /// Central configuration for the mobile app.
-/// All values are environment-based and can be overridden at runtime.
+///
+/// There is deliberately no default server URL here. A prefilled placeholder
+/// passes the login validator, gets saved on the first tap, and leaves the app
+/// timing out against a domain nobody owns -- which reads as "the backend is
+/// down" rather than "you have not told me where the backend is". The URL is
+/// per-deployment and has to be entered.
 class AppConfig {
   AppConfig._();
 
-  /// Default base URL — overridden by user input on login screen.
-  static const defaultBaseUrl = 'https://api.example.com';
-
   /// API version prefix — all admin endpoints are under /admin.
+  ///
+  /// Appended by DioClient.updateBaseUrl, so the URL entered at login must NOT
+  /// include it.
   static const apiPrefix = '/admin';
 
   /// WebSocket path on the backend.
