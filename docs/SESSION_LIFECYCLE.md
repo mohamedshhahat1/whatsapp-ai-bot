@@ -163,6 +163,57 @@ Note what this means for the UI: controls are disabled on a **superseded**
 conversation, not merely a closed one. Disabling on closed would block the
 normal path, since closed sessions reopen on demand.
 
+### A delivery that arrives late
+
+Meta retries a webhook it could not deliver, and keeps retrying for hours.
+That is the behaviour you want — it is what stops a deploy or a brief outage
+from losing customer messages — but it interacts badly with everything above,
+because a redelivery is indistinguishable from a message sent a second ago
+unless something looks at the timestamp.
+
+This is not hypothetical. A customer said goodbye, received the closing
+message, and around forty minutes later — having sent nothing at all — received
+a welcome and the interactive menu. The message that caused it was real, and
+had been sent *before* the goodbye; it had simply never been processed, because
+the webhook endpoint was returning 500 at the time. When the retry finally
+succeeded it arrived past the reopen window, so it did not revive the session:
+it minted a new one, with `welcome_sent_at` NULL, and that new session was
+greeted exactly as designed.
+
+Every individual step was correct, including the greeting. The defect was that
+a message's **age was never an input** to any of those decisions.
+
+So `app/services/webhook_processor.py` now measures how old an inbound message
+is before dispatching it. Past `INBOUND_MAX_AGE_MINUTES`,
+`record_without_answering()` in `app/services/stale_inbound.py` runs instead of
+the normal handler: it claims the message through the same `claim_inbound`
+path, commits it, publishes `conversation.activity`, logs
+`stale_inbound_not_answered` with the state it found — and sends nothing.
+
+Recording rather than discarding matters. The customer did write to you, an
+operator should see it, and it should sit in the transcript in the right place.
+What is suppressed is only the *reply*, because answering a forty-minute-old
+message is worse than not answering it: the customer has moved on, and the
+answer arrives with nothing to attach itself to.
+
+**`INBOUND_MAX_AGE_MINUTES` must stay below
+`CONVERSATION_REOPEN_WINDOW_MINUTES`.** Between the two lies a band of time in
+which a delivery is fresh enough to answer but too old to revive the session it
+belongs to — which reproduces the original bug exactly. The defaults leave
+twenty minutes of headroom (10 against 30), and
+`test_default_max_age_stays_below_the_reopen_window` in
+`tests/test_inbound_freshness.py` fails if a later change closes that gap, so
+this constraint is enforced rather than merely written down here.
+
+The gate **fails open**. A message whose `timestamp` is missing or unparseable
+is answered normally and logs `inbound_timestamp_unparseable`. A malformed
+field or a future payload version should cost a log line, not a silent refusal
+to answer a customer who is sitting there waiting.
+
+Only `messages` are gated. Delivery and read receipts in the same payload are
+processed whatever their age, since they send nothing and only move a row's
+status forward — a late receipt is still true.
+
 ## The idle timer
 
 `last_activity_at` is bumped by `SessionService.touch()` on:
@@ -326,6 +377,13 @@ what it remembers would change its answers in ways nobody asked for.
 | `PREVENT_DUPLICATE_CLOSING` | `true` | Should stay on; see above for why it is structural. |
 | `RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE` | `true` | Off, the timer measures customer silence only. |
 | `CONVERSATION_CLOSING_MESSAGE` | *(empty)* | Empty uses `persona.CLOSING`. |
+| `REJECT_STALE_INBOUND` | `true` | Off, a redelivered message is answered however old it is — see [A delivery that arrives late](#a-delivery-that-arrives-late). This is the switch to use if you ever need the gate gone; do not raise the bound instead. |
+| `INBOUND_MAX_AGE_MINUTES` | `10` | Must stay **below** `CONVERSATION_REOPEN_WINDOW_MINUTES`. A test enforces it for the defaults. |
+
+The last two live in `app/core/inbound_config.py`, not `app/config.py`, because
+they govern whether a delivery is answered at all rather than how a session
+behaves once it is. They are listed here because this is where their effect is
+visible.
 
 The closing copy defaults to the Arabic in `app/services/persona.py`, matching
 `WELCOME` and `NOT_UNDERSTOOD`. It lives in code for the same reason they do:
