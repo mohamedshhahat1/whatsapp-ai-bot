@@ -1,4 +1,5 @@
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
@@ -23,11 +24,28 @@ class DioClient {
     dio.interceptors.addAll([
       AuthInterceptor(_secureStorage),
       ErrorInterceptor(),
-      LogInterceptor(
-        requestBody: false,
-        responseBody: false,
-        logPrint: (o) => print('[DIO] $o'),
-      ),
+      // Debug builds only, and headers are NEVER printed.
+      //
+      // AuthInterceptor attaches X-API-Key to every request, and that key is
+      // unscoped admin access to every customer's phone number and message
+      // history. LogInterceptor prints request headers by default, which put it
+      // in logcat in full on every call -- and therefore into every bug report,
+      // screen recording and pasted debug log.
+      //
+      // Headers are switched off rather than redacted: url/method/timings are
+      // what makes this useful, the credential never was, and a redaction list
+      // silently fails to cover the next sensitive header somebody adds.
+      if (kDebugMode)
+        LogInterceptor(
+          request: true,
+          requestHeader: false,
+          requestBody: false,
+          responseHeader: false,
+          responseBody: false,
+          // debugPrint is throttled; print() drops lines silently once logcat
+          // rate-limits, which is worse than not logging at all.
+          logPrint: (o) => debugPrint('[DIO] $o'),
+        ),
     ]);
 
     return dio;
