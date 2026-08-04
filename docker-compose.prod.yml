@@ -68,6 +68,35 @@ x-app-environment: &app-environment
   CELERY_TASK_TIME_LIMIT: "300"
   CELERY_TASK_SOFT_TIME_LIMIT: "240"
   CELERY_VISIBILITY_TIMEOUT: "900"
+  # --- Inbound freshness (app/core/inbound_config.py) ----------------------
+  # Meta retries an undelivered webhook for hours. Without this gate, a
+  # message the bot never managed to process is answered whenever the retry
+  # finally lands -- which is how a customer received a welcome and a menu
+  # forty minutes after saying goodbye. A delivery older than the bound is
+  # recorded so the dashboard still shows it, but nothing is sent.
+  #
+  # MUST stay below CONVERSATION_REOPEN_WINDOW_MINUTES (30). Above it, a stale
+  # delivery can arrive after the window has closed, which starts a brand new
+  # session and re-sends the welcome -- exactly the bug this prevents.
+  REJECT_STALE_INBOUND: "${REJECT_STALE_INBOUND:-true}"
+  INBOUND_MAX_AGE_MINUTES: "${INBOUND_MAX_AGE_MINUTES:-10}"
+  # --- Mobile push notifications (docs/PUSH_NOTIFICATIONS.md) --------------
+  # Off by default, and the fcm_credentials secret is an empty placeholder
+  # until you paste the service-account JSON in, so the two defaults agree:
+  # nothing is sent and nothing errors. Enable both together.
+  #
+  # No FCM_CREDENTIALS_FILE here on purpose -- the secret mounted at
+  # /run/secrets/fcm_credentials is picked up by name like the other eight.
+  #
+  # FCM_PROJECT_ID is the STRING project ID from Project settings -> General
+  # (e.g. alkayan-bot-4f21), not the project number and not the Sender ID.
+  # A wrong value is not caught at start-up; it fails with a 404 on every
+  # single send.
+  PUSH_ENABLED: "${PUSH_ENABLED:-false}"
+  FCM_PROJECT_ID: "${FCM_PROJECT_ID:-}"
+  # Must match the channel the Android app creates, or Android accepts the
+  # notification and silently shows nothing.
+  PUSH_ANDROID_CHANNEL: "${PUSH_ANDROID_CHANNEL:-whatsapp_ai_bot_alerts}"
 
 x-app-secrets: &app-secrets
   - database_url
@@ -78,6 +107,11 @@ x-app-secrets: &app-secrets
   - whatsapp_verify_token
   - whatsapp_app_secret
   - admin_api_key
+  # Notifications are dispatched from events.publish, which runs in the worker
+  # for queued webhook work as well as in the API process -- so this belongs on
+  # the shared anchor, not on `app` alone. On `app` only, operator actions
+  # would notify and incoming customer messages would not.
+  - fcm_credentials
 
 services:
   migrate:
@@ -588,6 +622,12 @@ secrets:
     file: ./secrets/backup_azure_sas_token
   backup_encryption_passphrase:
     file: ./secrets/backup_encryption_passphrase
+  # Firebase service-account JSON for push notifications. Same empty-placeholder
+  # rule as the backup credentials above: re-run ./scripts/init-secrets.sh on an
+  # existing host before deploying this file, or the stack will refuse to start
+  # because ./secrets/fcm_credentials does not exist yet.
+  fcm_credentials:
+    file: ./secrets/fcm_credentials
 
 volumes:
   pgdata:
