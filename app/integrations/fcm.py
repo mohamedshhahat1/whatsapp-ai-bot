@@ -32,6 +32,10 @@ from app.core.retry import http_retry
 logger = get_logger(__name__)
 
 FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
+
+# One format placeholder, ``{project}``. Written with single braces on purpose:
+# a doubled brace is an escaped literal brace to str.format, which silently
+# produces an unusable URL instead of an error.
 FCM_ENDPOINT = "https://fcm.googleapis.com/v1/projects/{project}/messages:send"
 
 # Refresh the access token a minute before it actually expires. A token that
