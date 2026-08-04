@@ -31,7 +31,10 @@ class NotFoundFailure extends Failure {
 
 class ValidationFailure extends Failure {
   final List<String> errors;
-  const ValidationFailure({required this.errors}) : super(message: errors.join(', '), statusCode: 422);
+
+  /// Not const: the message is built by joining [errors], and a const
+  /// constructor initialiser cannot invoke a method.
+  ValidationFailure({required this.errors}) : super(message: errors.join(', '), statusCode: 422);
 }
 
 class UnknownFailure extends Failure {

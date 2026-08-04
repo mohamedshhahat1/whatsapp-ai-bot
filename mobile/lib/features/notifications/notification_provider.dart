@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/websocket/websocket_service.dart';
+import '../chat/chat_models.dart' show tagSalesLead;
 
 class AppNotification {
   final int id;

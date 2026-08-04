@@ -21,9 +21,11 @@ Future<void> main() async {
   runApp(
     ProviderScope(
       overrides: [
+        // overrideWithValue exists on Provider, but riverpod 2.6 removed it
+        // from StateProvider, so the two StateProviders use overrideWith.
         secureStorageProvider.overrideWithValue(secureStorage),
-        initialAuthStateProvider.overrideWithValue(hasKey),
-        initialBaseUrlProvider.overrideWithValue(baseUrl),
+        initialAuthStateProvider.overrideWith((ref) => hasKey),
+        initialBaseUrlProvider.overrideWith((ref) => baseUrl),
       ],
       child: const WhatsAppAiApp(),
     ),
