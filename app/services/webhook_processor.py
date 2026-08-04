@@ -44,6 +44,27 @@ async def process_webhook_payload(
                     await service.handle_status_update(wa_message_id, new_status)
 
 
+def _interactive_selection(message: dict[str, Any]) -> tuple[str, str] | None:
+    """Extract ``(selection_id, title)`` from an interactive reply.
+
+    Meta uses a different envelope per menu type -- ``button_reply`` for reply
+    buttons, ``list_reply`` for list rows -- carrying the same two fields. The
+    id is the one that matters; see app/services/menu.py for why the title is
+    never routed on.
+
+    ``None`` when the envelope is missing or carries no id, which is not worth
+    guessing at: without an id there is nothing to route.
+    """
+    interactive = message.get("interactive", {})
+    if not isinstance(interactive, dict):
+        return None
+    for key in ("button_reply", "list_reply"):
+        reply = interactive.get(key)
+        if isinstance(reply, dict) and reply.get("id"):
+            return str(reply["id"]), str(reply.get("title") or "")
+    return None
+
+
 async def _dispatch_message(
     service: ChatService, message: dict[str, Any], contacts: dict[str, str | None]
 ) -> None:
@@ -67,6 +88,35 @@ async def _dispatch_message(
                 media.get("id"),
                 media.get("caption"),
             )
+        elif message_type == "interactive":
+            selection = _interactive_selection(message)
+            if selection is None:
+                await service.handle_unsupported_message(
+                    wa_id, name, wa_message_id, message_type
+                )
+            else:
+                selection_id, title = selection
+                await service.handle_interactive_message(
+                    wa_id, name, wa_message_id, selection_id, title
+                )
+        elif message_type == "button":
+            # A quick-reply button on a template message. Different envelope,
+            # same meaning: ``payload`` is the stable id we attached when the
+            # template was created, ``text`` is the label the customer saw.
+            button = message.get("button", {})
+            payload = button.get("payload") if isinstance(button, dict) else None
+            if payload:
+                await service.handle_interactive_message(
+                    wa_id,
+                    name,
+                    wa_message_id,
+                    str(payload),
+                    str(button.get("text") or ""),
+                )
+            else:
+                await service.handle_unsupported_message(
+                    wa_id, name, wa_message_id, message_type
+                )
         else:
             await service.handle_unsupported_message(
                 wa_id, name, wa_message_id, message_type
