@@ -17,3 +17,6 @@ pydantic>=2.10
 pydantic-settings>=2.7
 httpx>=0.28
 structlog>=24.4
+# Signs the service-account JWT that FCM HTTP v1 requires. The old server-key
+# API needed no credentials library; Google shut it down in June 2024.
+google-auth>=2.36

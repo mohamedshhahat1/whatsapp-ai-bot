@@ -157,3 +157,61 @@ DUPLICATE_DELIVERIES_TOTAL = Counter(
     ),
     ["stage"],  # inbound_claim | reply_reserved | generation_cache
 )
+
+# --- Mobile push notifications (app/services/notification_service.py) --------
+
+PUSH_SENT_TOTAL = Counter(
+    "push_sent_total",
+    (
+        "Notifications ACCEPTED by Firebase, by platform and event type. "
+        "Accepted is not delivered: FCM queues for offline devices and issues "
+        "no receipt, so this counts handoffs to Google, not phones that buzzed."
+    ),
+    ["platform", "type"],
+)
+
+PUSH_FAILED_TOTAL = Counter(
+    "push_failed_total",
+    (
+        "Notifications that could not be handed to Firebase, by reason. "
+        "'transient' has already exhausted its retries; 'not_configured' means "
+        "push is switched on without usable credentials."
+    ),
+    ["platform", "reason"],  # transient | rejected | not_configured | unknown
+)
+
+PUSH_INVALID_TOKEN_TOTAL = Counter(
+    "push_invalid_token_total",
+    (
+        "Device tokens retired because Firebase said they are permanently "
+        "undeliverable (uninstalled app, rotated token, wrong project). A "
+        "steady trickle is normal; a spike means a bad credential or a bad "
+        "release."
+    ),
+    ["platform"],
+)
+
+PUSH_DELIVERY_LATENCY = Histogram(
+    "push_delivery_latency_seconds",
+    (
+        "Round-trip time of the FCM send call in seconds. Named 'delivery' to "
+        "match the spec, but it measures the API round trip only -- Firebase "
+        "provides no delivery confirmation, so true time-to-lock-screen is not "
+        "observable from here. Do not build a delivery SLO on this."
+    ),
+    buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 8, 13),
+)
+
+REGISTERED_DEVICES = Gauge(
+    "registered_devices_total",
+    (
+        "Devices currently enabled to receive push notifications. Reading 0 "
+        "means nobody can be notified of anything, which is otherwise "
+        "indistinguishable from a quiet day."
+    ),
+)
+
+# Same reasoning as AI_DISABLED above: an absent series and a series reading
+# zero mean different things, and "nothing has registered yet" should not look
+# like "not scraped yet".
+REGISTERED_DEVICES.set(0)
