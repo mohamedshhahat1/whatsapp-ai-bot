@@ -16,6 +16,11 @@ conversation's own lifecycle columns (status and its timestamps). Those are
 not customer data -- they are facts about the row, not about the person -- and
 carrying them means a dashboard can repaint a status badge without a round
 trip. Message *content* still never appears here.
+
+This module is also where mobile push notifications are triggered, for the
+reason given in ``app/services/push_dispatcher.py``: every code path that a
+dashboard needs to hear about already reports here, so a phone can listen to
+the same place instead of the message pipeline growing a second set of hooks.
 """
 
 import json
@@ -54,6 +59,8 @@ def conversation_activity(*, conversation_id: int, inbound: bool) -> dict[str, A
     ``inbound`` marks a turn that started with the customer. The dashboard uses
     it to decide whether to pull the operator's attention to the conversation:
     the bot answering itself, or an operator's own manual reply, should not.
+    Push notifications use it for the same purpose and more strictly -- see
+    ``push_dispatcher._classify``.
     """
     return {
         "type": ACTIVITY,
@@ -164,8 +171,30 @@ def conversation_reopened(
     }
 
 
+async def _notify_devices(event: dict[str, Any]) -> None:
+    """Offer one event to the mobile push dispatcher.
+
+    Imported inside the function, like the Redis client above, so that neither
+    ``app.core`` nor the test suite acquires a dependency on the service layer
+    at import time.
+
+    Wrapped in its own try/except rather than sharing the publish one. The two
+    failures are unrelated: a dashboard that missed a refresh hint because
+    Redis is down should not also lose its phone notification, and Firebase
+    being unreachable must not stop the WebSocket event that is already out.
+    """
+    try:
+        from app.services.push_dispatcher import dispatch
+
+        await dispatch(event)
+    except Exception as exc:
+        logger.warning(
+            "push_dispatch_unavailable", type=event.get("type"), error=str(exc)
+        )
+
+
 async def publish(event: dict[str, Any], settings: Settings | None = None) -> None:
-    """Fan one event out to every connected dashboard.
+    """Fan one event out to every connected dashboard, and to mobile devices.
 
     A short-lived client per publish, on purpose. The Celery worker runs each
     task in its own event loop, and a cached asyncio Redis client would still
@@ -177,6 +206,11 @@ async def publish(event: dict[str, Any], settings: Settings | None = None) -> No
     falls back to polling; a customer whose reply was not sent because the
     notification bus was down would be a real outage. The reply has already
     been committed by the time this runs.
+
+    Push is attempted after the publish and independently of whether it
+    succeeded, because the two audiences are unrelated: an operator sitting in
+    front of the dashboard and one whose phone is in a pocket should not share
+    a single point of failure.
     """
     settings = settings or get_settings()
     try:
@@ -189,3 +223,5 @@ async def publish(event: dict[str, Any], settings: Settings | None = None) -> No
             await client.aclose()
     except Exception as exc:
         logger.warning("event_publish_failed", type=event.get("type"), error=str(exc))
+
+    await _notify_devices(event)
