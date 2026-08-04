@@ -6,6 +6,22 @@ storage is used and slowapi skips all checks entirely.
 Scope note: this module limits HTTP *endpoints*. It is not, and cannot be,
 per-customer fairness -- see ``app/core/quota.py`` for that. The two are
 complementary and neither replaces the other.
+
+A note on the parameter name
+----------------------------
+Both key functions below MUST name their parameter ``request``, even where the
+value is unused. slowapi chooses how to call them by inspecting the signature:
+
+    if "request" in signature(lim.key_func).parameters.keys():
+        limit_key = lim.key_func(request)
+    else:
+        limit_key = lim.key_func()
+
+So a parameter renamed to ``_request`` to signal "unused" makes slowapi call it
+with no arguments, which raises TypeError inside the limiter and returns 500
+for every request to the decorated route. Nothing in the type system or the
+linter can see that; the name is the interface. See
+tests/test_ratelimit_key.py.
 """
 
 from slowapi import Limiter
@@ -47,15 +63,19 @@ def client_key(request: Request) -> str:
     return get_remote_address(request)
 
 
-def webhook_key(_request: Request) -> str:
+def webhook_key(request: Request) -> str:
     """Constant key for Meta's webhook.
 
-    Deliberately ignores the request. The limit this produces is a crude
-    ceiling on total inbound volume -- protection against a broken sender or a
-    flood of unsigned junk -- and nothing to do with fairness between
-    customers. It is set high enough (see ``rate_limit_webhook``) that normal
-    business traffic can never reach it, because reaching it drops real
-    customers' messages.
+    Deliberately ignores the request -- but the parameter must still be called
+    ``request``, because slowapi reads the name to decide whether to pass one.
+    See the module docstring; renaming it to ``_request`` breaks every webhook
+    delivery with a 500.
+
+    The limit this produces is a crude ceiling on total inbound volume --
+    protection against a broken sender or a flood of unsigned junk -- and
+    nothing to do with fairness between customers. It is set high enough (see
+    ``rate_limit_webhook``) that normal business traffic can never reach it,
+    because reaching it drops real customers' messages.
 
     Per-customer limits are enforced in ``app/core/quota.py``, keyed by
     wa_id, which is only knowable after the payload has been parsed and its
