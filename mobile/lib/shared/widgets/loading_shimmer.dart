@@ -3,6 +3,21 @@ import 'package:shimmer/shimmer.dart';
 
 import '../../core/theme/app_colors.dart';
 
+/// Loading placeholders.
+///
+/// Every list here sets `shrinkWrap: true`, and that is load bearing rather
+/// than cosmetic. These are mounted inside `SliverToBoxAdapter`, which offers
+/// its child unbounded height, and an unbounded viewport is a crash: the
+/// screen throws "Vertical viewport was given unbounded height" and takes the
+/// whole first frame down with it. With shrinkWrap the list measures its
+/// children instead of asking for a viewport, and the enclosing
+/// CustomScrollView does the scrolling -- which is also why the physics are
+/// NeverScrollableScrollPhysics.
+///
+/// A placeholder is dropped into whatever layout happens to need one, so it
+/// has to size itself. Do not remove shrinkWrap to "fix" an overflow; bound
+/// the parent or lower the item count instead.
+
 class ChatListShimmer extends StatelessWidget {
   const ChatListShimmer({super.key});
   @override
@@ -12,6 +27,7 @@ class ChatListShimmer extends StatelessWidget {
       baseColor: isDark ? AppColors.darkSurface : AppColors.lightBg,
       highlightColor: isDark ? AppColors.darkBg : Colors.white,
       child: ListView.builder(
+        shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         itemCount: 12,
         itemBuilder: (context, index) => ListTile(
@@ -33,6 +49,7 @@ class CustomerListShimmer extends StatelessWidget {
       baseColor: isDark ? AppColors.darkSurface : AppColors.lightBg,
       highlightColor: isDark ? AppColors.darkBg : Colors.white,
       child: ListView.builder(
+        shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         itemCount: 10,
         itemBuilder: (context, index) => ListTile(
@@ -56,7 +73,7 @@ class AnalyticsShimmer extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(children: [
-          GridView.count(shrinkWrap: true, crossAxisCount: 2, childAspectRatio: 1.5, mainAxisSpacing: 8, crossAxisSpacing: 8, children: List.generate(4, (i) => Card(child: Container()))),
+          GridView.count(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), crossAxisCount: 2, childAspectRatio: 1.5, mainAxisSpacing: 8, crossAxisSpacing: 8, children: List.generate(4, (i) => Card(child: Container()))),
           const SizedBox(height: 16),
           Card(child: Container(height: 120)),
           const SizedBox(height: 16),
