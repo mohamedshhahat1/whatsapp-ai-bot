@@ -33,10 +33,11 @@ logger = get_logger(__name__)
 
 FCM_SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 
-# One format placeholder, ``{project}``. Written with single braces on purpose:
-# a doubled brace is an escaped literal brace to str.format, which silently
-# produces an unusable URL instead of an error.
-FCM_ENDPOINT = "https://fcm.googleapis.com/v1/projects/{project}/messages:send"
+# Base URL only. The project id is interpolated with an f-string where it is
+# used, deliberately: this was twice written as a str.format template with
+# doubled braces, which is an escaped literal brace and yields a URL that
+# cannot resolve. No placeholder, no way to get the escaping wrong.
+FCM_API_ROOT = "https://fcm.googleapis.com/v1"
 
 # Refresh the access token a minute before it actually expires. A token that
 # passes the check here and expires in flight produces a 401, which is not
@@ -96,6 +97,11 @@ class FcmClient:
                 timeout=self._settings.push_timeout_seconds
             )
         return self._client
+
+    def _endpoint(self) -> str:
+        """The messages:send URL for the configured project."""
+        project = self._settings.fcm_project_id
+        return f"{FCM_API_ROOT}/projects/{project}/messages:send"
 
     def _mint_token(self) -> tuple[str, float]:
         """Exchange the service-account key for an access token (blocking).
@@ -206,9 +212,8 @@ class FcmClient:
         so nothing here can honestly claim more than that.
         """
         bearer = await self._bearer()
-        url = FCM_ENDPOINT.format(project=self._settings.fcm_project_id)
         response = await self._http().post(
-            url,
+            self._endpoint(),
             json=self._message(token=token, title=title, body=body, data=data),
             headers={"Authorization": f"Bearer {bearer}"},
         )

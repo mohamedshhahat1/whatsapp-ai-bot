@@ -9,11 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db.session import get_db
+from app.integrations.fcm import FcmClient
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.services.admin_service import AdminService
 from app.services.analytics_service import AnalyticsService
 from app.services.chat_service import ChatService
+from app.services.device_service import DeviceService
+from app.services.notification_service import NotificationService
 from app.services.pricing_service import PricingService
 from app.services.reply_service import ReplyService
 
@@ -28,6 +31,18 @@ def get_whatsapp_client() -> WhatsAppClient:
 def get_openai_client() -> OpenAIClient:
     """Singleton OpenAI Responses API client."""
     return OpenAIClient(get_settings())
+
+
+@lru_cache
+def get_fcm_client() -> FcmClient:
+    """Singleton Firebase client.
+
+    Cached for the same reason as the other two -- a shared connection pool --
+    and additionally because it caches the OAuth access token it mints. A
+    per-request client would exchange the service-account key for a new token
+    on every notification.
+    """
+    return FcmClient()
 
 
 def get_chat_service(db: AsyncSession = Depends(get_db)) -> ChatService:
@@ -53,6 +68,22 @@ def get_pricing_service(db: AsyncSession = Depends(get_db)) -> PricingService:
 def get_reply_service(db: AsyncSession = Depends(get_db)) -> ReplyService:
     """Manual reply service bound to the request-scoped session."""
     return ReplyService(db, get_whatsapp_client())
+
+
+def get_device_service(db: AsyncSession = Depends(get_db)) -> DeviceService:
+    """Device registration bound to the request-scoped session."""
+    return DeviceService(db)
+
+
+def get_notification_service(
+    db: AsyncSession = Depends(get_db),
+) -> NotificationService:
+    """Push notification fan-out bound to the request-scoped session.
+
+    The Firebase client is injected from the process-wide singleton rather
+    than constructed per request, so the cached OAuth token survives.
+    """
+    return NotificationService(db, get_fcm_client())
 
 
 def require_admin(

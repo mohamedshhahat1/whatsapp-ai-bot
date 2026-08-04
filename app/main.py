@@ -19,7 +19,7 @@ from app.core.logging import configure_logging, get_logger
 from app.core.ratelimit import limiter
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.request_logging import RequestLoggingMiddleware
-from app.routers import admin, events, health, metrics, webhook
+from app.routers import admin, devices, events, health, metrics, webhook
 
 settings = get_settings()
 configure_logging(debug=settings.debug)
@@ -98,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(webhook.router)
     app.include_router(admin.router)
+    app.include_router(devices.router)
     app.include_router(events.router)
 
     if DASHBOARD_DIST.is_dir():
