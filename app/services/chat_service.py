@@ -40,10 +40,11 @@ app/services/greeting.py; the decisions they drive are here.
   welcome flag is cleared and the message continues down the normal path, so
   it is answered with no welcome attached in any form. Welcoming somebody who
   just thanked you is the most obviously robotic thing this bot could do.
-* GREETING -- "mrhba", "good morning", "ya basha izzayak". The full ``WELCOME``
-  is sent on its own and the model is never reached. Nothing has been asked,
-  so there is nothing to answer, and the menu the welcome ends with is the
-  most useful reply available.
+* GREETING -- "mrhba", "good morning", "ya basha izzayak". The welcome is sent
+  on its own, as an interactive list whose rows are the company's services and
+  requests, and the model is never reached. Nothing has been asked, so there
+  is nothing to answer, and a tappable menu is both the most useful reply and
+  the one least likely to be answered with a typo.
 * REQUEST -- everything else, including a greeting with a question attached.
   ``WELCOME_PREFIX`` is prepended to the answer and the two go out as ONE
   message. Never two: a welcome followed by an answer is two notifications,
@@ -62,6 +63,17 @@ the welcome stays owed. A customer who opens with "thanks" and then asks a
 real question gets the prefix on that answer: greeted once, late rather than
 never.
 
+Interactive menus
+-----------------
+A tapped button arrives as a stable id, which is worth more than the same
+intent typed out: it needs no model call to interpret, it cannot be misspelled,
+and a sales lead tagged from a tap is a fact rather than an inference. See
+app/services/menu.py for why routing happens on the id and never on the label.
+
+Every interactive send degrades to plain text if the Graph API rejects it. An
+account not approved for interactive messages, or a menu that breaches a cap,
+must still produce a greeted customer rather than a silent one.
+
 Session lifecycle
 -----------------
 Each of those transactions also resets the conversation's idle timer, which is
@@ -75,6 +87,9 @@ The stage 4 and 6 touches pass ``outgoing=True``, which is what
 RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE switches off. Turning it off restores
 exactly the race described above, and is not recommended.
 """
+
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -95,7 +110,7 @@ from app.integrations.whatsapp import WhatsAppClient
 from app.models.conversation import MODE_HUMAN, TAG_SALES_LEAD, Conversation
 from app.models.message import STATUS_SENT, STATUS_UNCONFIRMED
 from app.repositories.ai_log import AILogRepository
-from app.services import intent, price_policy
+from app.services import intent, menu, price_policy
 from app.services.conversation_service import ConversationService
 from app.services.greeting import is_courtesy_only, is_greeting_only
 from app.services.handoff import HANDOFF_ACK, is_sales_lead, wants_human
@@ -104,6 +119,7 @@ from app.services.persona import (
     SERVICE_BUSY,
     UNSUPPORTED_MESSAGE,
     WELCOME,
+    WELCOME_MENU_BODY,
     WELCOME_PREFIX,
     is_unintelligible,
 )
@@ -124,6 +140,11 @@ logger = get_logger(__name__)
 # proofread. Kept as a module-level name because three places in the
 # generation path fall back to it.
 FALLBACK_REPLY = SERVICE_BUSY
+
+#: How a message body is put on the wire. Injected into ``_send_once`` so that
+#: the reservation and confirmation bookkeeping around a send is written once
+#: and shared by text, buttons and list messages alike.
+Sender = Callable[[str, str], Awaitable[dict[str, Any]]]
 
 
 class ChatService:
@@ -158,6 +179,44 @@ class ChatService:
             self._settings,
         )
 
+    def _menu_sender(self) -> Sender:
+        """Send the welcome as a list message, or fall back to plain text.
+
+        The fallback deliberately sends ``WELCOME`` rather than the body it was
+        given: the body omits the options because the list rows were carrying
+        them, so sending it alone would greet the customer and then offer them
+        nothing. ``WELCOME`` still spells the same options out as bullets,
+        which is exactly what it is kept for.
+        """
+
+        async def sender(wa_id: str, text: str) -> dict[str, Any]:
+            try:
+                return await self._whatsapp.send_list(
+                    wa_id, text, menu.MENU_BUTTON, menu.MENU_SECTIONS
+                )
+            except ExternalServiceError:
+                logger.warning("interactive_menu_send_failed", fallback="text")
+                return await self._whatsapp.send_text(wa_id, WELCOME)
+
+        return sender
+
+    def _buttons_sender(self, buttons: list[tuple[str, str]]) -> Sender:
+        """Send a body with reply buttons attached, or fall back to plain text.
+
+        Unlike the menu, the body here stands on its own -- it asks the
+        customer what they want next in words -- so losing the buttons costs
+        convenience rather than meaning.
+        """
+
+        async def sender(wa_id: str, text: str) -> dict[str, Any]:
+            try:
+                return await self._whatsapp.send_buttons(wa_id, text, buttons)
+            except ExternalServiceError:
+                logger.warning("interactive_buttons_send_failed", fallback="text")
+                return await self._whatsapp.send_text(wa_id, text)
+
+        return sender
+
     async def _needs_welcome(self, conversation: Conversation) -> bool:
         """True when this session still owes its customer a greeting.
 
@@ -184,10 +243,12 @@ class ChatService:
         conversation_id: int,
         text: str,
         reply_to: str | None,
+        sender: Sender | None = None,
     ) -> bool:
         """Send exactly one message in answer to one inbound message."""
+        send = sender or self._whatsapp.send_text
         if reply_to is None:
-            result = await self._whatsapp.send_text(wa_id, text)
+            result = await send(wa_id, text)
             out_id = (result.get("messages") or [{}])[0].get("id")
             await self._conversations.save_outbound(
                 conversation_id, text, wa_message_id=out_id
@@ -216,7 +277,7 @@ class ChatService:
         await self._session.commit()
 
         try:
-            result = await self._whatsapp.send_text(wa_id, text)
+            result = await send(wa_id, text)
         except ExternalServiceError as exc:
             await self._conversations.messages.confirm_reply(
                 reserved_id, None, status=STATUS_UNCONFIRMED
@@ -245,6 +306,7 @@ class ChatService:
         text: str,
         reply_to: str | None = None,
         welcome: bool = False,
+        sender: Sender | None = None,
     ) -> None:
         """Send company copy that needs no model call, and persist it.
 
@@ -252,7 +314,7 @@ class ChatService:
         prefix or as the whole message -- so the flag is only set once the
         customer has actually been greeted.
         """
-        if await self._send_once(wa_id, conversation_id, text, reply_to):
+        if await self._send_once(wa_id, conversation_id, text, reply_to, sender):
             if welcome:
                 await self._record_welcome(conversation_id)
             await self._announce(conversation_id)
@@ -537,8 +599,9 @@ class ChatService:
 
         if first and is_greeting_only(text):
             # An opening with no request in it. The welcome IS the answer, and
-            # the menu it ends with is the most useful thing that can be said
-            # to somebody who has not yet said what they want.
+            # it goes out as a list message: somebody who has not yet said
+            # what they want is best served by being able to tap it, and a tap
+            # cannot be misspelled or misread.
             #
             # Returning here also keeps the model away from a message it
             # cannot do anything sensible with: told the welcome had been
@@ -548,9 +611,10 @@ class ChatService:
             await self._send_fixed(
                 wa_id,
                 conversation.id,
-                WELCOME,
+                WELCOME_MENU_BODY,
                 reply_to=wa_message_id,
                 welcome=True,
+                sender=self._menu_sender(),
             )
             return
 
@@ -581,6 +645,120 @@ class ChatService:
             reply_to=wa_message_id,
             welcome=first,
             general_question=scope == intent.DOMAIN,
+        )
+
+    async def handle_interactive_message(
+        self,
+        wa_id: str,
+        name: str | None,
+        wa_message_id: str,
+        selection_id: str,
+        title: str,
+    ) -> None:
+        """Handle a tapped reply button or list row.
+
+        Every decision below is made on ``selection_id``. ``title`` is the text
+        the customer saw and is used only for what gets stored and shown -- see
+        app/services/menu.py for why it is never routed on.
+
+        Three of the branches send no completion request at all, which is the
+        point: the customer has already told us what they want, so there is
+        nothing left to infer.
+        """
+        _, conversation = await self._conversations.get_context(wa_id, name)
+        # Our own label where we recognise the id, so what lands in the
+        # database and in the model's history does not depend on text supplied
+        # by the client. Falls back to the title for a menu sent by an older
+        # build, where showing something is better than showing a raw id.
+        label = menu.LABELS.get(selection_id) or title or selection_id
+        claimed = await self._conversations.claim_inbound(
+            conversation.id,
+            wa_message_id,
+            type="interactive",
+            content=label,
+        )
+        if claimed is None:
+            await self._session.rollback()
+            DUPLICATE_DELIVERIES_TOTAL.labels(stage="inbound_claim").inc()
+            logger.info("duplicate_webhook_delivery", wa_message_id=wa_message_id)
+            return
+        await self._sessions.touch(conversation.id)
+        await self._session.commit()
+
+        await self._announce(conversation.id)
+        await self._whatsapp.mark_as_read(wa_message_id)
+
+        logger.info(
+            "menu_selection",
+            conversation_id=conversation.id,
+            selection_id=selection_id,
+            known=selection_id in menu.KNOWN_SELECTIONS,
+        )
+
+        if await self._handled_by_human(
+            wa_id, conversation, label, reply_to=wa_message_id
+        ):
+            return
+
+        if not await self._within_quota(wa_id, conversation.id, wa_message_id, label):
+            return
+
+        first = await self._needs_welcome(conversation)
+
+        if selection_id in menu.SALES_SELECTIONS:
+            # A quotation, a site visit or a callback is a person's job. The
+            # tag is set from a tap rather than from a regex reading intent
+            # out of prose, which is the whole accuracy argument for menus.
+            await self._begin_handoff(
+                wa_id,
+                conversation,
+                ack=price_policy.sales_handoff_ack(self._settings.sales_phone),
+                reason="menu_" + selection_id,
+                tag=TAG_SALES_LEAD,
+                reply_to=wa_message_id,
+            )
+            return
+
+        if selection_id == menu.TALK_TO_EMPLOYEE:
+            await self._begin_handoff(
+                wa_id,
+                conversation,
+                reason="menu_" + selection_id,
+                reply_to=wa_message_id,
+            )
+            return
+
+        if selection_id in menu.SERVICE_SELECTIONS:
+            # Naming a service says what the customer wants done, not what
+            # they want from us next. Answered with fixed copy and three
+            # buttons -- no model call, because there is nothing to interpret.
+            body = menu.service_ack(selection_id)
+            if first:
+                body = f"{WELCOME_PREFIX}\n\n{body}"
+            await self._send_fixed(
+                wa_id,
+                conversation.id,
+                body,
+                reply_to=wa_message_id,
+                welcome=first,
+                sender=self._buttons_sender(menu.NEXT_STEP_BUTTONS),
+            )
+            return
+
+        # view_portfolio, and any id from a menu this build no longer knows,
+        # go to the model with the label as the message text. The portfolio
+        # answer already has a dedicated layer in PromptBuilder, and handling
+        # it here would fork that copy into a second place that nobody would
+        # remember to update.
+        history = await self._conversations.build_history(conversation.id)
+        await self._generate_and_send(
+            wa_id,
+            name,
+            conversation.id,
+            history,
+            retrieval_query=label,
+            reply_to=wa_message_id,
+            welcome=first,
         )
 
     async def handle_media_message(
