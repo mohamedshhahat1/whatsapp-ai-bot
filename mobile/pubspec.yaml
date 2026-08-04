@@ -61,8 +61,11 @@ dev_dependencies:
   freezed: ^2.5.7
   json_serializable: ^6.8.0
   riverpod_generator: ^2.4.3
-  custom_lint: ^0.6.7
-  riverpod_lint: ^2.3.13
+  # custom_lint / riverpod_lint intentionally omitted.
+  # custom_lint 0.6.x pulls analyzer ^6.6.0, and analyzer >=6.6.0 <7.3.0
+  # requires the _macros package that no longer ships with the Dart SDK,
+  # which makes `flutter pub get` fail. They only add optional lint rules
+  # and are not needed to build or to run code generation.
 
 flutter:
   uses-material-design: true
