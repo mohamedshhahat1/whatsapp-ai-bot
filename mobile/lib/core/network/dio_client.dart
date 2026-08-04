@@ -57,11 +57,18 @@ class DioClient {
   }) =>
       _dio.post<T>(path, data: data, cancelToken: cancelToken);
 
+  /// DELETE, optionally with a body.
+  ///
+  /// [data] exists for /device-token, which identifies the device by a token in
+  /// the body rather than in the path: a push token is effectively an address
+  /// for somebody's phone, and query strings end up in access logs, proxy logs
+  /// and browser history in a way request bodies do not.
   Future<Response<T>> delete<T>(
     String path, {
+    dynamic data,
     CancelToken? cancelToken,
   }) =>
-      _dio.delete<T>(path, cancelToken: cancelToken);
+      _dio.delete<T>(path, data: data, cancelToken: cancelToken);
 }
 
 final dioClientProvider = Provider<DioClient>((ref) {

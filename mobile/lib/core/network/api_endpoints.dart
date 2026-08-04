@@ -62,4 +62,11 @@ class ApiEndpoints {
   static String knowledge() => '/knowledge';
   static String knowledgeSearch(String q, {int limit = 5}) =>
       '/knowledge/search?q=${Uri.encodeQueryComponent(q)}&limit=$limit';
+
+  // Push notifications
+  //
+  // POST registers or refreshes this device; DELETE disables it. Both carry
+  // the token in the request body rather than the path, so it never lands in
+  // an access log or a proxy log.
+  static String deviceToken() => '/device-token';
 }
