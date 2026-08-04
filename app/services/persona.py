@@ -6,13 +6,14 @@ Two different kinds of text live here, and the distinction is the whole point.
 to speak, and what it must never invent. Wording drift there costs a little
 quality and nothing else.
 
-``WELCOME``, ``WELCOME_PREFIX``, ``NOT_UNDERSTOOD``, ``CLOSING``,
-``SERVICE_BUSY`` and ``UNSUPPORTED_MESSAGE`` are *company copy*: approved
-wording that real customers read. These are never produced by the model. The
-code sends them verbatim (see ``ChatService`` and ``SessionService``), because
-"always start with this welcome" is a promise a language model cannot keep --
-given twenty messages of history it will eventually paraphrase it, translate
-it, or skip it on the one conversation that mattered.
+``WELCOME``, ``WELCOME_MENU_BODY``, ``WELCOME_PREFIX``, ``NOT_UNDERSTOOD``,
+``CLOSING``, ``SERVICE_BUSY`` and ``UNSUPPORTED_MESSAGE`` are *company copy*:
+approved wording that real customers read. These are never produced by the
+model. The code sends them verbatim (see ``ChatService`` and
+``SessionService``), because "always start with this welcome" is a promise a
+language model cannot keep -- given twenty messages of history it will
+eventually paraphrase it, translate it, or skip it on the one conversation
+that mattered.
 
 The last two are the ones a customer sees when something has gone wrong, which
 is exactly when English would be most conspicuous: a customer who has been
@@ -34,7 +35,11 @@ the full menu there would be actively wrong -- it asks "tell me how I can help
 you, whether you want a flat finished, a quotation, a site visit..." directly
 above a reply that just answered exactly that question.
 
-Both are built from the same ``_OPENING`` line so the company name, the
+``WELCOME_MENU_BODY`` is the third form, used when the welcome is sent as an
+interactive list message: the options become tappable rows, so the body must
+not also spell them out as bullets.
+
+All three are built from the same ``_OPENING`` line so the company name, the
 wording and the emoji cannot drift apart between them.
 
 Why this is a Python module and not SYSTEM_PROMPT
@@ -83,8 +88,8 @@ from app.services.handoff import HANDOFF_KEYWORD
 
 COMPANY_NAME = "شركة الكيان للتشطيبات والمقاولات العامة"
 
-# The one line both welcomes start with. Shared so the name, the wording and
-# the emoji cannot drift between the standalone welcome and the prefix.
+# The one line all welcomes start with. Shared so the name, the wording and
+# the emoji cannot drift between them.
 _OPENING = "أهلاً وسهلاً بحضرتك في شركة الكيان للتشطيبات والمقاولات العامة. \U0001f44b"
 
 # Sent by the code, exactly once per session, when the customer's opening
@@ -96,6 +101,9 @@ _OPENING = "أهلاً وسهلاً بحضرتك في شركة الكيان لل
 # it guarantees the very question the bot has to refuse, in the first thirty
 # seconds, to every new customer. It now offers the thing the company actually
 # provides: a quotation, prepared by a person.
+#
+# Still sent verbatim whenever an interactive menu cannot be delivered, so the
+# bullets below remain the fallback rather than dead duplication.
 WELCOME = _OPENING + (
     "\n"
     "\n"
@@ -108,6 +116,17 @@ WELCOME = _OPENING + (
     "• طلب معاينة\n"
     "• الاستفسار عن خدماتنا\n"
     "أو أي استفسار آخر."
+)
+
+# The body of the same welcome when it is sent as an interactive list message.
+# The options arrive as tappable rows from app/services/menu.py, so listing
+# them here as well would show every option to the customer twice.
+WELCOME_MENU_BODY = _OPENING + (
+    "\n"
+    "\n"
+    "يسعدنا مساعدتك في كل ما يخص أعمال التشطيبات والمقاولات.\n"
+    "\n"
+    "من فضلك اختر ما تحتاجه من القائمة، أو اكتب لي استفسارك مباشرة."
 )
 
 # Prepended to a real answer when the customer's opening message already
