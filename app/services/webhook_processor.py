@@ -3,18 +3,34 @@
 Exceptions are allowed to propagate so the task queue can retry the delivery.
 Message deduplication (by ``wa_message_id``) makes retries safe: already
 processed messages are skipped on the next attempt.
+
+Freshness
+---------
+Every message is checked against ``INBOUND_MAX_AGE_MINUTES`` before it is
+routed, and a stale one is recorded without a reply. This is the one place
+that check can live: it is the single point every inbound message of every
+type passes through, so no handler can be added later that forgets it.
+
+It is here rather than deeper down because staleness is a property of the
+DELIVERY, not of the conversation. By the time ``ChatService`` has a
+conversation in hand the damage is already done -- ``get_context`` has decided
+whether to resume a session or mint a new one, and a new one is owed a
+welcome. The decision has to be made before that, on the payload itself.
 """
 
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.core.inbound_config import get_inbound_settings
 from app.core.logging import get_logger
 from app.core.metrics import ERRORS_TOTAL
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.services.chat_service import ChatService
+from app.services.stale_inbound import record_without_answering
 
 logger = get_logger(__name__)
 
@@ -36,12 +52,98 @@ async def process_webhook_payload(
                 for contact in value.get("contacts", [])
             }
             for message in value.get("messages", []):
+                if await _handled_as_stale(session, settings, message, contacts):
+                    continue
                 await _dispatch_message(service, message, contacts)
             for status in value.get("statuses", []):
                 wa_message_id = status.get("id")
                 new_status = status.get("status")
                 if wa_message_id and new_status:
                     await service.handle_status_update(wa_message_id, new_status)
+
+
+def _message_age(message: dict[str, Any]) -> timedelta | None:
+    """How long ago the customer sent this message, per Meta's own timestamp.
+
+    ``None`` when the field is absent or unparseable, which callers treat as
+    fresh. That is a deliberate fail-open: a format change on Meta's side
+    would otherwise silence every reply the bot makes, which is a far worse
+    failure than the one this check exists to prevent.
+    """
+    raw = message.get("timestamp")
+    if raw is None:
+        return None
+    try:
+        sent_at = datetime.fromtimestamp(int(raw), tz=UTC)
+    except (TypeError, ValueError, OSError, OverflowError):
+        logger.warning("inbound_timestamp_unparseable", timestamp=str(raw))
+        return None
+    return datetime.now(UTC) - sent_at
+
+
+def _content_of(message: dict[str, Any]) -> str | None:
+    """What to store in the transcript for a message that is not answered.
+
+    Mirrors what each handler in ``ChatService`` would have stored, so a stale
+    delivery reads the same as a live one to an operator.
+    """
+    message_type = message.get("type", "unknown")
+    if message_type == "text":
+        return message.get("text", {}).get("body")
+    if message_type in ("image", "document"):
+        media = message.get(message_type, {})
+        caption = media.get("caption") if isinstance(media, dict) else None
+        return caption or f"[{message_type} received]"
+    if message_type == "interactive":
+        selection = _interactive_selection(message)
+        if selection is None:
+            return "[interactive received]"
+        selection_id, title = selection
+        return title or selection_id
+    if message_type == "button":
+        button = message.get("button", {})
+        if isinstance(button, dict):
+            return str(button.get("text") or button.get("payload") or "")
+    return f"[{message_type} received]"
+
+
+async def _handled_as_stale(
+    session: AsyncSession,
+    settings: Settings,
+    message: dict[str, Any],
+    contacts: dict[str, str | None],
+) -> bool:
+    """Record and swallow a delivery that arrived too late to answer.
+
+    ``True`` means this message has been dealt with and must not be routed to
+    a handler. ``False`` means it is live traffic.
+    """
+    inbound = get_inbound_settings()
+    if not inbound.enforced:
+        return False
+
+    age = _message_age(message)
+    if age is None or age <= inbound.inbound_max_age:
+        return False
+
+    wa_id = message.get("from", "")
+    wa_message_id = message.get("id", "")
+    if not wa_id or not wa_message_id:
+        # Nothing to key the claim on. Let the normal path handle it and log
+        # whatever it finds rather than dropping it here.
+        return False
+
+    await record_without_answering(
+        session,
+        settings,
+        wa_id=wa_id,
+        name=contacts.get(wa_id),
+        wa_message_id=wa_message_id,
+        type=message.get("type", "unknown"),
+        content=_content_of(message),
+        age=age,
+    )
+    return True
 
 
 def _interactive_selection(message: dict[str, Any]) -> tuple[str, str] | None:
