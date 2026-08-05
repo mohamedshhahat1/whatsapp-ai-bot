@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import DateTime, ForeignKey, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.channels.constants import WHATSAPP
 from app.db.base import Base
 
 if TYPE_CHECKING:
@@ -109,6 +110,16 @@ class Conversation(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # Which app the customer is writing from. Denormalised from users.channel
+    # rather than joined: every dashboard list, analytics rollup and operator
+    # filter wants it on the row, and a user's channel cannot change, so this
+    # copy has nothing to go stale against.
+    #
+    # server_default as well as default, for the same pg_insert reason as
+    # ``mode``: get_or_create_active never passes through the ORM default.
+    channel: Mapped[str] = mapped_column(
+        String(24), default=WHATSAPP, server_default=WHATSAPP, index=True
     )
     status: Mapped[str] = mapped_column(String(16), default=STATUS_ACTIVE, index=True)
     # ``server_default`` as well as ``default``: get_or_create_active inserts
