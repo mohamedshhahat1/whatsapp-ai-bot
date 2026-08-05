@@ -1,10 +1,15 @@
 """Interactive menus: fixed selection ids, WhatsApp caps, payload shapes.
 
 These tests build payloads without a real ``WhatsAppClient``. ``send_buttons``
-and ``send_list`` touch nothing on ``self`` except ``_post``, so an
-uninitialised instance with ``_post`` replaced exercises the whole of the code
-under test while needing no Settings, no httpx client and no event-loop-bound
-resources to tear down.
+touches nothing on ``self`` except ``_post``, so an uninitialised instance
+with ``_post`` replaced exercises the whole of the code under test while
+needing no Settings, no httpx client and no event-loop-bound resources to
+tear down.
+
+List menus are no longer sent, so there is nothing here that builds one. The
+inbound side is a different question and is still covered: a row tapped on a
+menu delivered before that change still arrives as a ``list_reply`` envelope
+and must still route.
 """
 
 import pytest
@@ -12,8 +17,6 @@ import pytest
 from app.integrations.whatsapp import (
     BUTTON_TITLE_MAX,
     MAX_BUTTONS,
-    MAX_ROWS,
-    ROW_TITLE_MAX,
     WhatsAppClient,
 )
 from app.services import menu
@@ -58,12 +61,12 @@ def test_selection_ids_are_pinned():
     assert menu.TALK_TO_EMPLOYEE == "talk_to_employee"
 
 
-def test_every_row_has_a_label_and_is_routable():
-    ids = [row_id for _, rows in menu.MENU_SECTIONS for row_id, _, _ in rows]
+def test_every_id_has_a_label_and_is_routable():
+    ids = [selection_id for selection_id, _ in [*menu._SERVICES, *menu._REQUESTS]]
     assert set(ids) == set(menu.KNOWN_SELECTIONS)
-    assert len(ids) == len(set(ids)), "duplicate selection id in the menu"
-    for row_id in ids:
-        assert menu.LABELS[row_id].strip()
+    assert len(ids) == len(set(ids)), "duplicate selection id"
+    for selection_id in ids:
+        assert menu.LABELS[selection_id].strip()
 
 
 def test_routing_sets_do_not_overlap():
@@ -75,18 +78,11 @@ def test_routing_sets_do_not_overlap():
     assert menu.SALES_SELECTIONS <= menu.KNOWN_SELECTIONS
 
 
-def test_menu_fits_whatsapp_caps():
+def test_buttons_fit_whatsapp_caps():
     """A cap breach is a 400 in production and nothing at all in development."""
-    total = sum(len(rows) for _, rows in menu.MENU_SECTIONS)
-    assert total <= MAX_ROWS
-    for section_title, rows in menu.MENU_SECTIONS:
-        assert len(section_title) <= ROW_TITLE_MAX
-        for _, title, description in rows:
-            assert len(title) <= ROW_TITLE_MAX
-            assert len(description) <= 72
-    assert len(menu.MENU_BUTTON) <= 20
     assert len(menu.NEXT_STEP_BUTTONS) <= MAX_BUTTONS
-    for _, title in menu.NEXT_STEP_BUTTONS:
+    for selection_id, title in menu.NEXT_STEP_BUTTONS:
+        assert selection_id in menu.KNOWN_SELECTIONS
         assert len(title) <= BUTTON_TITLE_MAX
 
 
@@ -140,54 +136,24 @@ async def test_send_buttons_rejects_empty():
         await client.send_buttons("20100", "body", [])
 
 
-# --- List messages ----------------------------------------------------------
-
-
-async def test_send_list_payload_shape():
+async def test_the_real_buttons_send():
+    """The shipped buttons must survive the client's own validation."""
     client, recorder = make_client()
-    await client.send_list(
-        "20100",
-        "body text",
-        "Open",
-        [("Section", [("r_id", "Row", "desc"), ("r2_id", "Row 2", "")])],
-    )
-    interactive = recorder.payloads[0]["interactive"]
-    assert interactive["type"] == "list"
-    assert interactive["action"]["button"] == "Open"
-    rows = interactive["action"]["sections"][0]["rows"]
-    assert [r["id"] for r in rows] == ["r_id", "r2_id"]
-    assert rows[0]["description"] == "desc"
-    # An empty description must be dropped, not sent as "".
-    assert "description" not in rows[1]
+    await client.send_buttons("20100", "body", menu.NEXT_STEP_BUTTONS)
+    buttons = recorder.payloads[0]["interactive"]["action"]["buttons"]
+    sent = [b["reply"]["id"] for b in buttons]
+    assert sent == [selection_id for selection_id, _ in menu.NEXT_STEP_BUTTONS]
 
 
-async def test_send_list_enforces_the_ten_row_cap_across_sections():
-    client, recorder = make_client()
-    sections = [
-        (f"S{s}", [(f"id_{s}_{r}", f"Row {r}", "") for r in range(6)])
-        for s in range(3)
-    ]
-    await client.send_list("20100", "body", "Open", sections)
-    payload_sections = recorder.payloads[0]["interactive"]["action"]["sections"]
-    total = sum(len(s["rows"]) for s in payload_sections)
-    assert total == MAX_ROWS
+def test_nothing_sends_list_messages_any_more():
+    """Regression: the list path was removed, ids and routing were not.
 
-
-async def test_send_list_rejects_no_rows():
-    client, _ = make_client()
-    with pytest.raises(ValueError):
-        await client.send_list("20100", "body", "Open", [])
-
-
-async def test_the_real_menu_sends():
-    """The shipped menu must survive the client's own validation."""
-    client, recorder = make_client()
-    await client.send_list(
-        "20100", "body", menu.MENU_BUTTON, menu.MENU_SECTIONS
-    )
-    sections = recorder.payloads[0]["interactive"]["action"]["sections"]
-    sent = {row["id"] for section in sections for row in section["rows"]}
-    assert sent == set(menu.KNOWN_SELECTIONS)
+    Re-adding a send_list here would quietly bring back a second, divergent
+    definition of the menu -- the reason this was removed in the first place.
+    """
+    assert not hasattr(WhatsAppClient, "send_list")
+    assert not hasattr(menu, "MENU_SECTIONS")
+    assert not hasattr(menu, "MENU_BUTTON")
 
 
 # --- Inbound envelopes ------------------------------------------------------
@@ -207,6 +173,7 @@ def test_button_reply_envelope():
 
 
 def test_list_reply_envelope():
+    """We no longer send list menus; the delivered ones are still tappable."""
     selection = _interactive_selection(
         {
             "type": "interactive",
