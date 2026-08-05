@@ -41,10 +41,10 @@ app/services/greeting.py; the decisions they drive are here.
   it is answered with no welcome attached in any form. Welcoming somebody who
   just thanked you is the most obviously robotic thing this bot could do.
 * GREETING -- "mrhba", "good morning", "ya basha izzayak". The welcome is sent
-  on its own, as an interactive list whose rows are the company's services and
-  requests, and the model is never reached. Nothing has been asked, so there
-  is nothing to answer, and a tappable menu is both the most useful reply and
-  the one least likely to be answered with a typo.
+  on its own, as plain text, and the model is never reached. Nothing has been
+  asked, so there is nothing to answer, and ``WELCOME`` ends in a list of what
+  the company can help with -- which is the most useful thing that can be said
+  back to somebody who has not yet said what they want.
 * REQUEST -- everything else, including a greeting with a question attached.
   ``WELCOME_PREFIX`` is prepended to the answer and the two go out as ONE
   message. Never two: a welcome followed by an answer is two notifications,
@@ -63,16 +63,21 @@ the welcome stays owed. A customer who opens with "thanks" and then asks a
 real question gets the prefix on that answer: greeted once, late rather than
 never.
 
-Interactive menus
------------------
+Interactive replies
+-------------------
 A tapped button arrives as a stable id, which is worth more than the same
 intent typed out: it needs no model call to interpret, it cannot be misspelled,
 and a sales lead tagged from a tap is a fact rather than an inference. See
 app/services/menu.py for why routing happens on the id and never on the label.
 
-Every interactive send degrades to plain text if the Graph API rejects it. An
-account not approved for interactive messages, or a menu that breaches a cap,
-must still produce a greeted customer rather than a silent one.
+The welcome no longer goes out as an interactive list. Nothing sends list
+menus any more, but every selection id is still routed: the menus delivered
+before that change are still sitting in customers' chat histories, and a row
+tapped days later arrives carrying the id it was created with.
+
+The reply buttons that follow a service selection remain, and degrade to plain
+text if the Graph API rejects them. An account not approved for interactive
+messages must still produce an answered customer rather than a silent one.
 
 Session lifecycle
 -----------------
@@ -119,7 +124,6 @@ from app.services.persona import (
     SERVICE_BUSY,
     UNSUPPORTED_MESSAGE,
     WELCOME,
-    WELCOME_MENU_BODY,
     WELCOME_PREFIX,
     is_unintelligible,
 )
@@ -143,7 +147,7 @@ FALLBACK_REPLY = SERVICE_BUSY
 
 #: How a message body is put on the wire. Injected into ``_send_once`` so that
 #: the reservation and confirmation bookkeeping around a send is written once
-#: and shared by text, buttons and list messages alike.
+#: and shared by text and buttons alike.
 Sender = Callable[[str, str], Awaitable[dict[str, Any]]]
 
 
@@ -179,33 +183,12 @@ class ChatService:
             self._settings,
         )
 
-    def _menu_sender(self) -> Sender:
-        """Send the welcome as a list message, or fall back to plain text.
-
-        The fallback deliberately sends ``WELCOME`` rather than the body it was
-        given: the body omits the options because the list rows were carrying
-        them, so sending it alone would greet the customer and then offer them
-        nothing. ``WELCOME`` still spells the same options out as bullets,
-        which is exactly what it is kept for.
-        """
-
-        async def sender(wa_id: str, text: str) -> dict[str, Any]:
-            try:
-                return await self._whatsapp.send_list(
-                    wa_id, text, menu.MENU_BUTTON, menu.MENU_SECTIONS
-                )
-            except ExternalServiceError:
-                logger.warning("interactive_menu_send_failed", fallback="text")
-                return await self._whatsapp.send_text(wa_id, WELCOME)
-
-        return sender
-
     def _buttons_sender(self, buttons: list[tuple[str, str]]) -> Sender:
         """Send a body with reply buttons attached, or fall back to plain text.
 
-        Unlike the menu, the body here stands on its own -- it asks the
-        customer what they want next in words -- so losing the buttons costs
-        convenience rather than meaning.
+        The body stands on its own -- it asks the customer what they want next
+        in words -- so losing the buttons costs convenience rather than
+        meaning.
         """
 
         async def sender(wa_id: str, text: str) -> dict[str, Any]:
@@ -598,23 +581,22 @@ class ChatService:
             return
 
         if first and is_greeting_only(text):
-            # An opening with no request in it. The welcome IS the answer, and
-            # it goes out as a list message: somebody who has not yet said
-            # what they want is best served by being able to tap it, and a tap
-            # cannot be misspelled or misread.
+            # An opening with no request in it. The welcome IS the answer:
+            # WELCOME ends in a list of what the company can help with, which
+            # is the most useful thing that can be said back to somebody who
+            # has not yet said what they want.
             #
             # Returning here also keeps the model away from a message it
             # cannot do anything sensible with: told the welcome had been
             # prepended and asked to continue, it would either invent a topic
-            # or re-ask the question the menu just asked.
+            # or re-ask the question the welcome just asked.
             logger.info("greeting_only_opening", conversation_id=conversation.id)
             await self._send_fixed(
                 wa_id,
                 conversation.id,
-                WELCOME_MENU_BODY,
+                WELCOME,
                 reply_to=wa_message_id,
                 welcome=True,
-                sender=self._menu_sender(),
             )
             return
 
@@ -656,6 +638,10 @@ class ChatService:
         title: str,
     ) -> None:
         """Handle a tapped reply button or list row.
+
+        List menus are no longer sent, but the ones already delivered still
+        live in customers' chat histories, so a tapped row can still arrive
+        here long after the fact and is routed exactly like a button.
 
         Every decision below is made on ``selection_id``. ``title`` is the text
         the customer saw and is used only for what gets stored and shown -- see
@@ -708,7 +694,7 @@ class ChatService:
         if selection_id in menu.SALES_SELECTIONS:
             # A quotation, a site visit or a callback is a person's job. The
             # tag is set from a tap rather than from a regex reading intent
-            # out of prose, which is the whole accuracy argument for menus.
+            # out of prose, which is the whole accuracy argument for buttons.
             await self._begin_handoff(
                 wa_id,
                 conversation,
