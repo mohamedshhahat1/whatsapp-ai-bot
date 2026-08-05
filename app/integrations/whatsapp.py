@@ -19,11 +19,7 @@ GRAPH_API_BASE = "https://graph.facebook.com"
 BODY_MAX = 1024
 FOOTER_MAX = 60
 BUTTON_TITLE_MAX = 20
-LIST_BUTTON_MAX = 20
-ROW_TITLE_MAX = 24
-ROW_DESCRIPTION_MAX = 72
 MAX_BUTTONS = 3
-MAX_ROWS = 10
 
 
 class WhatsAppClient:
@@ -98,60 +94,6 @@ class WhatsAppClient:
                     }
                     for bid, title in buttons[:MAX_BUTTONS]
                 ]
-            },
-        }
-        if footer:
-            interactive["footer"] = {"text": footer[:FOOTER_MAX]}
-        return await self._post(
-            {
-                "messaging_product": "whatsapp",
-                "recipient_type": "individual",
-                "to": to,
-                "type": "interactive",
-                "interactive": interactive,
-            }
-        )
-
-    async def send_list(
-        self,
-        to: str,
-        body: str,
-        button: str,
-        sections: list[tuple[str, list[tuple[str, str, str]]]],
-        footer: str | None = None,
-    ) -> dict[str, Any]:
-        """Send a list message: one tappable button opening grouped rows.
-
-        ``sections`` is ``[(title, [(selection_id, title, description)])]``.
-        WhatsApp caps a list at ten rows across all sections combined, so rows
-        past that are dropped here instead of being rejected wholesale.
-        """
-        remaining = MAX_ROWS
-        payload_sections: list[dict[str, Any]] = []
-        for section_title, rows in sections:
-            if remaining <= 0:
-                break
-            payload_rows: list[dict[str, Any]] = []
-            for selection_id, title, description in rows[:remaining]:
-                row: dict[str, Any] = {
-                    "id": selection_id,
-                    "title": title[:ROW_TITLE_MAX],
-                }
-                if description:
-                    row["description"] = description[:ROW_DESCRIPTION_MAX]
-                payload_rows.append(row)
-            remaining -= len(payload_rows)
-            payload_sections.append(
-                {"title": section_title[:ROW_TITLE_MAX], "rows": payload_rows}
-            )
-        if not payload_sections:
-            raise ValueError("send_list requires at least one row")
-        interactive: dict[str, Any] = {
-            "type": "list",
-            "body": {"text": body[:BODY_MAX]},
-            "action": {
-                "button": button[:LIST_BUTTON_MAX],
-                "sections": payload_sections,
             },
         }
         if footer:

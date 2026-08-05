@@ -1,11 +1,11 @@
-"""Interactive WhatsApp menus: the selection ids, labels and groupings.
+"""Interactive WhatsApp buttons: the selection ids and their labels.
 
 Why the id and the label are separate
 -------------------------------------
 WhatsApp echoes the id of whatever the customer tapped back to us in the
 webhook, alongside the title that was displayed. Routing on the title is the
 obvious shortcut and it is a trap: the title is marketing copy. Somebody will
-eventually shorten \u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631 to fit a button, or translate the menu, or test two
+eventually shorten \u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631 to fit a button, or translate a label, or test two
 wordings against each other -- and every one of those edits would silently
 break lead routing, with no failing test and no error in the logs, because a
 string comparison against copy that no longer exists simply returns False.
@@ -13,11 +13,13 @@ string comparison against copy that no longer exists simply returns False.
 So the ids below are a contract, not a convenience. They are never translated
 and never reworded. The labels beside them can change freely.
 
-The ids also outlive the message. A customer can tap a button on a menu we
-sent days ago, in a session that has since been closed and reopened, and that
-tap arrives carrying the id it was created with. Renaming one does not migrate
-the menus already sitting in people's chat histories, which is the concrete
-reason these constants are append-only.
+The ids also outlive the message that carried them. List menus have been
+removed, but the ones already delivered are still sitting in people's chat
+histories, and a customer can tap a row on one of them days later, in a
+session that has since been closed and reopened. That tap arrives carrying
+the id it was created with. This is the concrete reason these constants are
+append-only, and why every id is still routed even though nothing sends the
+service rows any more.
 
 Why this is worth doing at all
 ------------------------------
@@ -31,9 +33,9 @@ inference.
 Why the labels live here and not in persona.py
 ----------------------------------------------
 persona.py owns prose the customer reads as a message. These are interface
-labels with hard length limits imposed by WhatsApp (20 characters on a button,
-24 on a list row) and an id attached to each. Keeping them beside their ids is
-what makes the pairing reviewable.
+labels with a hard length limit imposed by WhatsApp (20 characters on a
+button) and an id attached to each. Keeping them beside their ids is what
+makes the pairing reviewable.
 """
 
 # Selection ids. APPEND-ONLY: see the module docstring. Never reword, never
@@ -47,40 +49,27 @@ REQUEST_VISIT = "request_visit"
 REQUEST_CALLBACK = "request_callback"
 TALK_TO_EMPLOYEE = "talk_to_employee"
 
-#: ``(selection id, title, description)``. Description may be empty.
-Row = tuple[str, str, str]
-#: ``(section title, rows)``.
-Section = tuple[str, list[Row]]
+#: ``(selection id, title)``.
+Labelled = tuple[str, str]
 
-_SERVICES: list[Row] = [
-    (SERVICE_FINISHING, "\u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629 \u0623\u0648 \u0641\u064a\u0644\u0627", ""),
-    (SERVICE_COMMERCIAL, "\u062a\u0634\u0637\u064a\u0628 \u0645\u062d\u0644 \u0623\u0648 \u0645\u0643\u062a\u0628", ""),
-    (SERVICE_CONTRACTING, "\u0623\u0639\u0645\u0627\u0644 \u0645\u0642\u0627\u0648\u0644\u0627\u062a \u0639\u0627\u0645\u0629", ""),
-    (VIEW_PORTFOLIO, "\u0623\u0639\u0645\u0627\u0644\u0646\u0627 \u0627\u0644\u0633\u0627\u0628\u0642\u0629", ""),
+_SERVICES: list[Labelled] = [
+    (SERVICE_FINISHING, "\u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629 \u0623\u0648 \u0641\u064a\u0644\u0627"),
+    (SERVICE_COMMERCIAL, "\u062a\u0634\u0637\u064a\u0628 \u0645\u062d\u0644 \u0623\u0648 \u0645\u0643\u062a\u0628"),
+    (SERVICE_CONTRACTING, "\u0623\u0639\u0645\u0627\u0644 \u0645\u0642\u0627\u0648\u0644\u0627\u062a \u0639\u0627\u0645\u0629"),
+    (VIEW_PORTFOLIO, "\u0623\u0639\u0645\u0627\u0644\u0646\u0627 \u0627\u0644\u0633\u0627\u0628\u0642\u0629"),
 ]
 
-_REQUESTS: list[Row] = [
-    (REQUEST_QUOTE, "\u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631", ""),
-    (REQUEST_VISIT, "\u0637\u0644\u0628 \u0645\u0639\u0627\u064a\u0646\u0629", ""),
-    (REQUEST_CALLBACK, "\u0637\u0644\u0628 \u0627\u062a\u0635\u0627\u0644", ""),
-    (TALK_TO_EMPLOYEE, "\u0627\u0644\u062a\u062d\u062f\u062b \u0645\u0639 \u0645\u0648\u0638\u0641", ""),
+_REQUESTS: list[Labelled] = [
+    (REQUEST_QUOTE, "\u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631"),
+    (REQUEST_VISIT, "\u0637\u0644\u0628 \u0645\u0639\u0627\u064a\u0646\u0629"),
+    (REQUEST_CALLBACK, "\u0637\u0644\u0628 \u0627\u062a\u0635\u0627\u0644"),
+    (TALK_TO_EMPLOYEE, "\u0627\u0644\u062a\u062d\u062f\u062b \u0645\u0639 \u0645\u0648\u0638\u0641"),
 ]
-
-#: Eight rows, inside WhatsApp's ten-row cap for a whole list message.
-MENU_SECTIONS: list[Section] = [
-    ("\u062e\u062f\u0645\u0627\u062a\u0646\u0627", _SERVICES),
-    ("\u0637\u0644\u0628\u0627\u062a", _REQUESTS),
-]
-
-#: The tappable label that opens the list. Max 20 characters.
-MENU_BUTTON = "\u0627\u062e\u062a\u0631 \u0645\u0646 \u0627\u0644\u0642\u0627\u0626\u0645\u0629"
 
 #: Our own label for each id, used when we need to name a selection back to
 #: the customer. Deliberately not the title WhatsApp sent us: echoing that
 #: back would make the reply depend on client-supplied text.
-LABELS: dict[str, str] = {
-    row_id: title for row_id, title, _ in [*_SERVICES, *_REQUESTS]
-}
+LABELS: dict[str, str] = dict([*_SERVICES, *_REQUESTS])
 
 KNOWN_SELECTIONS = frozenset(LABELS)
 
