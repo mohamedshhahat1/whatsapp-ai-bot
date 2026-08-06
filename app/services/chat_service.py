@@ -178,6 +178,34 @@ Sender = Callable[[str, str], Awaitable[dict[str, Any]]]
 MessageSender = WhatsAppClient | BaseChannelAdapter
 
 
+def _outbound_id(result: dict[str, Any]) -> str | None:
+    """Pull the provider's id for a message we have just sent.
+
+    Two shapes, because two Graph endpoints. The WhatsApp Cloud API answers
+    ``{"messages": [{"id": ...}]}``; Messenger and the other Send API surfaces
+    answer ``{"message_id": ...}`` at the top level. Reading only the first
+    stored a null id on every Messenger reply, which is what made status
+    updates unmatchable on that channel.
+
+    The Cloud API shape is checked first so the WhatsApp path resolves on
+    exactly the branch it always did.
+
+    ``None`` rather than an exception when neither is present: the message has
+    already reached the customer by this point, and the id is only needed to
+    match a later status update. Failing here would turn a delivered reply
+    into a recorded failure.
+    """
+    messages = result.get("messages")
+    if isinstance(messages, list) and messages:
+        first = messages[0]
+        if isinstance(first, dict) and first.get("id"):
+            return str(first["id"])
+    message_id = result.get("message_id")
+    if message_id:
+        return str(message_id)
+    return None
+
+
 class ChatService:
     """End-to-end handling of inbound customer events on one channel."""
 
@@ -221,11 +249,11 @@ class ChatService:
     async def _mark_read(self, provider_message_id: str) -> None:
         """Show the customer a read receipt, where the channel has one.
 
-        Only WhatsApp takes a message id. The adapter contract's version takes
-        none -- Messenger's ``mark_seen`` is addressed to the recipient rather
-        than to a specific message -- so rather than fake an argument it does
-        not accept, channels without a matching call simply skip this. A
-        missing read receipt costs nothing a customer would notice.
+        The adapter contract accepts the same message id, and its default is a
+        no-op, so this could safely be called everywhere. It is still gated on
+        WhatsApp because that is the only surface where a receipt is actually
+        delivered today, and a call that provably does nothing is better not
+        made. A missing read receipt costs nothing a customer would notice.
         """
         if self._channel == WHATSAPP:
             await self._whatsapp.mark_as_read(provider_message_id)
@@ -249,13 +277,19 @@ class ChatService:
         meaning. That is what makes the fallback safe on every channel: an
         adapter whose profile declares no quick-reply support degrades to text
         by contract, and one whose API rejects the call degrades here.
+
+        The dispatch asks what the sender IS rather than what the channel id
+        says, because the two names differ: the Cloud API calls these reply
+        buttons and the Send API calls them quick replies. It also gives mypy
+        a narrowing it can actually follow -- a string comparison against
+        ``self._channel`` tells it nothing about the union.
         """
 
         async def sender(wa_id: str, text: str) -> dict[str, Any]:
             try:
-                if self._channel == WHATSAPP:
-                    return await self._whatsapp.send_buttons(wa_id, text, buttons)
-                return await self._whatsapp.send_quick_replies(wa_id, text, buttons)
+                if isinstance(self._whatsapp, BaseChannelAdapter):
+                    return await self._whatsapp.send_quick_replies(wa_id, text, buttons)
+                return await self._whatsapp.send_buttons(wa_id, text, buttons)
             except ExternalServiceError:
                 logger.warning("interactive_buttons_send_failed", fallback="text")
                 return await self._whatsapp.send_text(wa_id, text)
@@ -292,16 +326,14 @@ class ChatService:
     ) -> bool:
         """Send exactly one message in answer to one inbound message.
 
-        The outbound provider id is read out of the Cloud API's response
-        shape. Messenger returns ``message_id`` at the top level instead, so
-        rows on that channel are stored with a null id -- harmless today,
-        since nothing on those channels matches status updates back to a
-        message, but the reason it cannot.
+        The outbound provider id is read by ``_outbound_id``, which knows both
+        Graph response shapes, so a reply on any channel is stored with an id
+        a later status update can be matched against.
         """
         send = sender or self._whatsapp.send_text
         if reply_to is None:
             result = await send(wa_id, text)
-            out_id = (result.get("messages") or [{}])[0].get("id")
+            out_id = _outbound_id(result)
             await self._conversations.save_outbound(
                 conversation_id, text, wa_message_id=out_id
             )
@@ -343,7 +375,7 @@ class ChatService:
             )
             return False
 
-        out_id = (result.get("messages") or [{}])[0].get("id")
+        out_id = _outbound_id(result)
         await self._conversations.messages.confirm_reply(
             reserved_id, out_id, status=STATUS_SENT
         )
