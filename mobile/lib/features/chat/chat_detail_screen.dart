@@ -10,6 +10,7 @@ import '../../shared/widgets/loading_shimmer.dart';
 import '../../shared/widgets/error_view.dart';
 import 'chat_detail_provider.dart';
 import 'chat_models.dart';
+import 'widgets/channel_badge.dart';
 import 'widgets/message_bubble.dart';
 import 'widgets/chat_composer.dart';
 import 'widgets/handoff_banner.dart';
@@ -83,7 +84,17 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
         title: detail != null
             ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(detail.assignedOperator ?? 'Customer #${detail.userId}', style: theme.textTheme.titleMedium),
-                Text(detail.mode == modeHuman ? 'Human Mode' : 'Bot Mode', style: theme.textTheme.bodySmall?.copyWith(color: detail.mode == modeHuman ? AppColors.humanMode : AppColors.botMode)),
+                // The channel appears only when it is not the default. On a
+                // WhatsApp-only deployment -- which is every deployment until
+                // ENABLE_MESSENGER is turned on -- a badge here would sit on
+                // screen permanently and say nothing.
+                Row(mainAxisSize: MainAxisSize.min, children: [
+                  if (detail.channel != channelWhatsapp) ...[
+                    ChannelBadge(channel: detail.channel),
+                    const SizedBox(width: 6),
+                  ],
+                  Text(detail.mode == modeHuman ? 'Human Mode' : 'Bot Mode', style: theme.textTheme.bodySmall?.copyWith(color: detail.mode == modeHuman ? AppColors.humanMode : AppColors.botMode)),
+                ]),
               ])
             : const Text('Loading...'),
         actions: [
@@ -220,10 +231,38 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Was `name ?? waId`, which rendered as nothing at all for
+                  // an unnamed Messenger customer: wa_id is empty for anyone
+                  // who did not arrive on WhatsApp. displayName falls back
+                  // through external_id and then a synthetic label, so this
+                  // heading is never blank.
                   Text(
-                    history.name?.isNotEmpty == true ? history.name! : history.waId,
+                    history.displayName,
                     style: theme.textTheme.titleMedium,
                   ),
+                  const SizedBox(height: 4),
+                  // Unconditional here, unlike the tile and the app bar. This
+                  // is a detail view with room for it, and confirming which
+                  // app an id belongs to is the point -- a bare string of
+                  // digits is a phone number or a page-scoped id depending
+                  // entirely on this badge.
+                  Row(
+                    children: [
+                      ChannelBadge(channel: history.channel),
+                      if (history.displayName != history.displayId) ...[
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Text(
+                            history.displayId,
+                            style: theme.textTheme.bodySmall,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 4),
                   Text(
                     '${history.totalConversations} '
                     '${history.totalConversations == 1 ? 'conversation' : 'conversations'} in total',
