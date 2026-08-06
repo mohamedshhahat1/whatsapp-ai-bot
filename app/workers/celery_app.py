@@ -31,6 +31,15 @@ settings = get_settings()
 # conversation.
 SWEEP_INTERVAL_SECONDS = 60
 
+# How often to delete operator sessions whose expiry has passed.
+#
+# Hourly rather than by the minute, because this is about the size of the
+# table and not about security: an expired session is already refused at
+# authentication time by OperatorSession.is_valid, so nothing is gained by
+# noticing it sixty seconds sooner. Against a twelve-hour session TTL, a row
+# survives at most an hour past the point it stopped being usable.
+OPERATOR_SESSION_PURGE_INTERVAL_SECONDS = 3600
+
 celery_app = Celery(
     "whatsapp_ai_bot",
     broker=settings.broker_url,
@@ -106,6 +115,14 @@ celery_app.conf.update(
             "options": {
                 "queue": "webhooks",
                 "expires": float(SWEEP_INTERVAL_SECONDS),
+            },
+        },
+        "purge-expired-operator-sessions": {
+            "task": "operators.purge_expired_sessions",
+            "schedule": float(OPERATOR_SESSION_PURGE_INTERVAL_SECONDS),
+            "options": {
+                "queue": "webhooks",
+                "expires": float(OPERATOR_SESSION_PURGE_INTERVAL_SECONDS),
             },
         },
     },

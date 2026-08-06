@@ -9,6 +9,7 @@ which is what the ``finally`` block below is for.
 
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -26,6 +27,7 @@ from app.core.logging import configure_logging, get_logger
 from app.core.metrics import ERRORS_TOTAL, WEBHOOK_DEAD_LETTERS_TOTAL
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
+from app.services.auth_service import AuthService
 from app.services.session_service import SessionService
 from app.services.webhook_processor import (
     process_meta_payload,
@@ -119,6 +121,25 @@ async def _sweep_idle_sessions() -> int:
         await _close_all(
             (
                 ("whatsapp", whatsapp.aclose),
+                ("engine", engine.dispose),
+            )
+        )
+
+
+async def _purge_expired_operator_sessions() -> int:
+    """Delete operator sessions whose expiry has passed.
+
+    No clients at all: this touches one table and talks to nothing outside
+    the database.
+    """
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            return await AuthService(session).purge_expired_sessions()
+    finally:
+        await _close_all(
+            (
                 ("engine", engine.dispose),
             )
         )
@@ -286,3 +307,53 @@ def close_idle_sessions(self: Task) -> None:
 
     if closed:
         logger.info("session_sweep_completed", closed=closed)
+
+
+@celery_app.task(
+    bind=True,
+    name="operators.purge_expired_sessions",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=60,
+    retry_jitter=True,
+    max_retries=2,
+)
+def purge_expired_operator_sessions(self: Task) -> None:
+    """Periodic sweep: delete operator sessions that have expired.
+
+    Emitted by beat every OPERATOR_SESSION_PURGE_INTERVAL_SECONDS. Safe to
+    run concurrently with itself and safe to retry: the delete is bounded by
+    a timestamp that only moves forward, so a second runner or a later
+    attempt simply finds fewer rows, and a session that is still live can
+    never be caught by it.
+
+    Retries are few and quick for the same reason the idle sweep's are -- the
+    next tick is a better answer than a long retry against a table that has
+    moved on.
+    """
+    started = time.monotonic()
+    try:
+        deleted = asyncio.run(_purge_expired_operator_sessions())
+    except SoftTimeLimitExceeded:
+        ERRORS_TOTAL.labels(type="operator_session_purge_timeout").inc()
+        logger.error(
+            "operator_session_purge_timeout",
+            retries=self.request.retries,
+        )
+        raise
+    except Exception as exc:
+        logger.error(
+            "operator_session_purge_failed",
+            retries=self.request.retries,
+            error=str(exc),
+        )
+        raise
+
+    # Logged unconditionally, the zero case included. A sweep that finds
+    # nothing is the expected steady state, and the absence of this line is
+    # how you notice beat has stopped emitting the tick at all.
+    logger.info(
+        "operator_session_purge_completed",
+        deleted=deleted,
+        duration_seconds=round(time.monotonic() - started, 3),
+    )

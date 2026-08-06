@@ -6,7 +6,7 @@ import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.passwords import hash_password, verify_password
@@ -155,6 +155,31 @@ class AuthService:
         session.revoked_at = datetime.now(UTC)
         await self._session.commit()
         return True
+
+    async def purge_expired_sessions(self, *, now: datetime | None = None) -> int:
+        """Delete sessions that can no longer authenticate anything.
+
+        Returns the number of rows removed.
+
+        Expiry is the only condition. A revoked session is a record of a
+        logout, which is worth keeping for as long as anything else about
+        that session is, and it stops being interesting at the same moment an
+        expired one does -- so both leave on the sweep that follows
+        expires_at, and neither leaves before it.
+
+        Deleting a live session is not possible here: expires_at is compared
+        against the moment the statement runs, so a second runner or a later
+        retry simply finds fewer rows.
+
+        ``now`` is injectable so a test can sweep a chosen moment rather than
+        waiting for one to arrive.
+        """
+        moment = now if now is not None else datetime.now(UTC)
+        result = await self._session.execute(
+            delete(OperatorSession).where(OperatorSession.expires_at < moment)
+        )
+        await self._session.commit()
+        return int(result.rowcount or 0)
 
     async def legacy_operator_id(self) -> int:
         """The reserved row that shared-key requests are attributed to.
