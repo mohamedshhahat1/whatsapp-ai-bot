@@ -21,6 +21,11 @@ class Conversation with _$Conversation {
   const factory Conversation({
     required int id,
     required int userId,
+    /// Which app the customer wrote from: [channelWhatsapp],
+    /// [channelMessenger] and so on. Defaulted for the reason above -- a
+    /// backend that predates channels sends no such field, and every
+    /// conversation from that era was WhatsApp.
+    @Default(channelWhatsapp) String channel,
     /// 'active' or 'closed'.
     required String status,
     required String mode,
@@ -79,6 +84,7 @@ class ConversationDetail with _$ConversationDetail {
   const factory ConversationDetail({
     required int id,
     required int userId,
+    @Default(channelWhatsapp) String channel,
     required String status,
     required String mode,
     String? tag,
@@ -101,6 +107,11 @@ class ConversationDetail with _$ConversationDetail {
 /// One of a customer's other visits. Deliberately has no transcript: the
 /// history sheet lists several and loading every message of each would be a
 /// large payload for a panel nobody has opened yet.
+///
+/// Deliberately carries no channel either. Every summary here belongs to the
+/// same customer as the conversation that opened the sheet, and a customer
+/// cannot change channel -- identity is (channel, external id) -- so the field
+/// would be one value repeated down the list. [CustomerHistory] holds it once.
 @freezed
 class ConversationSummary with _$ConversationSummary {
   const factory ConversationSummary({
@@ -123,16 +134,52 @@ class ConversationSummary with _$ConversationSummary {
 ///
 /// Operator-facing only. None of it is fed to the model, which still sees the
 /// current session alone.
+///
+/// Identity arrives three ways now that the platform is not WhatsApp-only.
+/// [waId] is a phone number OR AN EMPTY STRING -- the backend sends `""` for
+/// anyone who did not arrive on WhatsApp, and deliberately does not put a
+/// page-scoped id there, because anything rendering that field as a phone
+/// number would render a Messenger id as one. Use [displayId], which falls
+/// back to [externalId].
 @freezed
 class CustomerHistory with _$CustomerHistory {
   const factory CustomerHistory({
     required int userId,
-    required String waId,
+    /// Empty for every non-WhatsApp customer. Not the field to display.
+    @Default('') String waId,
+    @Default(channelWhatsapp) String channel,
+    /// Their id on [channel]: the phone number on WhatsApp, a page-scoped id
+    /// on Messenger. The only identity field populated for every channel.
+    String? externalId,
     String? name,
     required int totalConversations,
     @Default(<ConversationSummary>[]) List<ConversationSummary> previous,
   }) = _CustomerHistory;
   factory CustomerHistory.fromJson(Map<String, dynamic> json) => _$CustomerHistoryFromJson(json);
+}
+
+/// Something to call this customer, whatever channel they arrived on.
+///
+/// The history sheet used to title itself `name ?? waId`. For a Messenger
+/// customer the backend sends `wa_id: ""`, and Meta supplies no profile name
+/// unless the page has requested that permission -- so both halves were empty
+/// and the sheet opened with a blank heading above a list of sessions.
+///
+/// Order matters: a real name first, then the id they are actually reachable
+/// by, then the phone number, and only then a synthetic label. The last case
+/// is not hypothetical -- it is what an older backend, which sends neither
+/// `channel` nor `external_id`, will produce for a customer with no name.
+extension CustomerHistoryDisplay on CustomerHistory {
+  String get displayId {
+    if (externalId != null && externalId!.isNotEmpty) return externalId!;
+    if (waId.isNotEmpty) return waId;
+    return 'Customer #$userId';
+  }
+
+  String get displayName {
+    final trimmed = name?.trim() ?? '';
+    return trimmed.isNotEmpty ? trimmed : displayId;
+  }
 }
 
 @freezed
@@ -154,6 +201,25 @@ const statusActive = 'active';
 /// The other half of [statusActive], which was missing -- there was no
 /// constant for a closed session, so no check against one could be written.
 const statusClosed = 'closed';
+
+/// Channels, mirroring app/channels/constants.py. That module is append-only
+/// and these strings are stored in the database, so they are a contract:
+/// renaming one here would silently stop matching rows that already exist.
+const channelWhatsapp = 'whatsapp';
+const channelMessenger = 'messenger';
+const channelInstagramDm = 'instagram_dm';
+const channelFacebookComment = 'facebook_comment';
+const channelInstagramComment = 'instagram_comment';
+
+/// Every channel the backend can report, in the order they are offered in the
+/// filter menu: private threads first, then the public comment channels.
+const allChannels = <String>[
+  channelWhatsapp,
+  channelMessenger,
+  channelInstagramDm,
+  channelFacebookComment,
+  channelInstagramComment,
+];
 
 /// Computed session states, as returned in [Conversation.sessionState].
 const sessionActiveBot = 'ACTIVE_BOT';

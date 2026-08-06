@@ -4,6 +4,7 @@ import 'package:flutter_animate/flutter_animate.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/utils/formatters.dart';
 import '../chat_models.dart';
+import 'channel_badge.dart';
 
 class ConversationTile extends StatelessWidget {
   final Conversation conversation;
@@ -34,6 +35,11 @@ class ConversationTile extends StatelessWidget {
     final isHuman = conversation.mode == modeHuman;
     final isClosed = conversation.status == statusClosed;
     final stateLabel = _stateLabel();
+    // Same reasoning as _stateLabel: WhatsApp is the overwhelming default and
+    // the only enabled channel on a stock deployment, so badging it would put
+    // an identical pill on every row and buy nothing. The badge appears when
+    // it actually distinguishes this conversation from its neighbours.
+    final showChannel = conversation.channel != channelWhatsapp;
     // A closed lead is history, not a queue item. Keeping the gold highlight
     // on it would compete for attention with customers actually waiting.
     final highlightLead = isLead && !isClosed;
@@ -61,6 +67,14 @@ class ConversationTile extends StatelessWidget {
                 ]),
                 const SizedBox(height: 4),
                 Row(children: [
+                  // First in the row on purpose. Which app someone wrote from
+                  // decides the reply window, what formatting survives and
+                  // whether an attachment can be opened, so it outranks who is
+                  // currently answering.
+                  if (showChannel) ...[
+                    ChannelBadge(channel: conversation.channel),
+                    const SizedBox(width: 4),
+                  ],
                   Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: isHuman ? AppColors.humanMode.withOpacity(0.15) : AppColors.botMode.withOpacity(0.15), borderRadius: BorderRadius.circular(6)), child: Row(mainAxisSize: MainAxisSize.min, children: [
                     Icon(isHuman ? Icons.person : Icons.smart_toy, size: 10, color: isHuman ? AppColors.humanMode : AppColors.botMode),
                     const SizedBox(width: 3),
