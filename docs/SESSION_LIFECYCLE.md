@@ -245,13 +245,28 @@ on recovery.
 The sweeper claims work with a conditional update:
 
 ```sql
-UPDATE conversations SET closing_sent_at = now(), status = 'closed', ...
- WHERE id IN (...) AND closing_sent_at IS NULL
+UPDATE conversations SET closing_sent_at = now()
+ WHERE id IN (
+         SELECT id FROM conversations
+          WHERE status = 'active' AND mode = 'bot'
+            AND channel IN ('whatsapp', 'messenger')
+            AND closing_sent_at IS NULL
+            AND last_activity_at < :idle_before
+          ORDER BY last_activity_at
+          LIMIT 200
+          FOR UPDATE SKIP LOCKED
+       )
+   AND closing_sent_at IS NULL
  RETURNING id
 ```
 
 and **commits the claim before sending anything** — the same shape as
-`reserve_reply`. That ordering is what makes the guarantee hold:
+`reserve_reply`. Note that this statement does *not* set `status`; the session
+is closed by a second statement after the send has been attempted. Collapsing
+the two would destroy the property the ordering exists for, which is that a
+claimed-but-unsent session is distinguishable from a finished one.
+
+That ordering is what makes the guarantee hold:
 
 - **Multiple workers / duplicate ticks.** Two sweepers racing the same row:
   one `UPDATE` matches, the other sees `closing_sent_at IS NOT NULL` and
@@ -262,9 +277,9 @@ and **commits the claim before sending anything** — the same shape as
 - **Server restart.** State is in Postgres, not in a timer object. Nothing is
   lost on restart and nothing needs rescheduling.
 
-A failed WhatsApp send is logged (`closing_send_failed`) and never retried.
-This is the deliberate trade: **a missing goodbye is a non-event; a duplicate
-goodbye is the bot looking broken.** Retrying safely would need the claim to be
+A failed send is logged (`closing_send_failed`) and never retried. This is the
+deliberate trade: **a missing goodbye is a non-event; a duplicate goodbye is
+the bot looking broken.** Retrying safely would need the claim to be
 releasable, which reopens the duplicate window.
 
 This is also why `PREVENT_DUPLICATE_CLOSING` is not read by
@@ -273,17 +288,59 @@ conditional: a second goodbye cannot be reached to be suppressed, because the
 claim never hands the same session out twice. The flag documents the promise;
 the claim keeps it.
 
-### Two guards
+### Channels
+
+The sweep is channel-polymorphic. Each claimed session carries its own
+`channel` and its own recipient id — `users.external_id`, falling back to
+`wa_id` — and the goodbye leaves through the adapter for that channel,
+resolved by `app/channels/outbound.py`. Adapters are built once per sweep and
+shared across the batch, because a Messenger adapter owns an httpx client and
+building one per session would open up to two hundred of them.
+
+**The re-welcome on a new Messenger session was never a missing feature.**
+`should_welcome` reads one column on one row and has always been
+channel-free; closing a session frees the customer's slot in the partial
+unique index, so their next message mints a fresh row with `welcome_sent_at`
+NULL and is greeted. On Messenger that simply never got the chance to happen,
+because the session never ended. Fixing the sweep fixed the greeting with it.
+
+Which channels are swept is `SWEEPABLE_CHANNELS` in
+`app/repositories/conversation.py`, currently WhatsApp and Messenger. It is
+not every channel, and the omissions are deliberate:
+
+- **Instagram DM** has sessions and a resolvable recipient, and belongs here
+  as soon as it has an outbound adapter. Only the transport is missing.
+- **Facebook and Instagram comments** never will. A comment thread is public
+  and has no session to bound; closing one would mean posting a goodbye under
+  somebody's post on an idle timer. Their profiles say `has_session = False`.
+
+### Three guards
 
 - **`mode = 'bot'` only.** The sweeper never closes a conversation an operator
   holds. The handoff scenario still works: handing back to the AI resets the
   timer, and the conversation becomes eligible from that point.
+- **`SWEEPABLE_CHANNELS` only.** This one has teeth, because the claim is
+  destructive and one-way: it stamps `closing_sent_at`, and the query only
+  ever considers rows where that column is null. A channel that cannot be
+  resolved to a recipient, or has no adapter to send through, would therefore
+  have its sessions marked closed-and-greeted permanently with nothing
+  delivered. Membership of the set is the promise that both exist, and
+  `test_every_swept_channel_can_actually_send` in
+  `tests/test_messenger_lifecycle.py` checks it rather than trusting it.
 - **The 24-hour Meta service window.** Sessions quiet longer than that are
   closed *silently* — the send would be rejected anyway. This also neutralises
   the first-deploy hazard: without it, the first sweep after release would
   greet every dormant conversation in the table with a goodbye. The migration
   backfills `last_activity_at` from `updated_at`/`created_at` rather than
-  `now()` precisely so this guard can see how old they really are.
+  `now()` precisely so this guard can see how old they really are. One
+  constant covers every channel because every channel profile declares the
+  same 24 hours.
+
+A customer with neither an `external_id` nor a `wa_id` is a fourth, degenerate
+case: unreachable, so the session closes silently and logs
+`closing_skipped_unaddressable_customer`. It should not occur now that
+migration `0013` makes `external_id` NOT NULL, but the claim is one-way, so
+closing silently beats sending to the empty string.
 
 ## Realtime events
 
@@ -301,11 +358,11 @@ WebSocket change.
 
 `conversation.closed` is published for every close, not only the ones that
 send a goodbye. That distinction is the entire reason it exists. The sweeper
-closes silently whenever the closing message is disabled, the copy is empty, or
-the session has fallen outside Meta's service window — and in those cases no
-event fired at all. The conversation list **stops polling while the event
-stream is connected**, so the stale row never self-corrected on a *healthy*
-system; only a manual refresh fixed it.
+closes silently whenever the closing message is disabled, the copy is empty,
+the channel is unavailable, or the session has fallen outside Meta's service
+window — and in those cases no event fired at all. The conversation list
+**stops polling while the event stream is connected**, so the stale row never
+self-corrected on a *healthy* system; only a manual refresh fixed it.
 
 Events are thin by design: they say *that* a conversation changed, never what
 was said. The lifecycle events additionally carry the row's own status columns
@@ -376,14 +433,24 @@ what it remembers would change its answers in ways nobody asked for.
 | `PREVENT_DUPLICATE_WELCOME` | `true` | Should stay on. |
 | `PREVENT_DUPLICATE_CLOSING` | `true` | Should stay on; see above for why it is structural. |
 | `RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE` | `true` | Off, the timer measures customer silence only. |
-| `CONVERSATION_CLOSING_MESSAGE` | *(empty)* | Empty uses `persona.CLOSING`. |
+| `CONVERSATION_CLOSING_MESSAGE` | *(empty)* | Empty uses `persona.CLOSING`. Shared by every channel. |
 | `REJECT_STALE_INBOUND` | `true` | Off, a redelivered message is answered however old it is — see [A delivery that arrives late](#a-delivery-that-arrives-late). This is the switch to use if you ever need the gate gone; do not raise the bound instead. |
 | `INBOUND_MAX_AGE_MINUTES` | `10` | Must stay **below** `CONVERSATION_REOPEN_WINDOW_MINUTES`. A test enforces it for the defaults. |
 
-The last two live in `app/core/inbound_config.py`, not `app/config.py`, because
-they govern whether a delivery is answered at all rather than how a session
-behaves once it is. They are listed here because this is where their effect is
-visible.
+There is no per-channel lifecycle configuration, and that is intentional: the
+idle timeout, the reopen window and the closing copy are statements about how
+this business talks to people, not about which app they used. A channel is
+either swept or it is not, and that is a code-level decision because it is
+constrained by whether an adapter exists — see
+[Channels](#channels). A Messenger session is only ever
+swept if `ENABLE_MESSENGER` is on and the page credentials are set; without
+them the goodbye is skipped, `closing_channel_unavailable` is logged once per
+sweep, and the session still closes.
+
+The last two of the variables above live in `app/core/inbound_config.py`, not
+`app/config.py`, because they govern whether a delivery is answered at all
+rather than how a session behaves once it is. They are listed here because
+this is where their effect is visible.
 
 The closing copy defaults to the Arabic in `app/services/persona.py`, matching
 `WELCOME` and `NOT_UNDERSTOOD`. It lives in code for the same reason they do:
@@ -396,6 +463,11 @@ override it — for a different business, or to switch the closing language.
 **The `beat` container must run.** Without it, sessions are opened, greeted,
 tracked and reset correctly — and nothing ever closes them. No closing message
 is ever sent and every conversation stays open forever.
+
+That now applies to Messenger as well as WhatsApp, so the blast radius of a
+missing scheduler is one channel wider than it was: a Messenger customer will
+never be thanked and never re-greeted on a later visit, because their first
+session never ends.
 
 That failure is silent: the app is healthy, the worker is healthy, only the
 absence of goodbyes reveals it. Beat answers no inspect ping, so monitor it
