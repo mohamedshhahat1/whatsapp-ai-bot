@@ -240,9 +240,7 @@ class NotificationService:
         except Exception as exc:
             # Transient failures have already exhausted the retry policy by
             # the time they surface here.
-            PUSH_FAILED_TOTAL.labels(
-                platform=device.platform, reason="transient"
-            ).inc()
+            PUSH_FAILED_TOTAL.labels(platform=device.platform, reason="transient").inc()
             logger.warning(
                 "push_send_failed",
                 device_id=device.id,
