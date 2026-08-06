@@ -8,14 +8,17 @@ invisible in review or actively misleading to a customer:
 * The emoji rules are a property of the *sent message*, and the code prepends
   a welcome that already carries one. A rule stated in the persona alone would
   be violated by construction on every first reply.
-* The WhatsApp syntax rule is one careless edit from turning every reply into
-  a screen of literal asterisks. Nothing else in the codebase would notice:
-  the output is well-formed markdown, and WhatsApp renders none of it.
+* The formatting syntax rule is one careless edit from turning every reply
+  into a screen of literal asterisks. Nothing else in the codebase would
+  notice: the output is well-formed markdown, and no messaging app renders it.
 * "Do not say you are an AI" is one edit away from "deny being an AI". The
   honesty half is pinned here so it cannot be dropped as redundant.
 * The rules that must survive a SYSTEM_PROMPT override live in the response
   rules layer, and nothing else would notice if they quietly stopped being
   emitted.
+* The response rules are emitted on every channel, so naming one of them
+  there is a claim the layer cannot support. The word is easy to reintroduce
+  and nothing but a test would catch it.
 * Anger handling has to point at the handoff keyword that actually works,
   not at a second, invented escalation path -- and it has to suppress the
   decoration, which is a rule that only ever shows up in the conversations
@@ -36,6 +39,23 @@ _EMOJI = re.compile("[\U0001f000-\U0001faff\u2600-\u27bf\u2b00-\u2bff\ufe0f]")
 
 def _builder() -> PromptBuilder:
     return PromptBuilder(get_settings())
+
+
+def _response_rules() -> str:
+    """The response rules layer on its own.
+
+    Built with a custom SYSTEM_PROMPT so the packaged Arabic persona is not in
+    the way: the persona is allowed to name a platform, and asserting over the
+    whole instruction block would only ever measure that.
+
+    Sections are joined with a blank line and the rules themselves use single
+    newlines between bullets, so splitting on the blank line isolates exactly
+    one layer.
+    """
+    instructions = PromptBuilder(
+        Settings(system_prompt="You are a terse robot.")
+    ).build_instructions()
+    return instructions[instructions.index("# Response rules") :].split("\n\n")[0]
 
 
 def test_the_welcome_spends_exactly_one_emoji() -> None:
@@ -93,15 +113,38 @@ def test_replies_are_broken_into_short_paragraphs() -> None:
         assert "Never a wall of text" in text
 
 
-def test_whatsapp_bold_syntax_is_stated_in_both_layers() -> None:
-    """WhatsApp renders no markdown at all.
+def test_bold_syntax_is_stated_in_both_layers() -> None:
+    """Messaging apps render no markdown at all.
 
     ``**bold**`` and ``# Heading`` arrive as literal characters, so a model
     told to "use headings" without the syntax makes the reply worse than the
     plain text it replaced.
+
+    The syntax is unchanged by the move to a channel-agnostic wording: a
+    single asterisk each side is what WhatsApp renders, and it is still what
+    both layers ask for.
     """
     for text in (persona.SYSTEM_PROMPT, _builder().build_instructions()):
         assert "single asterisk" in text
+
+
+def test_the_response_rules_name_no_channel() -> None:
+    """A layer sent on every channel may not claim to know which one it is on.
+
+    The formatting bullet used to open with "WhatsApp does NOT render
+    markdown". That is now false on four of the five channels the platform
+    supports, and a rule the model can see is wrong about its own situation is
+    a rule it is entitled to discount.
+
+    The persona is deliberately not covered by this: it is copy for one
+    WhatsApp-first business, and SYSTEM_PROMPT replaces it wholesale.
+    """
+    rules = _response_rules()
+    # The rule survives; only its justification was generalised.
+    assert "single asterisk" in rules
+    assert "do NOT render markdown" in rules
+    for channel_name in ("WhatsApp", "Messenger", "Instagram", "Facebook"):
+        assert channel_name not in rules
 
 
 def test_being_an_ai_is_not_announced_but_never_denied() -> None:
