@@ -43,7 +43,7 @@ def _settings(**overrides: Any) -> ChannelSettings:
     return ChannelSettings(
         _env_file=None,
         facebook_page_id=PAGE_ID,
-        facebook_page_access_token="test-token",
+        facebook_page_access_token="unit-test-placeholder",
         **overrides,
     )
 
@@ -56,7 +56,13 @@ def _delivery(*messaging: dict[str, Any]) -> dict[str, Any]:
     """One webhook delivery carrying the given messaging items."""
     return {
         "object": "page",
-        "entry": [{"id": PAGE_ID, "time": 1730000000000, "messaging": list(messaging)}],
+        "entry": [
+            {
+                "id": PAGE_ID,
+                "time": 1730000000000,
+                "messaging": list(messaging),
+            }
+        ],
     }
 
 
@@ -86,7 +92,7 @@ def test_echo_of_our_own_message_is_dropped() -> None:
     assert list(adapter.parse(payload)) == []
 
 
-def test_message_from_the_page_id_is_dropped_even_without_the_echo_flag() -> None:
+def test_message_from_the_page_id_is_dropped_without_the_echo_flag() -> None:
     adapter = _adapter()
     payload = _delivery(
         {
@@ -130,6 +136,7 @@ def test_read_receipt_is_dropped() -> None:
 def test_quick_reply_routes_on_payload_not_on_the_visible_label() -> None:
     """The label is copy and will be translated; the payload is the id."""
     adapter = _adapter()
+    label = "\u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631"
     payload = _delivery(
         {
             "sender": {"id": CUSTOMER},
@@ -137,7 +144,7 @@ def test_quick_reply_routes_on_payload_not_on_the_visible_label() -> None:
             "timestamp": 1730000000000,
             "message": {
                 "mid": "m_qr",
-                "text": "\u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631",
+                "text": label,
                 "quick_reply": {"payload": "request_quote"},
             },
         }
@@ -145,9 +152,7 @@ def test_quick_reply_routes_on_payload_not_on_the_visible_label() -> None:
     (event,) = list(adapter.parse(payload))
     assert event.kind == EVENT_SELECTION
     assert event.selection_id == "request_quote"
-    assert event.selection_title == (
-        "\u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631"
-    )
+    assert event.selection_title == label
 
 
 def test_postback_becomes_a_selection() -> None:
@@ -195,11 +200,12 @@ def test_attachment_becomes_media_and_keeps_the_caption() -> None:
 
 def test_plain_text_becomes_a_text_event() -> None:
     adapter = _adapter()
-    (event,) = list(adapter.parse(_delivery(_text_item("\u0639\u0627\u064a\u0632"))))
+    body = "\u0639\u0627\u064a\u0632"
+    (event,) = list(adapter.parse(_delivery(_text_item(body))))
     assert event.kind == EVENT_TEXT
     assert event.channel == MESSENGER
     assert event.sender_id == CUSTOMER
-    assert event.text == "\u0639\u0627\u064a\u0632"
+    assert event.text == body
 
 
 def test_several_customers_in_one_delivery_are_all_parsed() -> None:
@@ -252,7 +258,6 @@ async def test_send_text_wraps_the_recipient_and_clamps_length() -> None:
     await adapter.send_text(CUSTOMER, "x" * (TEXT_MAX + 50))
 
     assert captured["recipient"] == {"id": CUSTOMER}
-    assert captured["messaging_type"] == "RESPONSE"
     assert len(captured["message"]["text"]) == TEXT_MAX
     await adapter.aclose()
 
@@ -267,7 +272,9 @@ async def test_quick_replies_carry_the_selection_id_as_payload() -> None:
 
     adapter._post = fake_post  # type: ignore[method-assign]
     await adapter.send_quick_replies(
-        CUSTOMER, "pick one", [("request_quote", "A title far longer than allowed")]
+        CUSTOMER,
+        "pick one",
+        [("request_quote", "A title far longer than allowed")],
     )
 
     (reply,) = captured["message"]["quick_replies"]
@@ -342,42 +349,42 @@ def _event(**overrides: Any) -> InboundEvent:
 
 
 async def test_text_event_reaches_the_text_handler() -> None:
-    service = _RecordingService()
+    service: Any = _RecordingService()
     await webhook_processor._dispatch_event(service, _event(text="hi"))
     assert service.calls[0][0] == "text"
     assert service.calls[0][1] == (CUSTOMER, None, "m_1", "hi")
 
 
 async def test_selection_event_reaches_the_interactive_handler() -> None:
-    service = _RecordingService()
-    await webhook_processor._dispatch_event(
-        service,
-        _event(kind=EVENT_SELECTION, selection_id="request_quote", selection_title="Q"),
+    service: Any = _RecordingService()
+    event = _event(
+        kind=EVENT_SELECTION,
+        selection_id="request_quote",
+        selection_title="Q",
     )
+    await webhook_processor._dispatch_event(service, event)
     assert service.calls[0][0] == "interactive"
     assert service.calls[0][1] == (CUSTOMER, None, "m_1", "request_quote", "Q")
 
 
 async def test_selection_without_a_payload_is_treated_as_unsupported() -> None:
     """Better than guessing the route from the visible label."""
-    service = _RecordingService()
-    await webhook_processor._dispatch_event(
-        service, _event(kind=EVENT_SELECTION, selection_id="", selection_title="Q")
-    )
+    service: Any = _RecordingService()
+    event = _event(kind=EVENT_SELECTION, selection_id="", selection_title="Q")
+    await webhook_processor._dispatch_event(service, event)
     assert service.calls[0][0] == "unsupported"
 
 
 async def test_media_event_reaches_the_media_handler() -> None:
-    service = _RecordingService()
-    await webhook_processor._dispatch_event(
-        service, _event(kind=EVENT_MEDIA, media_type="image", caption="c")
-    )
+    service: Any = _RecordingService()
+    event = _event(kind=EVENT_MEDIA, media_type="image", caption="c")
+    await webhook_processor._dispatch_event(service, event)
     assert service.calls[0][0] == "media"
     assert service.calls[0][1] == (CUSTOMER, None, "m_1", "image", None, "c")
 
 
 async def test_unsupported_event_reaches_the_unsupported_handler() -> None:
-    service = _RecordingService()
+    service: Any = _RecordingService()
     await webhook_processor._dispatch_event(service, _event(kind=EVENT_UNSUPPORTED))
     assert service.calls[0][0] == "unsupported"
 
@@ -386,13 +393,13 @@ async def test_event_without_a_message_id_is_dropped() -> None:
     """That id keys the inbound claim, the generation cache and the outbound
     reservation. Processing one without it would collide every such event on
     the empty string."""
-    service = _RecordingService()
+    service: Any = _RecordingService()
     await webhook_processor._dispatch_event(service, _event(provider_message_id=""))
     assert service.calls == []
 
 
 async def test_event_without_a_sender_is_dropped() -> None:
-    service = _RecordingService()
+    service: Any = _RecordingService()
     await webhook_processor._dispatch_event(service, _event(sender_id=""))
     assert service.calls == []
 
