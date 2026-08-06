@@ -11,6 +11,15 @@ import 'chat_repository.dart';
 
 enum ChatListStatus { idle, loading, refreshing, loadingMore, error }
 
+/// Sentinel default for [ChatListState.copyWith].
+///
+/// Every nullable filter below used to be written `x ?? this.x`, which meant
+/// passing null preserved the old value instead of clearing it -- so "All",
+/// "All sessions" and closing the search box all did nothing, and every
+/// chip's onDeleted was inert. With a sentinel, omitting an argument
+/// preserves and passing null clears, which is what the callers always meant.
+const Object _unchanged = Object();
+
 class ChatListState {
   final List<Conversation> conversations;
   final ChatListStatus status;
@@ -23,24 +32,36 @@ class ChatListState {
   /// paging stays correct -- filtering a page after fetching it would return
   /// short pages and break the hasMore calculation.
   final String? statusFilter;
+  /// A channel constant, or null for every channel. Applied client-side,
+  /// unlike [statusFilter], because the list endpoint has no channel
+  /// parameter to pass it to. That means it carries the same caveat as
+  /// [modeFilter]: it narrows the rows already loaded rather than asking the
+  /// server for a full page of matches.
+  final String? channelFilter;
   final Set<int> unreadIds;
 
   const ChatListState({
     this.conversations = const [], this.status = ChatListStatus.idle,
     this.errorMessage, this.hasMore = true, this.offset = 0,
-    this.searchQuery, this.modeFilter, this.statusFilter,
+    this.searchQuery, this.modeFilter, this.statusFilter, this.channelFilter,
     this.unreadIds = const {},
   });
 
   ChatListState copyWith({
     List<Conversation>? conversations, ChatListStatus? status, String? errorMessage,
-    bool? hasMore, int? offset, String? searchQuery, String? modeFilter,
-    String? statusFilter, Set<int>? unreadIds,
+    bool? hasMore, int? offset,
+    Object? searchQuery = _unchanged,
+    Object? modeFilter = _unchanged,
+    Object? statusFilter = _unchanged,
+    Object? channelFilter = _unchanged,
+    Set<int>? unreadIds,
   }) => ChatListState(
     conversations: conversations ?? this.conversations, status: status ?? this.status,
     errorMessage: errorMessage, hasMore: hasMore ?? this.hasMore, offset: offset ?? this.offset,
-    searchQuery: searchQuery ?? this.searchQuery, modeFilter: modeFilter ?? this.modeFilter,
-    statusFilter: statusFilter ?? this.statusFilter,
+    searchQuery: identical(searchQuery, _unchanged) ? this.searchQuery : searchQuery as String?,
+    modeFilter: identical(modeFilter, _unchanged) ? this.modeFilter : modeFilter as String?,
+    statusFilter: identical(statusFilter, _unchanged) ? this.statusFilter : statusFilter as String?,
+    channelFilter: identical(channelFilter, _unchanged) ? this.channelFilter : channelFilter as String?,
     unreadIds: unreadIds ?? this.unreadIds,
   );
 }
@@ -94,7 +115,8 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
         conversations: conversations, status: ChatListStatus.idle,
         hasMore: conversations.length >= AppConfig.pageSize, offset: conversations.length,
         modeFilter: state.modeFilter, searchQuery: state.searchQuery,
-        statusFilter: state.statusFilter, unreadIds: state.unreadIds,
+        statusFilter: state.statusFilter, channelFilter: state.channelFilter,
+        unreadIds: state.unreadIds,
       );
     } on Failure catch (e) { state = state.copyWith(status: ChatListStatus.error, errorMessage: e.message); }
   }
@@ -125,6 +147,41 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
     refresh();
   }
 
+  /// Filters by originating channel.
+  ///
+  /// No refetch, because there is no channel parameter on the list endpoint
+  /// to refetch with -- this narrows what is already loaded, exactly as the
+  /// mode filter does.
+  void setChannelFilter(String? channel) {
+    state = state.copyWith(channelFilter: channel);
+  }
+
+  /// The channels present in the conversations currently loaded, in the
+  /// canonical order from [allChannels].
+  ///
+  /// The filter menu offers a Channel section only when this has more than
+  /// one entry. Deriving it from loaded rows rather than from [allChannels]
+  /// means the menu describes this deployment: with only WhatsApp enabled --
+  /// the default -- no channel section appears at all, instead of four
+  /// options that can never match anything.
+  ///
+  /// The limitation is the same one the filter itself has: this sees loaded
+  /// pages only, so a channel that first appears deep in the history is not
+  /// offered until paging reaches it.
+  List<String> get availableChannels {
+    int rank(String channel) {
+      final index = allChannels.indexOf(channel);
+      return index == -1 ? allChannels.length : index;
+    }
+
+    final seen = state.conversations.map((c) => c.channel).toSet().toList();
+    seen.sort((a, b) {
+      final byRank = rank(a).compareTo(rank(b));
+      return byRank != 0 ? byRank : a.compareTo(b);
+    });
+    return seen;
+  }
+
   void markRead(int conversationId) { state = state.copyWith(unreadIds: state.unreadIds.where((id) => id != conversationId).toSet()); }
 
   /// Unclaimed sales leads first, then most recently updated.
@@ -148,6 +205,7 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
   List<Conversation> get filtered {
     var result = state.conversations;
     if (state.modeFilter != null) { result = result.where((c) => c.mode == state.modeFilter).toList(); }
+    if (state.channelFilter != null) { result = result.where((c) => c.channel == state.channelFilter).toList(); }
     if (state.searchQuery != null && state.searchQuery!.isNotEmpty) {
       final q = state.searchQuery!.toLowerCase();
       result = result.where((c) => c.id.toString().contains(q) || c.assignedOperator?.toLowerCase().contains(q) == true || c.tag?.toLowerCase().contains(q) == true).toList();
