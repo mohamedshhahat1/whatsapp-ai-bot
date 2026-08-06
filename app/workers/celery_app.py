@@ -40,6 +40,15 @@ SWEEP_INTERVAL_SECONDS = 60
 # survives at most an hour past the point it stopped being usable.
 OPERATOR_SESSION_PURGE_INTERVAL_SECONDS = 3600
 
+# How often to expire audit history past AUDIT_RETENTION_DAYS.
+#
+# Daily, because the horizon it enforces is measured in days. Sweeping more
+# often would move rows out a few hours earlier at the cost of a delete
+# against the table every admin action writes to. The sweep is batched and
+# capped, so a first run facing years of history simply finishes over several
+# days rather than in one long transaction.
+AUDIT_PURGE_INTERVAL_SECONDS = 86400
+
 celery_app = Celery(
     "whatsapp_ai_bot",
     broker=settings.broker_url,
@@ -123,6 +132,14 @@ celery_app.conf.update(
             "options": {
                 "queue": "webhooks",
                 "expires": float(OPERATOR_SESSION_PURGE_INTERVAL_SECONDS),
+            },
+        },
+        "purge-expired-audit-logs": {
+            "task": "audit.purge_expired_logs",
+            "schedule": float(AUDIT_PURGE_INTERVAL_SECONDS),
+            "options": {
+                "queue": "webhooks",
+                "expires": float(AUDIT_PURGE_INTERVAL_SECONDS),
             },
         },
     },

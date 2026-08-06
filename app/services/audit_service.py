@@ -7,13 +7,30 @@ append-only.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.audit_log import AuditLog
 from app.services.auth_service import AuthService
+
+# Rows per delete statement. audit_logs is written by every state-changing
+# admin action, so a single unbounded DELETE would hold locks against all of
+# them for its whole duration. A thousand at a time clears a year of history
+# in a handful of round trips while never blocking an operator for long.
+PURGE_BATCH_SIZE = 1000
+
+# A ceiling on one sweep. The first run after enabling retention may face
+# years of rows, and a task that runs until they are all gone is a task with
+# no bound on its runtime. Whatever is left is taken by the next tick.
+PURGE_MAX_BATCHES = 50
+
+# Set for the duration of one transaction, and read by the trigger function
+# installed in migration 0012. Anything that does not set it is refused, so
+# the exemption cannot be reached by an ordinary request.
+_ALLOW_PURGE = text("SELECT set_config('audit.allow_purge', 'on', true)")
 
 
 class AuditService:
@@ -85,3 +102,47 @@ class AuditService:
             .limit(limit)
         )
         return list(result.scalars().all())
+
+    async def purge_older_than(
+        self,
+        cutoff: datetime,
+        *,
+        batch_size: int = PURGE_BATCH_SIZE,
+        max_batches: int = PURGE_MAX_BATCHES,
+    ) -> int:
+        """Delete audit rows created before ``cutoff``. Returns rows removed.
+
+        The only path in this codebase that removes audit history, and the
+        only caller of the exemption added in migration 0012. Every batch
+        opens a transaction, sets the transaction-local flag the trigger
+        looks for, deletes, and commits -- so the permission to delete exists
+        for the span of one statement and is gone before anything else runs.
+
+        UPDATE is not affected and cannot be: no flag permits it. This
+        expires records, it does not rewrite them, which is the part of
+        append-only that matters.
+
+        Stops at ``max_batches`` rather than running until the table is
+        clear, so the first sweep after a long retention-free period cannot
+        occupy a worker indefinitely. The remainder is taken by the next run,
+        because the cutoff only moves forward.
+        """
+        removed = 0
+        for _ in range(max_batches):
+            await self._session.execute(_ALLOW_PURGE)
+            result = await self._session.execute(
+                select(AuditLog.id)
+                .where(AuditLog.created_at < cutoff)
+                .order_by(AuditLog.id)
+                .limit(batch_size)
+            )
+            ids = list(result.scalars().all())
+            if not ids:
+                # Nothing to do. End the transaction the flag was set in
+                # rather than leaving it open behind a return.
+                await self._session.rollback()
+                break
+            await self._session.execute(delete(AuditLog).where(AuditLog.id.in_(ids)))
+            await self._session.commit()
+            removed += len(ids)
+        return removed

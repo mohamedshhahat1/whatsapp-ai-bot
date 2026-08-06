@@ -25,8 +25,10 @@ from app.channels.messenger import MessengerAdapter
 from app.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import ERRORS_TOTAL, WEBHOOK_DEAD_LETTERS_TOTAL
+from app.core.retention_config import get_retention_settings
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
+from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
 from app.services.session_service import SessionService
 from app.services.webhook_processor import (
@@ -138,11 +140,26 @@ async def _purge_expired_operator_sessions() -> int:
         async with session_factory() as session:
             return await AuthService(session).purge_expired_sessions()
     finally:
-        await _close_all(
-            (
-                ("engine", engine.dispose),
-            )
-        )
+        await _close_all((("engine", engine.dispose),))
+
+
+async def _purge_audit_logs() -> int:
+    """Delete audit rows past the retention horizon.
+
+    Returns zero without opening a connection when retention is disabled,
+    which is what AUDIT_RETENTION_DAYS=0 means.
+    """
+    retention = get_retention_settings()
+    if not retention.enforced:
+        return 0
+    cutoff = datetime.now(UTC) - retention.audit_retention
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            return await AuditService(session).purge_older_than(cutoff)
+    finally:
+        await _close_all((("engine", engine.dispose),))
 
 
 def _dead_letter(payload: dict[str, Any], error: BaseException) -> None:
@@ -354,6 +371,49 @@ def purge_expired_operator_sessions(self: Task) -> None:
     # how you notice beat has stopped emitting the tick at all.
     logger.info(
         "operator_session_purge_completed",
+        deleted=deleted,
+        duration_seconds=round(time.monotonic() - started, 3),
+    )
+
+
+@celery_app.task(
+    bind=True,
+    name="audit.purge_expired_logs",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=60,
+    retry_jitter=True,
+    max_retries=2,
+)
+def purge_expired_audit_logs(self: Task) -> None:
+    """Periodic sweep: expire audit history past AUDIT_RETENTION_DAYS.
+
+    Emitted by beat every AUDIT_PURGE_INTERVAL_SECONDS. Does nothing at all
+    when retention is disabled, which is the default-safe reading of a
+    deployment that never set the variable.
+
+    Safe to retry and safe to run twice: the cutoff is recomputed from the
+    clock each time, so a second runner finds fewer rows rather than deleting
+    anything the first should have kept. Each batch commits on its own, so an
+    interrupted sweep keeps the work it already did.
+    """
+    started = time.monotonic()
+    try:
+        deleted = asyncio.run(_purge_audit_logs())
+    except SoftTimeLimitExceeded:
+        ERRORS_TOTAL.labels(type="audit_purge_timeout").inc()
+        logger.error("audit_purge_timeout", retries=self.request.retries)
+        raise
+    except Exception as exc:
+        logger.error(
+            "audit_purge_failed",
+            retries=self.request.retries,
+            error=str(exc),
+        )
+        raise
+
+    logger.info(
+        "audit_purge_completed",
         deleted=deleted,
         duration_seconds=round(time.monotonic() - started, 3),
     )
