@@ -251,34 +251,36 @@ class SessionService:
         logger.info("idle_sessions_closed", count=len(targets))
         return len(targets)
 
-    def _adapter_for(self, channel: str, cache: AdapterCache) -> BaseChannelAdapter:
-        """The adapter that can carry a goodbye on ``channel``, or raise.
+    def _adapter_for(
+        self, channel: str, cache: AdapterCache
+    ) -> BaseChannelAdapter | None:
+        """The adapter that can carry a goodbye on ``channel``, if there is one.
 
-        Memoised for the sweep, including the failure. Caching the failure is
-        the point of returning through an exception rather than ``None``: a
-        deployment with Messenger enabled and unconfigured would otherwise log
-        a misconfiguration line for every one of up to two hundred sessions,
-        which is how a real signal gets trained out of a log.
+        Memoised for the whole sweep, the failures included. Caching a failure
+        is the point rather than an optimisation: a deployment with Messenger
+        switched on and unconfigured would otherwise log a misconfiguration
+        line for every one of up to two hundred sessions, which is how a real
+        signal gets trained out of a log.
+
+        Returns ``None`` rather than raising, because every caller's reaction
+        is the same -- close the session without a goodbye -- and the claim is
+        already committed by the time this runs, so there is nothing to abort.
         """
-        if channel not in cache:
-            adapter: BaseChannelAdapter | None = None
-            if self._whatsapp is not None:
-                try:
-                    adapter = outbound_adapter(
-                        channel, whatsapp_client=self._whatsapp
-                    )
-                except ChannelUnavailableError as exc:
-                    logger.warning(
-                        "closing_channel_unavailable",
-                        channel=channel,
-                        error=str(exc),
-                    )
-            cache[channel] = adapter
+        if channel in cache:
+            return cache[channel]
 
-        resolved = cache[channel]
-        if resolved is None:
-            raise ChannelUnavailableError(f"No sender available for {channel}")
-        return resolved
+        adapter: BaseChannelAdapter | None = None
+        if self._whatsapp is not None:
+            try:
+                adapter = outbound_adapter(channel, whatsapp_client=self._whatsapp)
+            except ChannelUnavailableError as exc:
+                logger.warning(
+                    "closing_channel_unavailable",
+                    channel=channel,
+                    error=str(exc),
+                )
+        cache[channel] = adapter
+        return adapter
 
     async def _close_adapters(self, cache: AdapterCache) -> None:
         """Release every transport this sweep opened.
@@ -313,13 +315,7 @@ class SessionService:
         row sat there reading "active" until somebody pressed Refresh.
         """
         if await self._should_send_closing(target):
-            try:
-                adapter = self._adapter_for(target.channel, cache)
-            except ChannelUnavailableError:
-                # Already logged once for this channel. The session still
-                # closes: the claim is committed and one-way, so leaving it
-                # open would strand it permanently.
-                adapter = None  # type: ignore[assignment]
+            adapter = self._adapter_for(target.channel, cache)
             if adapter is not None:
                 await self._send_closing(target, adapter)
 
