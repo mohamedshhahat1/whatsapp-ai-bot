@@ -98,9 +98,7 @@ def routed(monkeypatch):
 
     def run(payload: dict, **overrides):
         settings = InboundSettings(**overrides)
-        monkeypatch.setattr(
-            webhook_processor, "get_inbound_settings", lambda: settings
-        )
+        monkeypatch.setattr(webhook_processor, "get_inbound_settings", lambda: settings)
         return payload, service, recorded
 
     return run
@@ -200,9 +198,7 @@ async def test_status_updates_are_unaffected_by_the_gate(routed):
                     "changes": [
                         {
                             "value": {
-                                "statuses": [
-                                    {"id": "wamid.out", "status": "delivered"}
-                                ]
+                                "statuses": [{"id": "wamid.out", "status": "delivered"}]
                             }
                         }
                     ]
