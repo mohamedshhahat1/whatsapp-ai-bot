@@ -42,15 +42,15 @@ class User(Base):
     # The platform's own id for them: wa_id, PSID or IGSID. Unique only within
     # a channel, which is why the constraint above spans both columns.
     #
-    # Nullable during the expand phase of 0009_channel_identity: the writers
-    # still populate wa_id alone, and requiring this before they are updated
-    # would break user creation outright. Tightened once they are.
-    external_id: Mapped[str | None] = mapped_column(
-        String(64), nullable=True, index=True
-    )
-    # WhatsApp's phone-number id. Nullable now, because a Messenger user has
-    # no phone number and there is nothing honest to put here. The unique
-    # index stays: Postgres allows many NULLs in one, so WhatsApp keeps its
+    # NOT NULL since 0013_external_id_not_null. It was nullable through the
+    # expand phase of 0009_channel_identity, while the WhatsApp writer still
+    # populated wa_id alone; that writer now fills both and every historical
+    # row was backfilled, so this is the one identifier every row is
+    # guaranteed to have.
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # WhatsApp's phone-number id. Nullable, because a Messenger user has no
+    # phone number and there is nothing honest to put here. The unique index
+    # stays: Postgres allows many NULLs in one, so WhatsApp keeps its
     # guarantee while other channels leave the column empty.
     wa_id: Mapped[str | None] = mapped_column(
         String(32), unique=True, index=True, nullable=True
