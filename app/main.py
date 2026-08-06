@@ -19,7 +19,15 @@ from app.core.logging import configure_logging, get_logger
 from app.core.ratelimit import limiter
 from app.middleware.metrics import MetricsMiddleware
 from app.middleware.request_logging import RequestLoggingMiddleware
-from app.routers import admin, devices, events, health, metrics, webhook
+from app.routers import (
+    admin,
+    devices,
+    events,
+    health,
+    meta_webhook,
+    metrics,
+    webhook,
+)
 
 settings = get_settings()
 configure_logging(debug=settings.debug)
@@ -97,6 +105,10 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(webhook.router)
+    # Registered unconditionally. The route itself refuses to process anything
+    # while ENABLE_MESSENGER is off, which keeps the switch in one place
+    # rather than splitting it between here and the handler.
+    app.include_router(meta_webhook.router)
     app.include_router(admin.router)
     app.include_router(devices.router)
     app.include_router(events.router)
