@@ -154,8 +154,7 @@ def test_nothing_sends_list_messages_any_more():
     ``WELCOME_MENU_BODY`` belongs in this list for the same reason. It was the
     body of the welcome when the options arrived as tappable rows, so it
     deliberately did not spell them out as bullets. With no list to carry it,
-    it was a second definition of the welcome that nothing sent, and it
-    survived the removal of the list path by nine months of nobody noticing.
+    it was a second definition of the welcome that nothing sent.
     """
     assert not hasattr(WhatsAppClient, "send_list")
     assert not hasattr(menu, "MENU_SECTIONS")
