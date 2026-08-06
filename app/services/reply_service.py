@@ -52,6 +52,25 @@ class ConversationSupersededError(ConflictError):
     code = "conversation_superseded"
 
 
+class UnsupportedChannelError(ConflictError):
+    """Raised when a reply cannot be carried on the customer's own channel.
+
+    ``ReplyService`` holds a ``WhatsAppClient`` and nothing else, so it can
+    only answer someone who wrote in over WhatsApp. Since migration 0009 made
+    ``User.wa_id`` nullable -- a Messenger customer is identified by a
+    page-scoped id and has no phone number at all -- the send would otherwise
+    be handed ``None``.
+
+    A 409 rather than a 500 because nothing is broken: the operator's request
+    is well formed, the platform simply cannot carry it yet. Routing the reply
+    back out through the adapter the customer actually arrived on is the
+    proper fix, and belongs with the rest of the outbound channel work rather
+    than being smuggled into the live WhatsApp path.
+    """
+
+    code = "unsupported_channel"
+
+
 async def revive_for_operator(
     conversations: ConversationRepository,
     conversation: Conversation,
@@ -151,6 +170,10 @@ class ReplyService:
         the message reached the customer, but their answer opened a different
         conversation, so the two halves of the same exchange lived in
         different threads.
+
+        Refuses outright for a customer who did not arrive over WhatsApp,
+        since this service has no way to reach them at all. See
+        :class:`UnsupportedChannelError`.
         """
         conversation = await self._conversations.get(conversation_id)
         if conversation is None:
@@ -167,6 +190,21 @@ class ReplyService:
         user = await self._session.get(User, conversation.user_id)
         if user is None:
             raise NotFoundError(f"User {conversation.user_id} not found")
+
+        # Checked before the service window, because "we cannot reach you at
+        # all" and "we cannot reach you right now" are different answers and
+        # the operator should be given the accurate one. Nothing has been
+        # sent or written at this point, so refusing here costs nothing.
+        if user.wa_id is None:
+            logger.info(
+                "manual_reply_unsupported_channel",
+                conversation_id=conversation.id,
+                channel=conversation.channel,
+            )
+            raise UnsupportedChannelError(
+                "This customer did not reach you on WhatsApp. Operator "
+                "replies are not wired up for their channel yet."
+            )
 
         last_inbound = await self._messages.last_inbound_at(conversation.id)
         if last_inbound is None:
