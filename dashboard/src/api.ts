@@ -125,6 +125,17 @@ export type MessageStatus = Loose<
   "pending" | "sent" | "unconfirmed" | "failed"
 >
 
+// Which app the customer wrote from. Mirrors app/channels/constants.py, which
+// is append-only: these strings are stored in the database, so renaming one
+// here would stop it matching rows that already exist.
+export type Channel = Loose<
+  | "whatsapp"
+  | "messenger"
+  | "instagram_dm"
+  | "facebook_comment"
+  | "instagram_comment"
+>
+
 // Computed server-side from (status, mode, last_activity_at, closing_sent_at)
 // and never stored. WAITING_IDLE means past the idle timeout and due to be
 // closed by the next sweep -- not yet closed. CLOSING means a worker has
@@ -137,6 +148,23 @@ export const TAG_SALES_LEAD = "sales_lead"
 export const MODE_HUMAN = "human"
 export const STATUS_ACTIVE = "active"
 export const STATUS_CLOSED = "closed"
+
+export const CHANNEL_WHATSAPP = "whatsapp"
+export const CHANNEL_MESSENGER = "messenger"
+export const CHANNEL_INSTAGRAM_DM = "instagram_dm"
+export const CHANNEL_FACEBOOK_COMMENT = "facebook_comment"
+export const CHANNEL_INSTAGRAM_COMMENT = "instagram_comment"
+
+// Canonical ordering: the private threads first, then the public comment
+// channels. Used to keep the filter menu in a stable order regardless of
+// which channels happen to appear on the current page.
+export const ALL_CHANNELS: Channel[] = [
+  CHANNEL_WHATSAPP,
+  CHANNEL_MESSENGER,
+  CHANNEL_INSTAGRAM_DM,
+  CHANNEL_FACEBOOK_COMMENT,
+  CHANNEL_INSTAGRAM_COMMENT,
+]
 
 // Returned as `code` in the 409 body when an operator acts on a conversation
 // whose customer has already started a newer session. Distinct from an
@@ -293,6 +321,11 @@ export interface UnblockResponse {
 export interface Conversation {
   id: number
   user_id: number
+  // Which app the customer wrote from. Optional for the same reason the
+  // lifecycle fields below are: during a rolling deploy an older backend is
+  // briefly live and sends no such field. Treat undefined as "whatsapp" --
+  // every conversation from before channels existed was one.
+  channel?: Channel
   // status is lifecycle (active / closed); mode is ownership (bot / human).
   // They are independent: a conversation stays active the whole time a human
   // operator owns it.
@@ -351,6 +384,11 @@ export interface ConversationDetail extends Conversation {
 // One of a customer's other visits, for the operator history panel. No
 // transcript: the panel lists several and loading every message of each
 // would be a large payload for a sidebar nobody has clicked yet.
+//
+// Carries no channel, deliberately: every summary belongs to the same
+// customer as the conversation that opened the panel, and a customer cannot
+// change channel -- identity is (channel, external_id). CustomerHistory holds
+// it once instead of repeating it down the list.
 export interface ConversationSummary {
   id: number
   status: ConversationStatus
@@ -365,7 +403,15 @@ export interface ConversationSummary {
 // is fed to the model, which still sees the current session alone.
 export interface CustomerHistory {
   user_id: number
+  // A phone number, OR AN EMPTY STRING. The backend sends "" for anyone who
+  // did not arrive on WhatsApp, and deliberately does not write a page-scoped
+  // id here -- anything rendering this field as a phone number would render a
+  // Messenger id as one. Prefer external_id when displaying.
   wa_id: string
+  channel?: Channel
+  // Their id on `channel`: the phone number on WhatsApp, a page-scoped id on
+  // Messenger. The only identity field populated for every channel.
+  external_id?: string | null
   name: string | null
   total_conversations: number
   previous: ConversationSummary[]
@@ -439,6 +485,10 @@ export const api = {
     request<void>(`/admin/pricing/${id}`, { method: "DELETE" }),
   // `status` is optional and omitted by default, which returns every session
   // regardless of lifecycle -- the behaviour this call has always had.
+  //
+  // There is deliberately no `channel` parameter: the router does not accept
+  // one. The dashboard filters by channel client-side, which narrows the
+  // loaded page rather than fetching a full page of matches.
   conversations: (
     limit = PAGE_SIZE,
     offset = 0,
