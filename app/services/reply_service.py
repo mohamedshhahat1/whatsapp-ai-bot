@@ -159,7 +159,9 @@ class ReplyService:
             return False
         return self._settings.reset_idle_timer_on_outgoing_message
 
-    async def send_manual_reply(self, conversation_id: int, text: str) -> Message:
+    async def send_manual_reply(
+        self, conversation_id: int, text: str, operator_id: int | None = None
+    ) -> Message:
         """Send an operator reply and record it in the conversation.
 
         The message is persisted only after the WhatsApp API accepts it, so a
@@ -174,6 +176,10 @@ class ReplyService:
         Refuses outright for a customer who did not arrive over WhatsApp,
         since this service has no way to reach them at all. See
         :class:`UnsupportedChannelError`.
+
+        ``operator_id`` defaults to None so that existing callers keep
+        working; None simply means the reply is not attributed to an operator
+        account, which is what a shared-key request produces.
         """
         conversation = await self._conversations.get(conversation_id)
         if conversation is None:
@@ -232,6 +238,12 @@ class ReplyService:
             wa_message_id=wa_message_id,
             status="sent",
         )
+        # Set on the returned row rather than threaded through
+        # MessageRepository.create: that signature is shared with the bot
+        # path, which never has an operator, so widening it would put an
+        # always-None argument at every other call site. This lands in the
+        # same transaction as the commit below.
+        message.operator_id = operator_id
         # An operator reply is activity like any other, so it resets the idle
         # timer. This matters most after the AI resumes: without it, a
         # conversation a person had been working for twenty minutes would be
@@ -244,6 +256,7 @@ class ReplyService:
             "manual_reply_sent",
             conversation_id=conversation.id,
             wa_message_id=wa_message_id,
+            operator_id=operator_id,
         )
         # inbound=False: this refreshes any dashboard showing the conversation
         # (including a second operator's) without yanking anyone's attention

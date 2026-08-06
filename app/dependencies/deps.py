@@ -16,6 +16,7 @@ from app.integrations.whatsapp import WhatsAppClient
 from app.models.operator import LEGACY_OPERATOR_USERNAME
 from app.services.admin_service import AdminService
 from app.services.analytics_service import AnalyticsService
+from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
 from app.services.chat_service import ChatService
 from app.services.device_service import DeviceService
@@ -81,6 +82,16 @@ def get_admin_service(db: AsyncSession = Depends(get_db)) -> AdminService:
 def get_analytics_service(db: AsyncSession = Depends(get_db)) -> AnalyticsService:
     """Cost and usage analytics bound to the request-scoped session."""
     return AnalyticsService(db, get_settings())
+
+
+def get_audit_service(db: AsyncSession = Depends(get_db)) -> AuditService:
+    """Audit recorder bound to the request-scoped session.
+
+    The same session the acting service uses, so a caller that wants the
+    action and its audit row in one transaction can have that by passing
+    ``commit=False``.
+    """
+    return AuditService(db)
 
 
 def get_auth_service(db: AsyncSession = Depends(get_db)) -> AuthService:
