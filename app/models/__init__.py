@@ -5,20 +5,25 @@ is how ``alembic/env.py`` sees the full schema for autogenerate diffs.
 """
 
 from app.models.ai_log import AILog
+from app.models.audit_log import AuditLog
 from app.models.conversation import Conversation
 from app.models.device_token import DeviceToken
 from app.models.document import Document, DocumentChunk
 from app.models.message import Message
 from app.models.model_pricing import ModelPricing
+from app.models.operator import Operator, OperatorSession
 from app.models.user import User
 
 __all__ = [
     "AILog",
+    "AuditLog",
     "Conversation",
     "DeviceToken",
     "Document",
     "DocumentChunk",
     "Message",
     "ModelPricing",
+    "Operator",
+    "OperatorSession",
     "User",
 ]
