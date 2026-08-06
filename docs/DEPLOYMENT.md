@@ -1,8 +1,13 @@
 # Deployment
 
-Production runs from `docker-compose.prod.yml`: the API, a Celery worker, the
-Celery scheduler, Postgres (pgvector), Redis, nginx with TLS, certbot, a backup
-scheduler, and a one-shot `migrate` service.
+Production runs from `docker-compose.prod.yml`: the API, a Celery worker,
+Postgres (pgvector), Redis, nginx with TLS, certbot, a backup scheduler, the
+Prometheus/Alertmanager/Grafana stack with its exporters, and a one-shot
+`migrate` service.
+
+> **It does not run a Celery scheduler.** See
+> [No scheduler in production](#no-scheduler-in-production) before you rely on
+> anything time-based.
 
 ## First deployment
 
@@ -54,6 +59,43 @@ redis (healthy: redis-cli ping) ── app, worker
 so neither can start against a schema that has not been upgraded. If a
 migration fails, the deployment stops there instead of starting containers
 that will fail at runtime in less obvious ways.
+
+Monitoring starts alongside: `prometheus` (after `prometheus-targets-init`
+renders the public probe target), `alertmanager` (after `alertmanager-config`
+renders its config with envsubst), `grafana`, and the node, Postgres, Redis and
+blackbox exporters.
+
+<a name="no-scheduler-in-production"></a>
+### No scheduler in production
+
+**`docker-compose.prod.yml` does not define a `beat` service.** The development
+compose file does; production does not. Everything on the periodic schedule
+therefore does not run:
+
+| What does not happen | Consequence |
+| --- | --- |
+| Idle sessions are never closed | `CONVERSATION_IDLE_TIMEOUT_MINUTES` and `CONVERSATION_CLOSE_AFTER_IDLE` are read and ignored; conversations stay open indefinitely |
+| No closing message is ever sent | `ENABLE_CONVERSATION_CLOSING_MESSAGE` has no effect in production |
+| Expired `operator_sessions` are never removed | Rows accumulate; expiry is still enforced at check time, so this is hygiene rather than a security hole |
+| `AUDIT_RETENTION_DAYS` never purges | The append-only audit log grows without bound |
+
+Nothing surfaces this. Every container is healthy, no request fails, no alert
+fires, and the dashboard looks correct - conversations simply never reach the
+`closed` state. It is the most expensive kind of bug: the system reports
+success while doing less than it claims.
+
+Until a `beat` service is added to the production stack, run the scheduler
+yourself:
+
+```bash
+docker compose -f docker-compose.prod.yml run -d --name beat \
+  --entrypoint celery app \
+  -A app.workers.celery_app.celery_app beat --loglevel=info \
+  --schedule=/tmp/celerybeat-schedule
+```
+
+Run **exactly one**. Two schedulers means every idle conversation receives two
+farewell messages.
 
 ---
 
@@ -174,9 +216,9 @@ the `NoInboundMessages` alert exists. Check in this order:
 
 One more, easy to miss: deliveries older than `INBOUND_MAX_AGE_MINUTES` are
 dropped on purpose. After an outage, Meta replays everything it could not
-deliver -- for up to seven days -- and those replays are discarded rather than
-answered. Messages arriving but not being answered right after a recovery is
-the expected behaviour, not a bug.
+deliver -- for hours -- and those replays are discarded rather than answered.
+Messages arriving but not being answered right after a recovery is the
+expected behaviour, not a bug.
 
 ---
 
@@ -193,15 +235,17 @@ Fully covered in [docs/BACKUP_RESTORE.md](BACKUP_RESTORE.md) and
   that is only checked at restore time is not a backup.
 - Encrypted off-site copies are uploaded to S3, B2, GCS or Azure, with their
   own retention schedule and their own staleness check. Set
-  `BACKUP_REMOTE_PROVIDER` -- it ships as `none`, so a fresh deployment keeps
-  every copy on the same host as the database it protects until you configure
-  this.
+  `BACKUP_REMOTE_PROVIDER` -- it ships as `none`, and `backup.sh` logs a
+  warning on every run rather than failing, so a fresh deployment keeps every
+  copy on the same host as the database it protects until you configure this.
 - The container's healthcheck measures **output, not liveness**: it goes
   unhealthy when no successful backup has completed in 30 hours. A backup
   process running happily while producing nothing is the failure that matters.
-- A scheduled restore drill rebuilds the database from the newest backup into a
-  throwaway instance and checks the expected tables came back. An untested
-  restore path is a hypothesis, not a recovery plan.
+- `RESTORE_DRILL_ENABLED` runs a scheduled restore drill that rebuilds the
+  database from the newest backup into a throwaway instance and checks the
+  expected tables came back. An untested restore path is a hypothesis, not a
+  recovery plan. This one is driven by the backup scheduler, not by Celery, so
+  it is unaffected by the missing `beat` service.
 - Restore anything with one command: `./scripts/restore.sh latest`, or
   `./scripts/restore.sh --list` to see what is available.
 
@@ -268,7 +312,7 @@ Every state-changing admin action writes a row to `audit_logs` after the action
 succeeds. A `BEFORE UPDATE OR DELETE` trigger raises on any attempt to rewrite
 it, so the log is append-only at the database level rather than by convention.
 
-Two consequences worth knowing before an incident rather than during one:
+Three consequences worth knowing before an incident rather than during one:
 
 - `audit_logs.operator_id` is `ON DELETE RESTRICT`. An operator with history
   cannot be deleted; deactivate them with `is_active` instead. Deleting the
@@ -277,10 +321,10 @@ Two consequences worth knowing before an incident rather than during one:
   escape hatch for retention and for resetting a test database -- but it means
   the immutability guarantee is about ordinary `UPDATE` and `DELETE`, not about
   a determined superuser.
-
-`AUDIT_RETENTION_DAYS` (default `365`) bounds the growth. The purge runs on the
-Celery scheduler, so a deployment without a running scheduler keeps audit rows
-forever no matter what the setting says. `0` disables the purge explicitly.
+- `AUDIT_RETENTION_DAYS` (default `365`) bounds the growth, but the purge runs
+  on the Celery schedule, which the production stack does not currently start.
+  See [No scheduler in production](#no-scheduler-in-production). Set `0` to
+  disable the purge explicitly rather than by accident.
 
 ## Rollback
 
@@ -308,21 +352,29 @@ Liveness intentionally has no dependencies: making it check Redis would
 restart every API container during a Redis blip, turning a degradation into
 an outage.
 
-Nothing here checks the **scheduler**. A dead `beat` container produces no
-errors, no failed requests and no unhealthy service -- conversations simply
-stop closing, farewells stop sending and retention stops running. The
-`AIDisabled` and `NoInboundMessages` alerts are the closest thing to coverage;
-if you add one probe to this table, make it that one.
+Nothing here checks the **scheduler**, because production does not run one. If
+you start one by hand, note that it gets no healthcheck and no alert either: a
+dead scheduler produces no errors, no failed requests and no unhealthy
+service. `AIDisabled` and `NoInboundMessages` are the closest existing
+coverage, and neither is really about this.
 
 ## Monitoring
 
-Prometheus scrapes `app:8000/metrics` and `worker:9100`
-(`monitoring/prometheus.yml`). The Grafana dashboard in
+Prometheus scrapes `app:8000/metrics` and the node, Postgres, Redis and
+blackbox exporters (`monitoring/prometheus.yml`). The blackbox exporter probes
+the **public** hostname from outside the app containers - every other target is
+scraped inside the compose network and would keep passing while DNS, nginx or
+the certificate were broken, which is exactly the combination that stops Meta
+delivering webhooks. The Grafana dashboard in
 `monitoring/grafana/dashboards/` covers message volume, OpenAI latency,
 errors, token usage, HTTP traffic and dead-lettered webhooks.
 
 `/metrics` is not public: in-cluster scrapes are allowed by peer address,
 external requests need `ADMIN_API_KEY`, and nginx returns 404 for the path.
+
+Grafana and Prometheus are bound to `127.0.0.1`, as is Alertmanager - its
+silence UI has no authentication of its own, and an exposed Alertmanager lets
+anyone silence every alert you have.
 
 ### Alerting
 
@@ -332,7 +384,13 @@ or email. Configure at least one receiver: most of these alerts exist precisely
 for failures that are otherwise invisible, and an unrouted alert is a log line
 nobody reads.
 
-The three that matter most:
+Alerting credentials are the one exception to the Docker-secrets rule.
+Alertmanager has no environment expansion of its own, so its config is rendered
+by envsubst at start-up from shell environment variables. Keep them in a
+root-owned `0600` env file and source it before `docker compose up`, and be
+aware they are visible via `docker inspect` on the config init container.
+
+The three alerts that matter most:
 
 | Alert | Why it exists |
 | --- | --- |
@@ -418,9 +476,9 @@ database is the first bottleneck; the analytics queries scan the full period on
 each load, and beyond a few hundred thousand `ai_logs` rows the answer is a
 nightly rollup table.
 
-The scheduler is the exception: run **exactly one**. It is not a bottleneck and
-it does not shard. Two schedulers means every idle conversation gets two
-farewell messages.
+The scheduler, if you run one, is the exception: **exactly one**, always. It is
+not a bottleneck and it does not shard. Two schedulers means every idle
+conversation gets two farewell messages.
 
 ## Configuration checklist
 
@@ -439,13 +497,17 @@ farewell messages.
   existed.
 - `BACKUP_REMOTE_PROVIDER` - ships as `none`. Until it is set, every backup
   lives on the same host as the database it protects.
-- One scheduler replica, always running. Session closing, farewells and audit
-  retention all depend on it, and none of them alert when it is gone.
+- Configure at least one Alertmanager receiver. Unrouted alerts are log lines.
+- **Decide what to do about the scheduler.** Session closing, farewells and
+  audit retention all depend on it, the production stack does not start one,
+  and nothing alerts when it is missing. See
+  [No scheduler in production](#no-scheduler-in-production).
 - Create at least one real operator with `python -m app.cli create-admin`.
   Until you do, the audit log records every action as `legacy-api-key`, which
   is accurate and tells you nothing.
 - Port 8000 stays bound to `127.0.0.1`; only nginx is exposed.
-- Redis requires a password and is not published outside the compose network.
-  See [docs/REDIS_SECURITY.md](REDIS_SECURITY.md) for rotation and for the
-  `REDIS_AUTH_REQUIRED` guard that stops the app starting against an
-  unauthenticated instance.
+- Redis requires a password, rendered into a tmpfs file from the
+  `redis_password` secret so it never appears in `ps` or `docker inspect`, and
+  is not published outside the compose network. The metrics exporter uses a
+  separate read-only ACL account. See
+  [docs/REDIS_SECURITY.md](REDIS_SECURITY.md).
