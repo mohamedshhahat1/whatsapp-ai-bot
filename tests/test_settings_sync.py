@@ -14,6 +14,20 @@ environment identically, so "is this a real setting?" has to be asked of all
 of them. Asked of Settings alone it reports every PUSH_*, FCM_*, INBOUND_* and
 channel variable as unknown -- which is not drift, it is the question being
 put to the wrong object.
+
+Both directions, and why the second one matters more
+----------------------------------------------------
+``test_every_documented_variable_is_a_real_setting`` catches the variable that
+outlived its field: an operator sets it, nothing reads it, and the setting
+appears to do nothing. That is annoying.
+
+``test_every_setting_is_documented`` catches the opposite, which is worse and
+more common: a field added in code that nobody can discover without reading
+the source. It is exactly what happened when the channel layer landed --
+``ChannelSettings`` arrived with sixteen fields and ``.env.example`` mentioned
+none of them, so there was no way to learn that ENABLE_MESSENGER existed. As
+more channels are added this is the direction that will drift first, because
+adding a field is a code change and documenting it is not.
 """
 
 from pathlib import Path
@@ -52,6 +66,21 @@ RAG_FIELDS = (
     "chunk_overlap_tokens",
 )
 
+# Settings that deliberately have no uncommented .env.example line, mapped to
+# the reason. A field belongs here only when documenting it would be actively
+# wrong -- never merely because nobody has written the entry yet. Anything
+# added here should be readable as an argument, because that is what the next
+# person will weigh it as.
+UNDOCUMENTED_BY_DESIGN: dict[str, str] = {
+    "system_prompt": (
+        "Present in .env.example as a commented-out line on purpose. "
+        "Uncommented, SYSTEM_PROMPT= would REPLACE the reviewed Arabic "
+        "persona in app/services/persona.py with an empty string on every "
+        "fresh checkout -- the bot would lose its identity by default "
+        "rather than by choice. See docs/PERSONA.md."
+    ),
+}
+
 
 def _documented_variables() -> set[str]:
     """Uncommented KEY=value names in .env.example."""
@@ -87,6 +116,48 @@ def test_every_documented_variable_is_a_real_setting() -> None:
         name for name in _documented_variables() if name.lower() not in known
     )
     assert not unknown, f".env.example documents unknown settings: {unknown}"
+
+
+def test_every_setting_is_documented() -> None:
+    """No setting may exist that .env.example never mentions.
+
+    The complement of the test above, and the one that would have caught the
+    channel switches shipping undocumented.
+    """
+    documented = _documented_variables()
+    undocumented = sorted(
+        name
+        for name in _configured_fields()
+        if name.upper() not in documented and name not in UNDOCUMENTED_BY_DESIGN
+    )
+    assert not undocumented, (
+        f".env.example does not document these settings: {undocumented}. Add "
+        "an entry for each, or record it in UNDOCUMENTED_BY_DESIGN with the "
+        "reason it should stay undocumented."
+    )
+
+
+def test_documentation_exemptions_are_still_needed() -> None:
+    """An exemption that has stopped being true is worse than none at all.
+
+    Both halves are rot: the first names a setting that no longer exists, the
+    second silently excuses a setting from a check it would now pass.
+    """
+    known = _configured_fields()
+    documented = _documented_variables()
+
+    stale = sorted(name for name in UNDOCUMENTED_BY_DESIGN if name not in known)
+    assert not stale, (
+        f"UNDOCUMENTED_BY_DESIGN names settings that no longer exist: {stale}"
+    )
+
+    redundant = sorted(
+        name for name in UNDOCUMENTED_BY_DESIGN if name.upper() in documented
+    )
+    assert not redundant, (
+        "UNDOCUMENTED_BY_DESIGN exempts settings that .env.example now "
+        f"documents -- drop the exemption: {redundant}"
+    )
 
 
 def test_rag_defaults_are_internally_consistent() -> None:
