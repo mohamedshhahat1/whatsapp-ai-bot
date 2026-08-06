@@ -28,6 +28,11 @@ the source. It is exactly what happened when the channel layer landed --
 none of them, so there was no way to learn that ENABLE_MESSENGER existed. As
 more channels are added this is the direction that will drift first, because
 adding a field is a code change and documenting it is not.
+
+When the second test fails, the fix is almost always to add the variable to
+``.env.example`` with a comment saying what it does. Exempting it instead is
+for the rare field where documenting it would be actively wrong; see
+``UNDOCUMENTED_BY_DESIGN``.
 """
 
 from pathlib import Path
@@ -69,8 +74,8 @@ RAG_FIELDS = (
 # Settings that deliberately have no uncommented .env.example line, mapped to
 # the reason. A field belongs here only when documenting it would be actively
 # wrong -- never merely because nobody has written the entry yet. Anything
-# added here should be readable as an argument, because that is what the next
-# person will weigh it as.
+# added here should read as an argument, because that is what the next person
+# will weigh it as.
 UNDOCUMENTED_BY_DESIGN: dict[str, str] = {
     "system_prompt": (
         "Present in .env.example as a commented-out line on purpose. "
@@ -122,19 +127,14 @@ def test_every_setting_is_documented() -> None:
     """No setting may exist that .env.example never mentions.
 
     The complement of the test above, and the one that would have caught the
-    channel switches shipping undocumented.
+    channel switches shipping undocumented. To fix a failure, add the variable
+    to .env.example -- or, if documenting it would be wrong, record it in
+    UNDOCUMENTED_BY_DESIGN with the reason.
     """
     documented = _documented_variables()
-    undocumented = sorted(
-        name
-        for name in _configured_fields()
-        if name.upper() not in documented and name not in UNDOCUMENTED_BY_DESIGN
-    )
-    assert not undocumented, (
-        f".env.example does not document these settings: {undocumented}. Add "
-        "an entry for each, or record it in UNDOCUMENTED_BY_DESIGN with the "
-        "reason it should stay undocumented."
-    )
+    checked = _configured_fields() - set(UNDOCUMENTED_BY_DESIGN)
+    missing = sorted(name for name in checked if name.upper() not in documented)
+    assert not missing, f".env.example does not document settings: {missing}"
 
 
 def test_documentation_exemptions_are_still_needed() -> None:
@@ -145,19 +145,13 @@ def test_documentation_exemptions_are_still_needed() -> None:
     """
     known = _configured_fields()
     documented = _documented_variables()
+    exempt = set(UNDOCUMENTED_BY_DESIGN)
 
-    stale = sorted(name for name in UNDOCUMENTED_BY_DESIGN if name not in known)
-    assert not stale, (
-        f"UNDOCUMENTED_BY_DESIGN names settings that no longer exist: {stale}"
-    )
+    stale = sorted(name for name in exempt if name not in known)
+    assert not stale, f"Exemptions for settings that no longer exist: {stale}"
 
-    redundant = sorted(
-        name for name in UNDOCUMENTED_BY_DESIGN if name.upper() in documented
-    )
-    assert not redundant, (
-        "UNDOCUMENTED_BY_DESIGN exempts settings that .env.example now "
-        f"documents -- drop the exemption: {redundant}"
-    )
+    redundant = sorted(name for name in exempt if name.upper() in documented)
+    assert not redundant, f"Exemptions no longer needed: {redundant}"
 
 
 def test_rag_defaults_are_internally_consistent() -> None:
