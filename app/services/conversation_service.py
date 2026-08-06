@@ -56,6 +56,31 @@ class ConversationService:
         )
         return user, conversation
 
+    async def get_channel_context(
+        self, channel: str, external_id: str, name: str | None = None
+    ) -> tuple[User, Conversation]:
+        """:meth:`get_context` for a customer arriving on another channel.
+
+        Session semantics are shared deliberately: the reopen window, the
+        welcome flag and the one-active-conversation rule behave exactly as
+        they do on WhatsApp. Only identity differs, because a page-scoped
+        Messenger id is not a phone number and must not be written to
+        ``wa_id`` -- see ``UserRepository.get_or_create_by_channel`` for why
+        the two cannot share a conflict target.
+
+        The reopen window is inert on these channels today: nothing closes
+        their sessions, so there is never a closed one to revive. It is passed
+        anyway, so that when the channel-aware sweeper lands this path does
+        not have to be revisited.
+        """
+        user = await self.users.get_or_create_by_channel(
+            channel=channel, external_id=external_id, name=name
+        )
+        conversation = await self.conversations.get_or_create_active(
+            user.id, reopen_within=self._reopen_within, channel=channel
+        )
+        return user, conversation
+
     async def claim_inbound(
         self,
         conversation_id: int,

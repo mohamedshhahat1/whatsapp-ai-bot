@@ -30,6 +30,22 @@ gets no reply sends "?" and gets one; a customer who gets two different
 answers about their quotation stops trusting the business, and every duplicate
 is a second OpenAI charge.
 
+Channels
+--------
+This class is constructed per channel and told which one it is on. Almost
+nothing here depends on that: claiming, quota, the welcome rules, handoff,
+generation and the reserve-before-send guarantee are all properties of the
+conversation rather than of the transport. Three things are not, and each is
+behind a helper -- ``_context``, ``_mark_read`` and ``_buttons_sender``. The
+default is WhatsApp, so a caller that says nothing gets exactly the behaviour
+this module had before channels existed.
+
+The first argument to every handler is the customer's id ON THAT CHANNEL: a
+phone number on WhatsApp, a page-scoped id on Messenger. It is still named
+``wa_id`` throughout, which is now slightly wrong and left alone deliberately
+-- renaming it would touch every line of this file and bury the actual change
+in a diff nobody could review.
+
 The welcome
 -----------
 A session's opening message is one of three things, and each takes a different
@@ -91,6 +107,10 @@ while their answer was still being written.
 The stage 4 and 6 touches pass ``outgoing=True``, which is what
 RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE switches off. Turning it off restores
 exactly the race described above, and is not recommended.
+
+Note that the sweeper only claims WhatsApp conversations today, so sessions on
+other channels never idle-close and therefore never re-welcome. See
+``ConversationRepository.claim_idle_sessions``.
 """
 
 from collections.abc import Awaitable, Callable
@@ -98,6 +118,8 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.channels.base import BaseChannelAdapter
+from app.channels.constants import WHATSAPP
 from app.config import Settings
 from app.core import quota
 from app.core.events import conversation_activity, conversation_handoff, publish
@@ -150,27 +172,91 @@ FALLBACK_REPLY = SERVICE_BUSY
 #: and shared by text and buttons alike.
 Sender = Callable[[str, str], Awaitable[dict[str, Any]]]
 
+#: Anything that can put a message on a channel. ``WhatsAppClient`` predates
+#: the adapter contract and is not one, but it satisfies the part of the
+#: interface this class actually uses.
+MessageSender = WhatsAppClient | BaseChannelAdapter
+
+
+def _outbound_id(result: dict[str, Any]) -> str | None:
+    """Pull the provider's id for a message we have just sent.
+
+    Two shapes, because two Graph endpoints. The WhatsApp Cloud API answers
+    ``{"messages": [{"id": ...}]}``; Messenger and the other Send API surfaces
+    answer ``{"message_id": ...}`` at the top level. Reading only the first
+    stored a null id on every Messenger reply, which is what made status
+    updates unmatchable on that channel.
+
+    The Cloud API shape is checked first so the WhatsApp path resolves on
+    exactly the branch it always did.
+
+    ``None`` rather than an exception when neither is present: the message has
+    already reached the customer by this point, and the id is only needed to
+    match a later status update. Failing here would turn a delivered reply
+    into a recorded failure.
+    """
+    messages = result.get("messages")
+    if isinstance(messages, list) and messages:
+        first = messages[0]
+        if isinstance(first, dict) and first.get("id"):
+            return str(first["id"])
+    message_id = result.get("message_id")
+    if message_id:
+        return str(message_id)
+    return None
+
 
 class ChatService:
-    """End-to-end handling of WhatsApp events."""
+    """End-to-end handling of inbound customer events on one channel."""
 
     def __init__(
         self,
         session: AsyncSession,
-        whatsapp: WhatsAppClient,
+        whatsapp: MessageSender,
         ai: OpenAIClient,
         settings: Settings,
         retriever: DocumentRetriever | None = None,
+        channel: str = WHATSAPP,
     ) -> None:
         self._session = session
         self._whatsapp = whatsapp
         self._ai = ai
         self._settings = settings
+        self._channel = channel
         self._conversations = ConversationService(session, settings)
         self._sessions = SessionService(session, settings)
         self._ai_logs = AILogRepository(session)
         self._prompts = PromptBuilder(settings)
         self._retriever = retriever or build_retriever(session, settings)
+
+    async def _context(
+        self, external_id: str, name: str | None
+    ) -> tuple[Any, Conversation]:
+        """Resolve the customer and their active conversation on this channel.
+
+        WhatsApp keeps the original lookup verbatim. Everything else resolves
+        on ``(channel, external_id)``, because a page-scoped Messenger id is
+        not a phone number and writing one to ``wa_id`` would both corrupt the
+        identity model and collide with a unique index built for phone
+        numbers.
+        """
+        if self._channel == WHATSAPP:
+            return await self._conversations.get_context(external_id, name)
+        return await self._conversations.get_channel_context(
+            self._channel, external_id, name
+        )
+
+    async def _mark_read(self, provider_message_id: str) -> None:
+        """Show the customer a read receipt, where the channel has one.
+
+        The adapter contract accepts the same message id, and its default is a
+        no-op, so this could safely be called everywhere. It is still gated on
+        WhatsApp because that is the only surface where a receipt is actually
+        delivered today, and a call that provably does nothing is better not
+        made. A missing read receipt costs nothing a customer would notice.
+        """
+        if self._channel == WHATSAPP:
+            await self._whatsapp.mark_as_read(provider_message_id)
 
     async def _release(self) -> None:
         """End the current read transaction and hand the connection back."""
@@ -188,11 +274,21 @@ class ChatService:
 
         The body stands on its own -- it asks the customer what they want next
         in words -- so losing the buttons costs convenience rather than
-        meaning.
+        meaning. That is what makes the fallback safe on every channel: an
+        adapter whose profile declares no quick-reply support degrades to text
+        by contract, and one whose API rejects the call degrades here.
+
+        The dispatch asks what the sender IS rather than what the channel id
+        says, because the two names differ: the Cloud API calls these reply
+        buttons and the Send API calls them quick replies. It also gives mypy
+        a narrowing it can actually follow -- a string comparison against
+        ``self._channel`` tells it nothing about the union.
         """
 
         async def sender(wa_id: str, text: str) -> dict[str, Any]:
             try:
+                if isinstance(self._whatsapp, BaseChannelAdapter):
+                    return await self._whatsapp.send_quick_replies(wa_id, text, buttons)
                 return await self._whatsapp.send_buttons(wa_id, text, buttons)
             except ExternalServiceError:
                 logger.warning("interactive_buttons_send_failed", fallback="text")
@@ -228,11 +324,16 @@ class ChatService:
         reply_to: str | None,
         sender: Sender | None = None,
     ) -> bool:
-        """Send exactly one message in answer to one inbound message."""
+        """Send exactly one message in answer to one inbound message.
+
+        The outbound provider id is read by ``_outbound_id``, which knows both
+        Graph response shapes, so a reply on any channel is stored with an id
+        a later status update can be matched against.
+        """
         send = sender or self._whatsapp.send_text
         if reply_to is None:
             result = await send(wa_id, text)
-            out_id = (result.get("messages") or [{}])[0].get("id")
+            out_id = _outbound_id(result)
             await self._conversations.save_outbound(
                 conversation_id, text, wa_message_id=out_id
             )
@@ -274,7 +375,7 @@ class ChatService:
             )
             return False
 
-        out_id = (result.get("messages") or [{}])[0].get("id")
+        out_id = _outbound_id(result)
         await self._conversations.messages.confirm_reply(
             reserved_id, out_id, status=STATUS_SENT
         )
@@ -520,7 +621,7 @@ class ChatService:
     ) -> None:
         """Persist an inbound text, generate an AI reply, and send it back.
 
-        get_context returns the customer's ACTIVE conversation, so a customer
+        _context returns the customer's ACTIVE conversation, so a customer
         writing in after their previous session was closed transparently gets a
         new one here -- new history, no welcome flag, no closing flag. That is
         the whole reopen path; there is no state to clear because closing the
@@ -528,10 +629,10 @@ class ChatService:
         scratch, which is what makes a returning customer feel like a new one.
 
         The exception is a customer who comes straight back: inside
-        CONVERSATION_REOPEN_WINDOW_MINUTES, get_context revives the previous
+        CONVERSATION_REOPEN_WINDOW_MINUTES, _context revives the previous
         session instead, so they keep their history and are not greeted twice.
         """
-        _, conversation = await self._conversations.get_context(wa_id, name)
+        _, conversation = await self._context(wa_id, name)
         claimed = await self._conversations.claim_inbound(
             conversation.id, wa_message_id, type="text", content=text
         )
@@ -544,7 +645,7 @@ class ChatService:
         await self._session.commit()
 
         await self._announce(conversation.id)
-        await self._whatsapp.mark_as_read(wa_message_id)
+        await self._mark_read(wa_message_id)
 
         if await self._handled_by_human(
             wa_id, conversation, text, reply_to=wa_message_id
@@ -637,11 +738,13 @@ class ChatService:
         selection_id: str,
         title: str,
     ) -> None:
-        """Handle a tapped reply button or list row.
+        """Handle a tapped reply button, quick reply or list row.
 
         List menus are no longer sent, but the ones already delivered still
         live in customers' chat histories, so a tapped row can still arrive
-        here long after the fact and is routed exactly like a button.
+        here long after the fact and is routed exactly like a button. A
+        Messenger quick reply and a postback arrive the same way, carrying the
+        payload we attached when the message was sent.
 
         Every decision below is made on ``selection_id``. ``title`` is the text
         the customer saw and is used only for what gets stored and shown -- see
@@ -651,7 +754,7 @@ class ChatService:
         point: the customer has already told us what they want, so there is
         nothing left to infer.
         """
-        _, conversation = await self._conversations.get_context(wa_id, name)
+        _, conversation = await self._context(wa_id, name)
         # Our own label where we recognise the id, so what lands in the
         # database and in the model's history does not depend on text supplied
         # by the client. Falls back to the title for a menu sent by an older
@@ -672,7 +775,7 @@ class ChatService:
         await self._session.commit()
 
         await self._announce(conversation.id)
-        await self._whatsapp.mark_as_read(wa_message_id)
+        await self._mark_read(wa_message_id)
 
         logger.info(
             "menu_selection",
@@ -757,7 +860,7 @@ class ChatService:
         caption: str | None,
     ) -> None:
         """Persist inbound media (image/document) and respond via the model."""
-        _, conversation = await self._conversations.get_context(wa_id, name)
+        _, conversation = await self._context(wa_id, name)
         claimed = await self._conversations.claim_inbound(
             conversation.id,
             wa_message_id,
@@ -774,7 +877,7 @@ class ChatService:
         await self._session.commit()
 
         await self._announce(conversation.id)
-        await self._whatsapp.mark_as_read(wa_message_id)
+        await self._mark_read(wa_message_id)
 
         if await self._handled_by_human(
             wa_id, conversation, caption, reply_to=wa_message_id
@@ -813,7 +916,7 @@ class ChatService:
         self, wa_id: str, name: str | None, wa_message_id: str, type: str
     ) -> None:
         """Politely decline message types the bot does not handle yet."""
-        _, conversation = await self._conversations.get_context(wa_id, name)
+        _, conversation = await self._context(wa_id, name)
         claimed = await self._conversations.claim_inbound(
             conversation.id, wa_message_id, type=type, content=f"[{type} received]"
         )

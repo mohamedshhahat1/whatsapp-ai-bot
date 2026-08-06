@@ -125,6 +125,11 @@ async def conversation_history(
     customer is, how many times they have been in touch, and their other
     sessions newest first.
 
+    ``channel`` and ``external_id`` identify the customer on whichever app
+    they wrote from; ``wa_id`` stays WhatsApp-only and is empty for everyone
+    else. While ``external_id`` is still being backfilled it falls back to
+    ``wa_id``, which is the same string for a WhatsApp customer anyway.
+
     Operator-facing only. None of this is fed to the model, which still sees
     the current session alone.
     """
@@ -133,7 +138,9 @@ async def conversation_history(
     )
     return CustomerHistory(
         user_id=user.id,
-        wa_id=user.wa_id,
+        wa_id=user.wa_id or "",
+        channel=user.channel,
+        external_id=user.external_id or user.wa_id,
         name=user.name,
         total_conversations=total,
         previous=[ConversationSummary.model_validate(c) for c in previous],
@@ -212,11 +219,13 @@ async def send_manual_reply(
     permanently without the operator choosing to.
 
     A closed session is reopened before the message is sent, so the reply and
-    the customer's answer stay in the same conversation. Two 409s are possible
-    and mean different things: ``conversation_superseded`` (the customer has
-    started a newer session -- reply there) and ``outside_service_window``
-    (Meta will not accept a free-form message this long after the customer's
-    last one -- use a template).
+    the customer's answer stay in the same conversation. Three 409s are
+    possible and mean different things: ``conversation_superseded`` (the
+    customer has started a newer session -- reply there),
+    ``outside_service_window`` (Meta will not accept a free-form message this
+    long after the customer's last one -- use a template) and
+    ``unsupported_channel`` (they did not reach you on WhatsApp at all, and
+    operator replies for their channel are not built yet).
     """
     message = await service.send_manual_reply(conversation_id, payload.text)
     return ManualReplyResponse(

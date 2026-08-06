@@ -30,9 +30,7 @@ if TYPE_CHECKING:
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (
-        UniqueConstraint(
-            "channel", "external_id", name="uq_users_channel_external_id"
-        ),
+        UniqueConstraint("channel", "external_id", name="uq_users_channel_external_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)

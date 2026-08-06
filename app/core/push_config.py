@@ -18,7 +18,11 @@ from __future__ import annotations
 from functools import lru_cache
 
 from pydantic import Field
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from app.core.secrets import (
     FileEnvSecretsSource,
@@ -81,9 +85,7 @@ class PushSettings(BaseSettings):
         feature on without credentials fails once, loudly, at the first send
         rather than producing an authentication error per notification.
         """
-        return bool(
-            self.push_enabled and self.fcm_project_id and self.fcm_credentials
-        )
+        return bool(self.push_enabled and self.fcm_project_id and self.fcm_credentials)
 
     @classmethod
     def settings_customise_sources(

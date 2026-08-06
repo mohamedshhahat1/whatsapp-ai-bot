@@ -16,6 +16,18 @@ DELIVERY, not of the conversation. By the time ``ChatService`` has a
 conversation in hand the damage is already done -- ``get_context`` has decided
 whether to resume a session or mint a new one, and a new one is owed a
 welcome. The decision has to be made before that, on the payload itself.
+
+Two entry points
+----------------
+``process_webhook_payload`` handles WhatsApp Cloud API deliveries and parses
+their payload inline. ``process_meta_payload`` handles the other Meta channels
+and parses nothing: the adapter has already turned the delivery into
+``InboundEvent`` objects, so all that is left is routing them.
+
+They are kept separate deliberately. Folding WhatsApp into the event model
+would mean rewriting a parser that is in production and correct, to satisfy a
+shape it never receives -- and the whole point of the channel work is that the
+live WhatsApp path does not move.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -23,6 +35,13 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.channels.base import BaseChannelAdapter
+from app.channels.events import (
+    EVENT_MEDIA,
+    EVENT_SELECTION,
+    EVENT_TEXT,
+    InboundEvent,
+)
 from app.config import Settings
 from app.core.inbound_config import get_inbound_settings
 from app.core.logging import get_logger
@@ -62,6 +81,31 @@ async def process_webhook_payload(
                     await service.handle_status_update(wa_message_id, new_status)
 
 
+async def process_meta_payload(
+    session: AsyncSession,
+    adapter: BaseChannelAdapter,
+    ai: OpenAIClient,
+    settings: Settings,
+    payload: dict[str, Any],
+) -> None:
+    """Process one delivery from a non-WhatsApp Meta channel.
+
+    The adapter owns everything channel-shaped: it drops echoes and receipts,
+    pulls the routing id out of a quick reply, and reports the timestamp in
+    whatever unit its API uses. What arrives here is already normalised, so
+    this function only decides which handler each event belongs to.
+
+    The service is constructed with the adapter as its sender and told which
+    channel it is on, which is what makes replies leave through the same
+    channel they arrived on.
+    """
+    service = ChatService(session, adapter, ai, settings, channel=adapter.channel)
+    for event in adapter.parse(payload):
+        if _event_is_stale(event):
+            continue
+        await _dispatch_event(service, event)
+
+
 def _message_age(message: dict[str, Any]) -> timedelta | None:
     """How long ago the customer sent this message, per Meta's own timestamp.
 
@@ -79,6 +123,37 @@ def _message_age(message: dict[str, Any]) -> timedelta | None:
         logger.warning("inbound_timestamp_unparseable", timestamp=str(raw))
         return None
     return datetime.now(UTC) - sent_at
+
+
+def _event_is_stale(event: InboundEvent) -> bool:
+    """Whether a normalised event arrived too late to be worth answering.
+
+    Same policy and same setting as the WhatsApp path, and the same fail-open
+    behaviour: ``event.age`` is ``None`` when the timestamp was unreadable,
+    and that counts as fresh.
+
+    Unlike the WhatsApp path this does NOT record the message. The recorder
+    resolves a customer by ``wa_id``, and handing it a page-scoped id would
+    write a phone-shaped user row and undo the identity separation the channel
+    work is built on. The outcome for the customer is identical either way --
+    a stale message is never answered -- so what is lost is the transcript
+    entry, not a reply. Worth fixing when the recorder becomes channel-aware.
+    """
+    inbound = get_inbound_settings()
+    if not inbound.enforced:
+        return False
+
+    age = event.age
+    if age is None or age <= inbound.inbound_max_age:
+        return False
+
+    logger.info(
+        "stale_inbound_skipped",
+        channel=event.channel,
+        provider_message_id=event.provider_message_id,
+        age_seconds=int(age.total_seconds()),
+    )
+    return True
 
 
 def _content_of(message: dict[str, Any]) -> str | None:
@@ -165,6 +240,83 @@ def _interactive_selection(message: dict[str, Any]) -> tuple[str, str] | None:
         if isinstance(reply, dict) and reply.get("id"):
             return str(reply["id"]), str(reply.get("title") or "")
     return None
+
+
+async def _dispatch_event(service: ChatService, event: InboundEvent) -> None:
+    """Route one normalised event to the right handler.
+
+    The provider message id is the idempotency key for the whole pipeline --
+    the inbound claim, the generation cache and the outbound reservation all
+    hang off it -- so an event without one is dropped rather than processed
+    under an empty string, which every other message would then collide with.
+
+    Errors are counted and re-raised exactly as on the WhatsApp path, so the
+    queue retries the delivery.
+    """
+    if not event.sender_id or not event.provider_message_id:
+        logger.warning(
+            "unroutable_event_skipped",
+            channel=event.channel,
+            kind=event.kind,
+            has_sender=bool(event.sender_id),
+        )
+        return
+
+    try:
+        if event.kind == EVENT_TEXT:
+            await service.handle_text_message(
+                event.sender_id,
+                event.sender_name,
+                event.provider_message_id,
+                event.text or "",
+            )
+        elif event.kind == EVENT_SELECTION:
+            if event.selection_id:
+                await service.handle_interactive_message(
+                    event.sender_id,
+                    event.sender_name,
+                    event.provider_message_id,
+                    event.selection_id,
+                    event.selection_title or "",
+                )
+            else:
+                # A tap we cannot route: the payload was empty. Treated as
+                # unsupported rather than guessed at from the visible label.
+                await service.handle_unsupported_message(
+                    event.sender_id,
+                    event.sender_name,
+                    event.provider_message_id,
+                    "interactive",
+                )
+        elif event.kind == EVENT_MEDIA:
+            # media_id stays None on Messenger: that column holds a Cloud API
+            # media id, and Messenger supplies a short-lived signed CDN URL
+            # instead. The customer is still told their attachment arrived.
+            await service.handle_media_message(
+                event.sender_id,
+                event.sender_name,
+                event.provider_message_id,
+                event.media_type or "media",
+                event.media_id,
+                event.caption,
+            )
+        else:
+            await service.handle_unsupported_message(
+                event.sender_id,
+                event.sender_name,
+                event.provider_message_id,
+                event.kind,
+            )
+    except Exception:
+        ERRORS_TOTAL.labels(type="message_processing").inc()
+        logger.error(
+            "message_processing_failed",
+            wa_message_id=event.provider_message_id,
+            type=event.kind,
+            channel=event.channel,
+            exc_info=True,
+        )
+        raise  # propagate so the queue can retry the delivery
 
 
 async def _dispatch_message(

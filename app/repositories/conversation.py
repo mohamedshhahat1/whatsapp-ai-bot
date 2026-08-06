@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.channels.constants import WHATSAPP
 from app.core.exceptions import ConflictError
 from app.models.conversation import (
     MODE_BOT,
@@ -103,6 +104,10 @@ class ConversationRepository(BaseRepository):
         It IS filtered by ``status``, which is what makes a closed session
         reopen cleanly: once the sweeper sets status to ``closed`` this returns
         nothing, and ``get_or_create_active`` mints a fresh row.
+
+        Not filtered by channel either, and it does not need to be: identity
+        is ``(channel, external_id)``, so the same human on two channels is
+        two users and ``user_id`` already scopes this to one of them.
         """
         return await self.session.scalar(
             select(Conversation)
@@ -208,7 +213,10 @@ class ConversationRepository(BaseRepository):
         return conversation
 
     async def get_or_create_active(
-        self, user_id: int, reopen_within: timedelta | None = None
+        self,
+        user_id: int,
+        reopen_within: timedelta | None = None,
+        channel: str = WHATSAPP,
     ) -> Conversation:
         """Return the customer's active conversation, creating it atomically.
 
@@ -231,6 +239,14 @@ class ConversationRepository(BaseRepository):
         (see :meth:`reopen_recent`). ``None`` or zero keeps the original
         always-start-fresh path, so every existing caller is unaffected.
 
+        ``channel`` is stamped on the row so the dashboard can tell an
+        operator where the customer came from. It defaults to WhatsApp, which
+        is what every pre-existing caller means; without it a Messenger
+        conversation would fall back to the column's server default and show a
+        green icon. It does not participate in the conflict target -- identity
+        is ``(channel, external_id)``, so ``user_id`` has already narrowed
+        this to a single channel.
+
         ``mode`` is not listed in the insert, so it comes from the column's
         server default rather than the ORM default. The same is true of
         ``last_activity_at``, which is why that column carries a server
@@ -249,7 +265,7 @@ class ConversationRepository(BaseRepository):
 
         created_id = await self.session.scalar(
             pg_insert(Conversation)
-            .values(user_id=user_id, status=STATUS_ACTIVE)
+            .values(user_id=user_id, status=STATUS_ACTIVE, channel=channel)
             .on_conflict_do_nothing(
                 index_elements=[Conversation.user_id],
                 index_where=Conversation.status == STATUS_ACTIVE,
@@ -416,6 +432,21 @@ class ConversationRepository(BaseRepository):
         cares about still works: resuming the AI sets mode back to bot and
         resets the timer, so the session becomes eligible from that moment.
 
+        Restricted to WhatsApp for a harder reason. The claim is destructive
+        and one-way: it stamps ``closing_sent_at``, and this method only ever
+        considers rows where that column is null, so a claimed session can
+        never be claimed again. :meth:`idle_targets` then resolves the id to
+        ``User.wa_id``, which is NULL for every customer who arrived on
+        Messenger or Instagram. Without this filter the first idle Messenger
+        conversation would be permanently marked as closed-and-greeted and the
+        customer would be sent nothing at all.
+
+        The cost is that sessions on other channels never idle-close, and so
+        never become new sessions either. Lifting it needs a sweeper that
+        resolves a recipient per channel and dispatches through that channel's
+        adapter, which is a change to the live closing path and is deliberately
+        not made here.
+
         ``limit`` bounds one pass so a long outage cannot produce a single
         enormous transaction; the next tick takes the next batch.
         """
@@ -424,6 +455,7 @@ class ConversationRepository(BaseRepository):
             .where(
                 Conversation.status == STATUS_ACTIVE,
                 Conversation.mode == MODE_BOT,
+                Conversation.channel == WHATSAPP,
                 Conversation.closing_sent_at.is_(None),
                 Conversation.last_activity_at < idle_before,
             )
@@ -445,7 +477,14 @@ class ConversationRepository(BaseRepository):
         return [row[0] for row in result.all()]
 
     async def idle_targets(self, conversation_ids: list[int]) -> list[IdleSession]:
-        """Resolve claimed session ids to the WhatsApp numbers to send to."""
+        """Resolve claimed session ids to the WhatsApp numbers to send to.
+
+        WhatsApp only, and safe to leave that way because
+        :meth:`claim_idle_sessions` is the sole producer of these ids and
+        filters to that channel. ``User.wa_id`` is NULL on every other
+        channel, so a row reaching here from anywhere else would resolve to a
+        recipient of None.
+        """
         if not conversation_ids:
             return []
         rows = await self.session.execute(

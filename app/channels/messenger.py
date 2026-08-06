@@ -54,9 +54,7 @@ class MessengerAdapter(BaseChannelAdapter):
         self._settings = settings
         self._client = httpx.AsyncClient(
             base_url=GRAPH_API_BASE + "/" + settings.meta_api_version,
-            headers={
-                "Authorization": "Bearer " + settings.facebook_page_access_token
-            },
+            headers={"Authorization": "Bearer " + settings.facebook_page_access_token},
             timeout=30.0,
         )
 
@@ -152,9 +150,7 @@ class MessengerAdapter(BaseChannelAdapter):
                     events.append(event)
         return events
 
-    def _parse_item(
-        self, item: dict[str, Any], page_id: str
-    ) -> InboundEvent | None:
+    def _parse_item(self, item: dict[str, Any], page_id: str) -> InboundEvent | None:
         sender_id = str((item.get("sender") or {}).get("id") or "")
         message = item.get("message") or {}
 

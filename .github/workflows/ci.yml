@@ -107,6 +107,15 @@ jobs:
   secret-scan:
     name: Secret scan (gitleaks)
     runs-on: ubuntu-latest
+    # On a pull_request event the action takes a different path from a push:
+    # it calls GET /repos/{owner}/{repo}/pulls/{n}/commits to decide which
+    # commits to scan. Without a pull-requests scope that call 403s and the
+    # job dies before gitleaks runs, which reads as a failed secret scan and
+    # is not one. Declaring this block replaces the default permission set
+    # outright, so contents: read has to be restated for actions/checkout.
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
         with:
