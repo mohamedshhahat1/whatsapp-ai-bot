@@ -167,19 +167,31 @@ class AuthService:
         expired one does -- so both leave on the sweep that follows
         expires_at, and neither leaves before it.
 
-        Deleting a live session is not possible here: expires_at is compared
-        against the moment the statement runs, so a second runner or a later
-        retry simply finds fewer rows.
+        Deleting a live session is not possible here: expires_at is written
+        once when the session is created and never moves, so a row selected
+        as expired cannot have become usable again by the time the delete
+        reaches it.
+
+        The ids are collected before they are deleted rather than read back
+        from ``rowcount``: AsyncSession.execute is typed as returning a plain
+        Result, which carries no row count, and counting this way matches
+        AuditService.purge_older_than.
 
         ``now`` is injectable so a test can sweep a chosen moment rather than
         waiting for one to arrive.
         """
         moment = now if now is not None else datetime.now(UTC)
         result = await self._session.execute(
-            delete(OperatorSession).where(OperatorSession.expires_at < moment)
+            select(OperatorSession.id).where(OperatorSession.expires_at < moment)
+        )
+        expired = list(result.scalars().all())
+        if not expired:
+            return 0
+        await self._session.execute(
+            delete(OperatorSession).where(OperatorSession.id.in_(expired))
         )
         await self._session.commit()
-        return int(result.rowcount or 0)
+        return len(expired)
 
     async def legacy_operator_id(self) -> int:
         """The reserved row that shared-key requests are attributed to.
