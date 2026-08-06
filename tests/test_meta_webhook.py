@@ -16,10 +16,20 @@ ORDER it decides things in, because that is where the mistakes are invisible:
 The handshake is deliberately tested with Messenger switched OFF, because
 that is the state an operator is in while they are still configuring it.
 
+Every POST carries a real signature computed over the exact bytes sent, with
+a secret the fixtures pin on ChannelSettings. Nothing here reads the app
+secret from the environment: CI sets WHATSAPP_APP_SECRET to a real-looking
+value and a developer may have META_APP_SECRET in a local .env, and a test
+that answers differently depending on which is a test that reports the
+machine rather than the code.
+
 None of this needs a database, so these run everywhere instead of skipping on
 a machine without Postgres.
 """
 
+import hashlib
+import hmac
+import json
 from typing import Any
 
 import pytest
@@ -32,6 +42,19 @@ from app.routers import meta_webhook
 # FACEBOOK_VERIFY_TOKEN empty, so verify_token() falls back to this one --
 # which is the single-Meta-app setup the fallback exists for.
 VERIFY_TOKEN = "test-verify-token"
+
+# Passed to the ChannelSettings the fixtures install, so the secret the route
+# verifies against is the one these tests sign with. An init argument outranks
+# both the environment and .env in pydantic-settings, which is the point.
+APP_SECRET = "test-meta-app-secret"
+
+# Well-formed, and cannot be the correct digest for any body: the route gets
+# as far as compare_digest and fails there, rather than short-circuiting on a
+# missing or malformed header.
+BAD_SIGNATURE = {
+    "Content-Type": "application/json",
+    "X-Hub-Signature-256": "sha256=" + "0" * 64,
+}
 
 PAGE_DELIVERY: dict[str, Any] = {
     "object": "page",
@@ -51,17 +74,36 @@ PAGE_DELIVERY: dict[str, Any] = {
 }
 
 
+def _body(payload: dict[str, Any]) -> bytes:
+    """Serialise a payload to the exact bytes that will go on the wire.
+
+    Done here rather than by handing the dict to ``json=`` because the
+    signature covers the raw body: letting httpx choose its own separators
+    would produce a digest that is correct for bytes nobody sent.
+    """
+    return json.dumps(payload).encode()
+
+
+def _signed(body: bytes) -> dict[str, str]:
+    """The headers Meta would send with ``body``."""
+    digest = hmac.new(APP_SECRET.encode(), body, hashlib.sha256).hexdigest()
+    return {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": f"sha256={digest}",
+    }
+
+
 @pytest.fixture
 def messenger_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """Switch Messenger on for the route, without touching the environment."""
-    channels = ChannelSettings(enable_messenger=True)
+    channels = ChannelSettings(enable_messenger=True, meta_app_secret=APP_SECRET)
     monkeypatch.setattr(meta_webhook, "get_channel_settings", lambda: channels)
 
 
 @pytest.fixture
 def messenger_off(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the channel off rather than relying on it being off by default."""
-    channels = ChannelSettings(enable_messenger=False)
+    channels = ChannelSettings(enable_messenger=False, meta_app_secret=APP_SECRET)
     monkeypatch.setattr(meta_webhook, "get_channel_settings", lambda: channels)
 
 
@@ -140,17 +182,15 @@ def test_a_delivery_is_dropped_while_messenger_is_switched_off(
     The switch has to be enforced here rather than assumed, because Meta keeps
     delivering to a subscribed webhook whatever this application thinks.
     """
-    response = client.post("/webhook/meta", json=PAGE_DELIVERY)
+    body = _body(PAGE_DELIVERY)
+    response = client.post("/webhook/meta", content=body, headers=_signed(body))
     assert response.status_code == 200
     assert response.json() == {"status": "ignored"}
     assert delivered == []
 
 
 def test_a_bad_signature_is_refused_before_the_body_is_parsed(
-    client: TestClient,
-    messenger_on: None,
-    delivered: list[dict[str, Any]],
-    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient, messenger_on: None, delivered: list[dict[str, Any]]
 ) -> None:
     """403 for a body that is also unparseable.
 
@@ -158,13 +198,14 @@ def test_a_bad_signature_is_refused_before_the_body_is_parsed(
     400 there is what proves the signature is checked first: if the two checks
     were ever swapped, this case would come back a parse error, and the
     application would have parsed input it could not vouch for.
+
+    The signature is wrong rather than stubbed out, so verify_meta_signature
+    itself runs. That is only deterministic because the fixture pins a
+    non-empty secret: with no secret configured the route is allowed to accept
+    unsigned deliveries outside production, and this would be a 400.
     """
-    monkeypatch.setattr(meta_webhook, "verify_meta_signature", lambda *a, **k: False)
-    response = client.post(
-        "/webhook/meta",
-        content=b"{not json",
-        headers={"Content-Type": "application/json"},
-    )
+    body = b"{not json"
+    response = client.post("/webhook/meta", content=body, headers=BAD_SIGNATURE)
     assert response.status_code == 403
     assert delivered == []
 
@@ -177,7 +218,8 @@ def test_a_delivery_for_another_product_is_acknowledged_and_dropped(
     They are not wired yet, and answering a commenter with an apology would be
     worse than the silence.
     """
-    response = client.post("/webhook/meta", json={"object": "instagram", "entry": []})
+    body = _body({"object": "instagram", "entry": []})
+    response = client.post("/webhook/meta", content=body, headers=_signed(body))
     assert response.status_code == 200
     assert response.json() == {"status": "ignored"}
     assert delivered == []
@@ -191,11 +233,8 @@ def test_malformed_json_is_a_client_error(
     Unlike the drops above, this one is safe to refuse: a payload Meta cannot
     serialise is not going to succeed on the retry either.
     """
-    response = client.post(
-        "/webhook/meta",
-        content=b"{not json",
-        headers={"Content-Type": "application/json"},
-    )
+    body = b"{not json"
+    response = client.post("/webhook/meta", content=body, headers=_signed(body))
     assert response.status_code == 400
     assert delivered == []
 
@@ -209,7 +248,8 @@ def test_a_page_delivery_is_handed_over_intact(
     normaliser -- so anything it changed here would be a change nobody
     downstream is expecting.
     """
-    response = client.post("/webhook/meta", json=PAGE_DELIVERY)
+    body = _body(PAGE_DELIVERY)
+    response = client.post("/webhook/meta", content=body, headers=_signed(body))
     assert response.status_code == 200
     assert response.json() == {"status": "queued"}
     assert delivered == [PAGE_DELIVERY]
