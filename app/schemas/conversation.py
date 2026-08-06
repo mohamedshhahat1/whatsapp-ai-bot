@@ -4,6 +4,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field
 
+from app.channels.constants import WHATSAPP
 from app.config import get_settings
 from app.models.conversation import derive_session_state
 from app.schemas.message import MessageRead
@@ -148,10 +149,30 @@ class CustomerHistory(BaseModel):
     None of this reaches the model. Prompt context is built from the current
     session alone; widening it would change the bot's answers in ways nobody
     asked for.
+
+    Identity is reported three ways now that the platform is not WhatsApp-only.
+    ``channel`` is the app they write from, ``external_id`` is their id on it,
+    and ``wa_id`` is a phone number or nothing. New clients should read the
+    first two.
     """
 
     user_id: int
-    wa_id: str
+    # WhatsApp only, and empty for a customer who arrived anywhere else.
+    # Deliberately NOT widened to ``str | None``: the dashboard and the
+    # Flutter app both declare this a plain string, so making it nullable
+    # would break them to describe a field that is being superseded rather
+    # than extended. A page-scoped Messenger id is not written here either --
+    # that would satisfy the type and still be a lie, since anything
+    # rendering this as a phone number would render a PSID as one.
+    wa_id: str = ""
+    # "whatsapp", "messenger", and so on. Defaulted rather than required so
+    # that nothing constructing this by hand had to change: every customer
+    # who existed before channels did is on WhatsApp.
+    channel: str = WHATSAPP
+    # Their id on ``channel``: the phone number for WhatsApp, a page-scoped id
+    # for Messenger. The only identity field populated for every channel, so
+    # this is the one a client should key off going forward.
+    external_id: str | None = None
     name: str | None = None
     total_conversations: int = Field(
         description="Every session this customer has ever had, including this " "one."
