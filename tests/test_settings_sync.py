@@ -8,12 +8,12 @@ documented variable with no field.
 
 Configuration is not one class. ``app/config.py`` can only be rewritten whole
 by the tooling that edits it, and one such rewrite silently dropped a hundred
-lines of comments, so push notifications, inbound freshness and the channel
-switches each got their own ``BaseSettings`` module instead. They all read the
-environment identically, so "is this a real setting?" has to be asked of all
-of them. Asked of Settings alone it reports every PUSH_*, FCM_*, INBOUND_* and
-channel variable as unknown -- which is not drift, it is the question being
-put to the wrong object.
+lines of comments, so push notifications, inbound freshness, audit retention
+and the channel switches each got their own ``BaseSettings`` module instead.
+They all read the environment identically, so "is this a real setting?" has to
+be asked of all of them. Asked of Settings alone it reports every PUSH_*,
+FCM_*, INBOUND_*, AUDIT_* and channel variable as unknown -- which is not
+drift, it is the question being put to the wrong object.
 
 Both directions, and why the second one matters more
 ----------------------------------------------------
@@ -43,6 +43,7 @@ from app.channels.config import ChannelSettings
 from app.config import Settings
 from app.core.inbound_config import InboundSettings
 from app.core.push_config import PushSettings
+from app.core.retention_config import RetentionSettings
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 ENV_EXAMPLE = REPOSITORY_ROOT / ".env.example"
@@ -55,6 +56,7 @@ SETTINGS_CLASSES: tuple[type[BaseSettings], ...] = (
     ChannelSettings,
     InboundSettings,
     PushSettings,
+    RetentionSettings,
 )
 
 # Every field the RAG pipeline reads at runtime.

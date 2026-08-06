@@ -93,7 +93,12 @@ class AdminService:
         await self._session.commit()
 
     async def _switch_mode(
-        self, conversation_id: int, mode: str, operator: str | None, reason: str
+        self,
+        conversation_id: int,
+        mode: str,
+        operator: str | None,
+        reason: str,
+        operator_id: int | None = None,
     ) -> Conversation:
         conversation = await self._conversations.get(conversation_id)
         if conversation is None:
@@ -115,6 +120,11 @@ class AdminService:
         )
 
         await self._conversations.set_mode(conversation, mode, operator=operator)
+        # The foreign-key half of the same fact. Set here rather than inside
+        # set_mode because that repository method is shared with callers that
+        # have only a label, and because the two columns must not be allowed
+        # to disagree: whatever writes one writes the other.
+        conversation.assigned_operator_id = operator_id
         await self._session.commit()
         # ``Conversation.updated_at`` is declared with ``onupdate=func.now()``,
         # so Postgres computes the new value and SQLAlchemy expires the
@@ -141,7 +151,10 @@ class AdminService:
         return conversation
 
     async def take_over(
-        self, conversation_id: int, operator: str | None = None
+        self,
+        conversation_id: int,
+        operator: str | None = None,
+        operator_id: int | None = None,
     ) -> Conversation:
         """Give a conversation to a human operator; the bot stops answering.
 
@@ -150,12 +163,17 @@ class AdminService:
 
         Reopens the session first if it has closed, so that the operator is
         never given a conversation the customer cannot reply into.
+
+        ``operator`` is the display label and ``operator_id`` the account that
+        now owns the conversation. Both are optional: a shared-key request has
+        no account behind it, and the label was always optional.
         """
         return await self._switch_mode(
             conversation_id,
             MODE_HUMAN,
             operator=operator,
             reason="operator_took_over",
+            operator_id=operator_id,
         )
 
     async def resume_ai(self, conversation_id: int) -> Conversation:
@@ -164,6 +182,10 @@ class AdminService:
         The operator's messages stay in the transcript, so they are part of the
         history the model reads on the next turn: if a person corrected the
         bot, the bot sees the correction.
+
+        Ownership is cleared, both the label and the account reference: once
+        the bot is answering again, nobody owns the conversation. Who resumed
+        it is a different question, and one the audit log answers.
 
         Note the interaction with the sweeper: resuming sets mode back to bot
         and resets the idle timer, which makes the session eligible for
@@ -176,6 +198,7 @@ class AdminService:
             MODE_BOT,
             operator=None,
             reason="operator_resumed_ai",
+            operator_id=None,
         )
 
     async def list_documents(self) -> list[Document]:

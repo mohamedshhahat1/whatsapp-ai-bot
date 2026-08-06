@@ -6,11 +6,27 @@ from app.config import Settings, get_settings
 from app.core import quota
 from app.core.ratelimit import ADMIN_LIMIT, limiter
 from app.dependencies.deps import (
+    Principal,
     get_admin_service,
     get_analytics_service,
+    get_audit_service,
     get_pricing_service,
     get_reply_service,
     require_admin,
+)
+from app.models.audit_log import (
+    ACTION_AI_TOGGLE,
+    ACTION_CONVERSATION_DELETE,
+    ACTION_CONVERSATION_REPLY,
+    ACTION_CONVERSATION_RESUME,
+    ACTION_CONVERSATION_TAKEOVER,
+    ACTION_CUSTOMER_UNBLOCK,
+    ACTION_PRICING_CREATE,
+    ACTION_PRICING_DELETE,
+    RESOURCE_CONVERSATION,
+    RESOURCE_CUSTOMER,
+    RESOURCE_PRICING,
+    RESOURCE_SYSTEM,
 )
 from app.models.conversation import STATUS_ACTIVE, STATUS_CLOSED
 from app.schemas.admin import StatsRead
@@ -41,12 +57,23 @@ from app.schemas.quota import (
 from app.schemas.user import UserRead
 from app.services.admin_service import AdminService
 from app.services.analytics_service import AnalyticsService
+from app.services.audit_service import AuditService
 from app.services.pricing_service import DuplicatePricingError, PricingService
 from app.services.reply_service import ReplyService
 
 router = APIRouter(
     prefix="/admin", tags=["admin"], dependencies=[Depends(require_admin)]
 )
+
+
+def _client_ip(request: Request) -> str | None:
+    """Peer address for the audit trail, or None if there is no client.
+
+    Best effort on purpose. Behind the reverse proxy this is the proxy's
+    address unless it is configured to forward the real one, and a spoofable
+    X-Forwarded-For is not something an audit trail should prefer to a fact.
+    """
+    return request.client.host if request.client else None
 
 
 @router.get("/users", response_model=list[UserRead])
@@ -153,8 +180,24 @@ async def delete_conversation(
     request: Request,
     conversation_id: int,
     service: AdminService = Depends(get_admin_service),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_admin),
 ) -> None:
+    """Delete a conversation and its whole transcript.
+
+    The audit row is the only trace that survives this. Every other action
+    can be attributed by looking at the row it changed; here the row is gone,
+    so ``audit_logs`` is the sole record that the deletion happened at all,
+    and who did it.
+    """
     await service.delete_conversation(conversation_id)
+    await audit.record(
+        principal.operator_id,
+        ACTION_CONVERSATION_DELETE,
+        resource_type=RESOURCE_CONVERSATION,
+        resource_id=conversation_id,
+        ip_address=_client_ip(request),
+    )
 
 
 @router.post(
@@ -166,11 +209,14 @@ async def take_over_conversation(
     conversation_id: int,
     payload: HandoffRequest | None = None,
     service: AdminService = Depends(get_admin_service),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_admin),
 ) -> ConversationRead:
     """Take a conversation over. From here the bot stops answering it.
 
-    The body is optional: an operator name is a label for other operators, not
-    a credential, and omitting it still stops the bot.
+    The body is still optional. The operator label in it is a display name for
+    other operators, not a credential -- the credential is the session or key
+    on the request, and that is what ``assigned_operator_id`` now records.
 
     A session that has already closed is REOPENED first, so the operator is
     never handed a conversation the customer cannot reply into. Returns 409
@@ -178,7 +224,17 @@ async def take_over_conversation(
     has since started a newer session -- open that one instead.
     """
     conversation = await service.take_over(
-        conversation_id, operator=payload.operator if payload else None
+        conversation_id,
+        operator=payload.operator if payload else None,
+        operator_id=principal.operator_id,
+    )
+    await audit.record(
+        principal.operator_id,
+        ACTION_CONVERSATION_TAKEOVER,
+        resource_type=RESOURCE_CONVERSATION,
+        resource_id=conversation_id,
+        details={"operator_label": conversation.assigned_operator},
+        ip_address=_client_ip(request),
     )
     return ConversationRead.model_validate(conversation)
 
@@ -191,14 +247,26 @@ async def resume_ai(
     request: Request,
     conversation_id: int,
     service: AdminService = Depends(get_admin_service),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_admin),
 ) -> ConversationRead:
     """Hand the conversation back to the bot.
 
     Reopens a closed session first, on the same terms as ``/takeover``.
     Resuming also resets the idle timer, so the session becomes eligible for
     automatic closing again from this moment rather than immediately.
+
+    Ownership is cleared rather than transferred: afterwards nobody owns the
+    conversation. Who released it is recorded in the audit log.
     """
     conversation = await service.resume_ai(conversation_id)
+    await audit.record(
+        principal.operator_id,
+        ACTION_CONVERSATION_RESUME,
+        resource_type=RESOURCE_CONVERSATION,
+        resource_id=conversation_id,
+        ip_address=_client_ip(request),
+    )
     return ConversationRead.model_validate(conversation)
 
 
@@ -211,6 +279,8 @@ async def send_manual_reply(
     conversation_id: int,
     payload: ManualReplyRequest,
     service: ReplyService = Depends(get_reply_service),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_admin),
 ) -> ManualReplyResponse:
     """Let a human operator take over and reply directly to the customer.
 
@@ -227,7 +297,25 @@ async def send_manual_reply(
     ``unsupported_channel`` (they did not reach you on WhatsApp at all, and
     operator replies for their channel are not built yet).
     """
-    message = await service.send_manual_reply(conversation_id, payload.text)
+    message = await service.send_manual_reply(
+        conversation_id, payload.text, operator_id=principal.operator_id
+    )
+    # The reply text is not copied into the audit row. It is already stored on
+    # the message, and audit_logs has a trigger forbidding UPDATE and DELETE,
+    # so anything customer-facing written here could never afterwards be
+    # redacted. The id and length are enough to prove what was sent.
+    await audit.record(
+        principal.operator_id,
+        ACTION_CONVERSATION_REPLY,
+        resource_type=RESOURCE_CONVERSATION,
+        resource_id=conversation_id,
+        details={
+            "message_id": message.id,
+            "wa_message_id": message.wa_message_id,
+            "characters": len(payload.text),
+        },
+        ip_address=_client_ip(request),
+    )
     return ManualReplyResponse(
         message_id=message.id,
         conversation_id=message.conversation_id,
@@ -360,6 +448,8 @@ async def toggle_ai(
     request: Request,
     payload: AiToggleRequest,
     settings: Settings = Depends(get_settings),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_admin),
 ) -> AiToggleResponse:
     """Stop or resume automated replies for everyone.
 
@@ -372,6 +462,10 @@ async def toggle_ai(
     dashboard. Only the automated answer stops; customers are routed to a
     person. The switch survives restarts because it lives in Redis, so a
     container recycling does not quietly re-enable the assistant.
+
+    This is the widest-blast-radius control in the API -- one call silences
+    the bot for every customer -- so it is audited even though it writes to
+    Redis rather than to the database.
     """
     try:
         await quota.set_ai_disabled(payload.disabled, settings)
@@ -383,6 +477,13 @@ async def toggle_ai(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Could not reach Redis to change the AI switch: {exc}",
         ) from exc
+    await audit.record(
+        principal.operator_id,
+        ACTION_AI_TOGGLE,
+        resource_type=RESOURCE_SYSTEM,
+        details={"disabled": payload.disabled},
+        ip_address=_client_ip(request),
+    )
     return AiToggleResponse(ai_disabled=payload.disabled)
 
 
@@ -392,6 +493,8 @@ async def unblock_customer(
     request: Request,
     wa_id: str,
     settings: Settings = Depends(get_settings),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_admin),
 ) -> UnblockResponse:
     """Lift an abuse block immediately.
 
@@ -411,6 +514,17 @@ async def unblock_customer(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Could not reach Redis to unblock this customer: {exc}",
         ) from exc
+    # Recorded whether or not anyone was actually blocked. "An operator tried
+    # to unblock this number" is the interesting fact for abuse review, and
+    # was_blocked preserves which of the two happened.
+    await audit.record(
+        principal.operator_id,
+        ACTION_CUSTOMER_UNBLOCK,
+        resource_type=RESOURCE_CUSTOMER,
+        resource_id=wa_id,
+        details={"was_blocked": was_blocked},
+        ip_address=_client_ip(request),
+    )
     return UnblockResponse(wa_id=wa_id, was_blocked=was_blocked)
 
 
@@ -430,6 +544,8 @@ async def add_pricing(
     request: Request,
     payload: ModelPricingCreate,
     service: PricingService = Depends(get_pricing_service),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_admin),
 ) -> ModelPricingRead:
     """Record a new price period.
 
@@ -448,6 +564,20 @@ async def add_pricing(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
+    # Amounts are stringified rather than cast: they are Decimals, JSONB will
+    # not serialise them, and float() would silently round money.
+    await audit.record(
+        principal.operator_id,
+        ACTION_PRICING_CREATE,
+        resource_type=RESOURCE_PRICING,
+        resource_id=pricing.id,
+        details={
+            "model": payload.model,
+            "input_price_per_1m": str(payload.input_price_per_1m),
+            "output_price_per_1m": str(payload.output_price_per_1m),
+        },
+        ip_address=_client_ip(request),
+    )
     return ModelPricingRead.model_validate(pricing)
 
 
@@ -457,9 +587,23 @@ async def delete_pricing(
     request: Request,
     pricing_id: int,
     service: PricingService = Depends(get_pricing_service),
+    audit: AuditService = Depends(get_audit_service),
+    principal: Principal = Depends(require_admin),
 ) -> None:
-    """Delete a price period. This does change historical figures."""
+    """Delete a price period. This does change historical figures.
+
+    Audited for exactly that reason: it silently rewrites past cost reports,
+    and the audit row is the only way to explain why last month's spend is
+    not what it was yesterday.
+    """
     await service.delete(pricing_id)
+    await audit.record(
+        principal.operator_id,
+        ACTION_PRICING_DELETE,
+        resource_type=RESOURCE_PRICING,
+        resource_id=pricing_id,
+        ip_address=_client_ip(request),
+    )
 
 
 @router.get("/knowledge", response_model=list[KnowledgeDocumentRead])

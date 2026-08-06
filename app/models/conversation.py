@@ -132,9 +132,18 @@ class Conversation(Base):
     # who happens to be answering it right now. Reporting on how many leads
     # arrived last week needs the former.
     tag: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
-    # Free text, not a foreign key: there is no operator account table yet, and
-    # inventing one here would be a bigger change than the handoff itself.
+    # The operator's display label, as free text. This predates operator
+    # accounts, every handed-off row carries one, and ConversationRead
+    # serialises it to both clients -- so it stays. ``assigned_operator_id``
+    # below is the authoritative reference now; this is kept in step with it
+    # for backward compatibility rather than removed.
     assigned_operator: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Who currently owns this conversation. Nullable because the bot owns most
+    # of them, and ON DELETE SET NULL because removing an operator account
+    # must not delete the customer conversations they handled.
+    assigned_operator_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operators.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     # When the CURRENT handoff started; cleared when the AI resumes.
     handoff_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

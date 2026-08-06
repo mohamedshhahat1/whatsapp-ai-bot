@@ -21,6 +21,7 @@ from app.middleware.metrics import MetricsMiddleware
 from app.middleware.request_logging import RequestLoggingMiddleware
 from app.routers import (
     admin,
+    auth,
     devices,
     events,
     health,
@@ -109,6 +110,10 @@ def create_app() -> FastAPI:
     # while ENABLE_MESSENGER is off, which keeps the switch in one place
     # rather than splitting it between here and the handler.
     app.include_router(meta_webhook.router)
+    # Before the admin router for readability only: /admin/auth/* are distinct
+    # paths, and unlike that router these carry no blanket require_admin --
+    # login cannot require being logged in.
+    app.include_router(auth.router)
     app.include_router(admin.router)
     app.include_router(devices.router)
     app.include_router(events.router)

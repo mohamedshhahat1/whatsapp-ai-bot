@@ -48,6 +48,19 @@ DRILL_IMAGE="${RESTORE_DRILL_IMAGE:-pgvector/pgvector:pg16}"
 DRILL_PASSWORD="${RESTORE_DRILL_PASSWORD:-drillpass}"
 APP_IMAGE="${RESTORE_DRILL_APP_IMAGE:-${APP_IMAGE:-}}"
 
+# The scratch database is published on 127.0.0.1 so a human can reach it with
+# psql, and that publish is deliberately loopback-only: this script also runs
+# on the production host, where a scratch PostgreSQL holding a restored copy
+# of everything and accepting a well-known password has no business being on a
+# public interface.
+#
+# But a loopback-only publish is invisible to other CONTAINERS. A container
+# resolving host.docker.internal arrives at the host through the gateway
+# address, and a port bound to 127.0.0.1 is not listening there. So steps 4
+# and 10 join the database on a private network and address it by container
+# name on its own port instead of bouncing off the host at all.
+DRILL_NETWORK="${RESTORE_DRILL_NETWORK:-${DRILL_CONTAINER}-net}"
+
 USE_REMOTE="false"
 KEEP_ENV="false"
 FAILED_STEP=""
@@ -102,9 +115,11 @@ teardown() {
     if [ "${STATUS}" = "failed" ] || [ "${KEEP_ENV}" = "true" ]; then
         log "PRESERVING scratch environment for debugging: container=${DRILL_CONTAINER} port=${DRILL_PORT}"
         log "  inspect with: docker exec -it ${DRILL_CONTAINER} psql -U postgres -d ${DRILL_DB}"
-        log "  remove with:  docker rm -f ${DRILL_CONTAINER}"
+        log "  remove with:  docker rm -f ${DRILL_CONTAINER} && docker network rm ${DRILL_NETWORK}"
     else
         docker rm -f "${DRILL_CONTAINER}" >/dev/null 2>&1 || true
+        # The network only goes once the last container has left it.
+        docker network rm "${DRILL_NETWORK}" >/dev/null 2>&1 || true
         log "scratch environment removed"
     fi
 }
@@ -156,15 +171,20 @@ fi
 step "2/11 start a clean PostgreSQL container"
 # --------------------------------------------------------------------------
 docker rm -f "${DRILL_CONTAINER}" >/dev/null 2>&1 || true
+docker network rm "${DRILL_NETWORK}" >/dev/null 2>&1 || true
+
+docker network create "${DRILL_NETWORK}" >/dev/null 2>>"${REPORT}" \
+    || fail_drill "could not create the drill network ${DRILL_NETWORK}"
 
 docker run -d --name "${DRILL_CONTAINER}" \
+    --network "${DRILL_NETWORK}" \
     -e POSTGRES_PASSWORD="${DRILL_PASSWORD}" \
     -e POSTGRES_DB="${DRILL_DB}" \
     -p "127.0.0.1:${DRILL_PORT}:5432" \
     "${DRILL_IMAGE}" >/dev/null 2>>"${REPORT}" \
     || fail_drill "could not start ${DRILL_IMAGE}"
 
-log "container ${DRILL_CONTAINER} started on 127.0.0.1:${DRILL_PORT}"
+log "container ${DRILL_CONTAINER} started on 127.0.0.1:${DRILL_PORT} (network ${DRILL_NETWORK})"
 
 ready="false"
 i=0
@@ -201,9 +221,12 @@ step "4/11 run migrations against the restored database"
 # Proves the backup is not merely loadable but is a valid starting point for
 # the current code -- a restore that cannot be migrated forward is useless
 # during an actual incident.
+#
+# Addressed by container name on the private network: the loopback publish is
+# for humans, and a sibling container cannot see it.
 if [ -n "${APP_IMAGE}" ]; then
-    DRILL_DSN="postgresql+psycopg://postgres:${DRILL_PASSWORD}@host.docker.internal:${DRILL_PORT}/${DRILL_DB}"
-    docker run --rm --add-host=host.docker.internal:host-gateway \
+    DRILL_DSN="postgresql+psycopg://postgres:${DRILL_PASSWORD}@${DRILL_CONTAINER}:5432/${DRILL_DB}"
+    docker run --rm --network "${DRILL_NETWORK}" \
         -e DATABASE_URL="${DRILL_DSN}" \
         -e ENVIRONMENT=test \
         -e OPENAI_API_KEY=drill -e WHATSAPP_TOKEN=drill \
@@ -289,8 +312,8 @@ APP_CONTAINER="${DRILL_CONTAINER}-app"
 if [ -n "${APP_IMAGE}" ]; then
     docker rm -f "${APP_CONTAINER}" >/dev/null 2>&1 || true
     docker run -d --name "${APP_CONTAINER}" \
-        --add-host=host.docker.internal:host-gateway \
-        -e DATABASE_URL="postgresql+asyncpg://postgres:${DRILL_PASSWORD}@host.docker.internal:${DRILL_PORT}/${DRILL_DB}" \
+        --network "${DRILL_NETWORK}" \
+        -e DATABASE_URL="postgresql+asyncpg://postgres:${DRILL_PASSWORD}@${DRILL_CONTAINER}:5432/${DRILL_DB}" \
         -e ENVIRONMENT=test -e USE_TASK_QUEUE=false -e RAG_ENABLED=false \
         -e METRICS_ENABLED=true -e RATE_LIMIT_ENABLED=false \
         -e OPENAI_API_KEY=drill -e WHATSAPP_TOKEN=drill \
