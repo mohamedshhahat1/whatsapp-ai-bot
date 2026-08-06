@@ -70,6 +70,4 @@ def verify_password(password: str, encoded: str) -> bool:
 
 
 def _derive(password: str, salt: bytes, n: int, r: int, p: int) -> bytes:
-    return hashlib.scrypt(
-        password.encode(), salt=salt, n=n, r=r, p=p, dklen=_KEY_BYTES
-    )
+    return hashlib.scrypt(password.encode(), salt=salt, n=n, r=r, p=p, dklen=_KEY_BYTES)

@@ -46,9 +46,7 @@ async def _purge_operator(session: AsyncSession, username: str) -> None:
 async def operator_account(db: AsyncSession) -> AsyncIterator[Operator]:
     """A throwaway operator with a known password."""
     username = "test-op-" + uuid4().hex[:8]
-    created = await AuthService(db).create_operator(
-        username, PASSWORD, "Test Operator"
-    )
+    created = await AuthService(db).create_operator(username, PASSWORD, "Test Operator")
     try:
         yield created
     finally:
@@ -184,7 +182,9 @@ def test_a_wrong_api_key_is_refused(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_a_bad_bearer_token_is_refused(client: TestClient, requires_database: None) -> None:
+def test_a_bad_bearer_token_is_refused(
+    client: TestClient, requires_database: None
+) -> None:
     response = client.get(
         "/admin/auth/me", headers={"Authorization": "Bearer not-a-real-token"}
     )
