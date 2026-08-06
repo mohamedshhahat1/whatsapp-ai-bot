@@ -177,9 +177,7 @@ def test_a_delivery_for_another_product_is_acknowledged_and_dropped(
     They are not wired yet, and answering a commenter with an apology would be
     worse than the silence.
     """
-    response = client.post(
-        "/webhook/meta", json={"object": "instagram", "entry": []}
-    )
+    response = client.post("/webhook/meta", json={"object": "instagram", "entry": []})
     assert response.status_code == 200
     assert response.json() == {"status": "ignored"}
     assert delivered == []
