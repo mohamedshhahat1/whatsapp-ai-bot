@@ -99,9 +99,7 @@ async def process_meta_payload(
     channel it is on, which is what makes replies leave through the same
     channel they arrived on.
     """
-    service = ChatService(
-        session, adapter, ai, settings, channel=adapter.channel
-    )
+    service = ChatService(session, adapter, ai, settings, channel=adapter.channel)
     for event in adapter.parse(payload):
         if _event_is_stale(event):
             continue
