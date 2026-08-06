@@ -53,17 +53,32 @@ TALK_TO_EMPLOYEE = "talk_to_employee"
 Labelled = tuple[str, str]
 
 _SERVICES: list[Labelled] = [
-    (SERVICE_FINISHING, "\u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629 \u0623\u0648 \u0641\u064a\u0644\u0627"),
-    (SERVICE_COMMERCIAL, "\u062a\u0634\u0637\u064a\u0628 \u0645\u062d\u0644 \u0623\u0648 \u0645\u0643\u062a\u0628"),
-    (SERVICE_CONTRACTING, "\u0623\u0639\u0645\u0627\u0644 \u0645\u0642\u0627\u0648\u0644\u0627\u062a \u0639\u0627\u0645\u0629"),
-    (VIEW_PORTFOLIO, "\u0623\u0639\u0645\u0627\u0644\u0646\u0627 \u0627\u0644\u0633\u0627\u0628\u0642\u0629"),
+    (
+        SERVICE_FINISHING,
+        "\u062a\u0634\u0637\u064a\u0628 \u0634\u0642\u0629 \u0623\u0648 \u0641\u064a\u0644\u0627",
+    ),
+    (
+        SERVICE_COMMERCIAL,
+        "\u062a\u0634\u0637\u064a\u0628 \u0645\u062d\u0644 \u0623\u0648 \u0645\u0643\u062a\u0628",
+    ),
+    (
+        SERVICE_CONTRACTING,
+        "\u0623\u0639\u0645\u0627\u0644 \u0645\u0642\u0627\u0648\u0644\u0627\u062a \u0639\u0627\u0645\u0629",
+    ),
+    (
+        VIEW_PORTFOLIO,
+        "\u0623\u0639\u0645\u0627\u0644\u0646\u0627 \u0627\u0644\u0633\u0627\u0628\u0642\u0629",
+    ),
 ]
 
 _REQUESTS: list[Labelled] = [
     (REQUEST_QUOTE, "\u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631"),
     (REQUEST_VISIT, "\u0637\u0644\u0628 \u0645\u0639\u0627\u064a\u0646\u0629"),
     (REQUEST_CALLBACK, "\u0637\u0644\u0628 \u0627\u062a\u0635\u0627\u0644"),
-    (TALK_TO_EMPLOYEE, "\u0627\u0644\u062a\u062d\u062f\u062b \u0645\u0639 \u0645\u0648\u0638\u0641"),
+    (
+        TALK_TO_EMPLOYEE,
+        "\u0627\u0644\u062a\u062d\u062f\u062b \u0645\u0639 \u0645\u0648\u0638\u0641",
+    ),
 ]
 
 #: Our own label for each id, used when we need to name a selection back to

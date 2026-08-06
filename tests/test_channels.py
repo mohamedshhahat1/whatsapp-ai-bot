@@ -111,7 +111,7 @@ def _event(**overrides: Any) -> InboundEvent:
         "sender_id": "20100000000",
         "provider_message_id": "wamid.TEST",
         "kind": EVENT_TEXT,
-        "text": "\\u0639\\u0627\\u064a\\u0632 \\u0623\\u0639\\u0631\\u0641 \\u0627\\u0644\\u0623\\u0633\\u0639\\u0627\\u0631",
+        "text": "\u0639\u0627\u064a\u0632 \u0623\u0639\u0631\u0641 \u0627\u0644\u0623\u0633\u0639\u0627\u0631",
     }
     return InboundEvent(**{**base, **overrides})
 
@@ -120,7 +120,7 @@ def test_body_is_defined_once_per_kind():
     """The transcript, the dashboard and a stale delivery must agree."""
     assert (
         _event().body
-        == "\\u0639\\u0627\\u064a\\u0632 \\u0623\\u0639\\u0631\\u0641 \\u0627\\u0644\\u0623\\u0633\\u0639\\u0627\\u0631"
+        == "\u0639\u0627\u064a\u0632 \u0623\u0639\u0631\u0641 \u0627\u0644\u0623\u0633\u0639\u0627\u0631"
     )
     assert (
         _event(
@@ -279,11 +279,11 @@ async def test_quick_replies_degrade_to_text_where_unsupported():
     adapter = _FakeAdapter()
     result = await adapter.send_quick_replies(
         "psid-1",
-        "\\u0634\\u0643\\u0631\\u0627\\u064b \\u0644\\u062a\\u0648\\u0627\\u0635\\u0644\\u0643",
+        "\u0634\u0643\u0631\u0627\u064b \u0644\u062a\u0648\u0627\u0635\u0644\u0643",
         [("request_quote", "Quote")],
     )
     assert adapter.sent == [
-        "\\u0634\\u0643\\u0631\\u0627\\u064b \\u0644\\u062a\\u0648\\u0627\\u0635\\u0644\\u0643"
+        "\u0634\u0643\u0631\u0627\u064b \u0644\u062a\u0648\u0627\u0635\u0644\u0643"
     ]
     assert result == {"recipient": "psid-1"}
 

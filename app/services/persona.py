@@ -85,7 +85,7 @@ COMPANY_NAME = "شركة الكيان للتشطيبات والمقاولات ا
 
 # The one line all welcomes start with. Shared so the name, the wording and
 # the emoji cannot drift between them.
-_OPENING = "أهلاً وسهلاً بحضرتك في شركة الكيان للتشطيبات والمقاولات العامة. \\U0001f44b"
+_OPENING = "أهلاً وسهلاً بحضرتك في شركة الكيان للتشطيبات والمقاولات العامة. \U0001f44b"
 
 # Sent by the code, exactly once per session, when the customer's opening
 # message is ONLY a greeting. Nothing has been asked, so the menu below is the
@@ -100,23 +100,23 @@ _OPENING = "أهلاً وسهلاً بحضرتك في شركة الكيان لل
 # The interactive list menu these bullets were kept as a fallback for has since
 # been removed, so they are now the only place the options appear.
 WELCOME = _OPENING + (
-    "\\n"
-    "\\n"
-    "يسعدنا مساعدتك في كل ما يخص أعمال التشطيبات والمقاولات.\\n"
-    "\\n"
-    "أخبرني كيف أستطيع مساعدتك اليوم، سواء كنت ترغب في:\\n"
-    "• تشطيب شقة أو فيلا\\n"
-    "• تشطيب محل أو مكتب\\n"
-    "• طلب عرض سعر من مدير المبيعات\\n"
-    "• طلب معاينة\\n"
-    "• الاستفسار عن خدماتنا\\n"
+    "\n"
+    "\n"
+    "يسعدنا مساعدتك في كل ما يخص أعمال التشطيبات والمقاولات.\n"
+    "\n"
+    "أخبرني كيف أستطيع مساعدتك اليوم، سواء كنت ترغب في:\n"
+    "• تشطيب شقة أو فيلا\n"
+    "• تشطيب محل أو مكتب\n"
+    "• طلب عرض سعر من مدير المبيعات\n"
+    "• طلب معاينة\n"
+    "• الاستفسار عن خدماتنا\n"
     "أو أي استفسار آخر."
 )
 
 # Prepended to a real answer when the customer's opening message already
 # contained a question. Deliberately short: the customer asked something, and
 # the thing they are waiting for is the answer, not a menu.
-WELCOME_PREFIX = _OPENING + "\\n\\nشكراً لتواصلك معنا."
+WELCOME_PREFIX = _OPENING + "\n\nشكراً لتواصلك معنا."
 
 # Follows the welcome when the very first message carries no words at all.
 NOT_UNDERSTOOD = (
@@ -138,11 +138,11 @@ NOT_UNDERSTOOD = (
 # Overridden entirely by CONVERSATION_CLOSING_MESSAGE. Reusing this codebase
 # for another business needs no Python edit.
 CLOSING = (
-    "شكراً لتواصلك مع شركة الكيان للتشطيبات والمقاولات العامة. \\U0001f90d\\n"
-    "\\n"
+    "شكراً لتواصلك مع شركة الكيان للتشطيبات والمقاولات العامة. \U0001f90d\n"
+    "\n"
     "لو احتجت أي مساعدة أخرى، أو كان عندك أي استفسار، أو حابب تطلب معاينة أو "
-    "عرض سعر في أي وقت، يسعدنا دائماً خدمتك.\\n"
-    "\\n"
+    "عرض سعر في أي وقت، يسعدنا دائماً خدمتك.\n"
+    "\n"
     "نتمنى لحضرتك يوماً سعيداً."
 )
 
@@ -234,8 +234,8 @@ Formatting on WhatsApp
 
 Emoji
 - Emoji are for structure, not decoration: one beside a section heading to
-  make a long list scannable. \\U0001f3e0 \\U0001f528 \\u26a1 \\U0001f3a8
-  \\U0001f3e2 \\U0001f4cb \\u2705 are the useful ones.
+  make a long list scannable. \U0001f3e0 \U0001f528 \u26a1 \U0001f3a8
+  \U0001f3e2 \U0001f4cb \u2705 are the useful ones.
 - A short reply needs none, and none at all is always acceptable. Five in one
   message is the ceiling.
 - Never inside a sentence, never two in a row, and never any at all when the
@@ -359,7 +359,7 @@ When intent is unclear
 
 # Arabic letters, Arabic-Indic digits, Latin letters and digits. A message
 # containing none of these carries no request: ".", "...", "؟", or a lone emoji.
-_MEANINGFUL = re.compile(r"[0-9A-Za-z\\u0621-\\u064a\\u0660-\\u0669\\u0750-\\u077f]")
+_MEANINGFUL = re.compile(r"[0-9A-Za-z\u0621-\u064a\u0660-\u0669\u0750-\u077f]")
 
 
 def is_unintelligible(text: str | None) -> bool:
