@@ -4,6 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.channels.outbound import (
+    outbound_adapter,
+    provider_message_id,
+    recipient_id,
+)
 from app.config import Settings, get_settings
 from app.core.events import conversation_activity, conversation_reopened, publish
 from app.core.exceptions import ConflictError, NotFoundError
@@ -18,7 +23,9 @@ from app.repositories.message import MessageRepository
 logger = get_logger(__name__)
 
 # Meta only allows free-form messages within 24 hours of the customer's last
-# message. Outside that window a pre-approved template is required.
+# message. Outside that window a pre-approved template is required. The number
+# is the same on every Meta surface -- see ChannelProfile.reply_window_hours --
+# so one constant still covers every channel this service sends on.
 CUSTOMER_SERVICE_WINDOW = timedelta(hours=24)
 
 
@@ -53,19 +60,20 @@ class ConversationSupersededError(ConflictError):
 
 
 class UnsupportedChannelError(ConflictError):
-    """Raised when a reply cannot be carried on the customer's own channel.
+    """Raised when the customer's row carries no id to address them by.
 
-    ``ReplyService`` holds a ``WhatsAppClient`` and nothing else, so it can
-    only answer someone who wrote in over WhatsApp. Since migration 0009 made
-    ``User.wa_id`` nullable -- a Messenger customer is identified by a
-    page-scoped id and has no phone number at all -- the send would otherwise
-    be handed ``None``.
+    Outbound replies now route through the adapter registered for
+    ``conversations.channel``, so the transport is no longer the limitation
+    this class was originally written for. What remains is an identity
+    problem: a row with neither ``external_id`` nor ``wa_id`` describes
+    someone the platform cannot reach on any channel. That is a data fault
+    rather than a missing feature, and the operator is still the person who
+    needs to be told.
 
-    A 409 rather than a 500 because nothing is broken: the operator's request
-    is well formed, the platform simply cannot carry it yet. Routing the reply
-    back out through the adapter the customer actually arrived on is the
-    proper fix, and belongs with the rest of the outbound channel work rather
-    than being smuggled into the live WhatsApp path.
+    A 409 rather than a 500 because the operator's request is well formed and
+    retrying will not help. Kept as its own class, and with its original
+    ``code``, because the dashboard and the Flutter app both branch on that
+    string; renaming it would be a client-visible change for no gain.
     """
 
     code = "unsupported_channel"
@@ -142,6 +150,10 @@ class ReplyService:
         settings: Settings | None = None,
     ) -> None:
         self._session = session
+        # Still held, and still the process-wide singleton, but now handed to
+        # the adapter factory rather than called directly. Keeping it on the
+        # constructor means deps.get_reply_service and every existing test
+        # that injects a fake client are unchanged.
         self._whatsapp = whatsapp
         self._settings = settings or get_settings()
         self._conversations = ConversationRepository(session)
@@ -164,7 +176,7 @@ class ReplyService:
     ) -> Message:
         """Send an operator reply and record it in the conversation.
 
-        The message is persisted only after the WhatsApp API accepts it, so a
+        The message is persisted only after the platform accepts it, so a
         failed send never leaves a phantom message in the transcript.
 
         A closed conversation is revived before anything is sent. Replying
@@ -173,9 +185,11 @@ class ReplyService:
         conversation, so the two halves of the same exchange lived in
         different threads.
 
-        Refuses outright for a customer who did not arrive over WhatsApp,
-        since this service has no way to reach them at all. See
-        :class:`UnsupportedChannelError`.
+        The reply leaves through the adapter for the conversation's own
+        channel, so a Messenger customer is answered on Messenger. Refuses
+        when the customer cannot be addressed at all
+        (:class:`UnsupportedChannelError`) or when their channel is switched
+        off or unconfigured (``ChannelUnavailableError``).
 
         ``operator_id`` defaults to None so that existing callers keep
         working; None simply means the reply is not attributed to an operator
@@ -197,20 +211,28 @@ class ReplyService:
         if user is None:
             raise NotFoundError(f"User {conversation.user_id} not found")
 
-        # Checked before the service window, because "we cannot reach you at
-        # all" and "we cannot reach you right now" are different answers and
-        # the operator should be given the accurate one. Nothing has been
-        # sent or written at this point, so refusing here costs nothing.
-        if user.wa_id is None:
+        # Both reachability checks run before the service window, because "we
+        # cannot reach you at all" and "we cannot reach you right now" are
+        # different answers and the operator should be given the accurate one.
+        # Nothing has been sent or written at this point, so refusing costs
+        # nothing.
+        recipient = recipient_id(user)
+        if recipient is None:
             logger.info(
-                "manual_reply_unsupported_channel",
+                "manual_reply_unaddressable_customer",
                 conversation_id=conversation.id,
                 channel=conversation.channel,
             )
             raise UnsupportedChannelError(
-                "This customer did not reach you on WhatsApp. Operator "
-                "replies are not wired up for their channel yet."
+                "This customer has no contact id on record, so a reply cannot "
+                "be delivered to them."
             )
+
+        # Raises ChannelUnavailableError -- also a 409 -- when the channel is
+        # switched off or enabled without credentials.
+        adapter = outbound_adapter(
+            conversation.channel, whatsapp_client=self._whatsapp
+        )
 
         last_inbound = await self._messages.last_inbound_at(conversation.id)
         if last_inbound is None:
@@ -224,12 +246,11 @@ class ReplyService:
                 "customer. Use an approved message template instead."
             )
 
-        response = await self._whatsapp.send_text(user.wa_id, text)
+        response = await adapter.send_text(recipient, text)
 
-        wa_message_id: str | None = None
-        sent = response.get("messages")
-        if isinstance(sent, list) and sent:
-            wa_message_id = sent[0].get("id")
+        # Reads both envelope shapes. The old inline lookup understood only
+        # WhatsApp's, so a Messenger reply would have stored NULL here.
+        wa_message_id = provider_message_id(response)
 
         message = await self._messages.create(
             conversation_id=conversation.id,
@@ -255,6 +276,7 @@ class ReplyService:
         logger.info(
             "manual_reply_sent",
             conversation_id=conversation.id,
+            channel=conversation.channel,
             wa_message_id=wa_message_id,
             operator_id=operator_id,
         )
