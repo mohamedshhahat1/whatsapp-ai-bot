@@ -19,7 +19,7 @@ from app.integrations.whatsapp import (
     MAX_BUTTONS,
     WhatsAppClient,
 )
-from app.services import menu
+from app.services import menu, persona
 from app.services.webhook_processor import _interactive_selection
 
 
@@ -150,10 +150,17 @@ def test_nothing_sends_list_messages_any_more():
 
     Re-adding a send_list here would quietly bring back a second, divergent
     definition of the menu -- the reason this was removed in the first place.
+
+    ``WELCOME_MENU_BODY`` belongs in this list for the same reason. It was the
+    body of the welcome when the options arrived as tappable rows, so it
+    deliberately did not spell them out as bullets. With no list to carry it,
+    it was a second definition of the welcome that nothing sent, and it
+    survived the removal of the list path by nine months of nobody noticing.
     """
     assert not hasattr(WhatsAppClient, "send_list")
     assert not hasattr(menu, "MENU_SECTIONS")
     assert not hasattr(menu, "MENU_BUTTON")
+    assert not hasattr(persona, "WELCOME_MENU_BODY")
 
 
 # --- Inbound envelopes ------------------------------------------------------
