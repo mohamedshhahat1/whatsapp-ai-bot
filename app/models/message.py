@@ -48,6 +48,16 @@ class Message(Base):
     media_id: Mapped[str | None] = mapped_column(String(128))
     # pending/sent/unconfirmed/delivered/read/failed
     status: Mapped[str | None] = mapped_column(String(20))
+    #: The operator who typed this, for replies sent by a person from the
+    #: dashboard. NULL for every inbound customer message and everything the
+    #: bot sent, which is the overwhelming majority of rows -- so NULL means
+    #: "no person sent this", not "we lost track of who did".
+    #:
+    #: ON DELETE SET NULL: removing an operator account must never remove the
+    #: transcript a customer was part of.
+    operator_id: Mapped[int | None] = mapped_column(
+        ForeignKey("operators.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
