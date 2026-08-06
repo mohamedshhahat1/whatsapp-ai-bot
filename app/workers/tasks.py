@@ -19,13 +19,18 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+from app.channels.config import get_channel_settings
+from app.channels.messenger import MessengerAdapter
 from app.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import ERRORS_TOTAL, WEBHOOK_DEAD_LETTERS_TOTAL
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.services.session_service import SessionService
-from app.services.webhook_processor import process_webhook_payload
+from app.services.webhook_processor import (
+    process_meta_payload,
+    process_webhook_payload,
+)
 from app.workers.celery_app import celery_app
 
 settings = get_settings()
@@ -65,6 +70,34 @@ async def _run(payload: dict[str, Any]) -> None:
             (
                 ("openai", ai.aclose),
                 ("whatsapp", whatsapp.aclose),
+                ("engine", engine.dispose),
+            )
+        )
+
+
+async def _run_meta(payload: dict[str, Any]) -> None:
+    """The Messenger equivalent of :func:`_run`.
+
+    Deliberately a sibling rather than a branch inside ``_run``: the two build
+    different clients, and adding a channel argument to the task that carries
+    live WhatsApp traffic would change its signature for no benefit.
+
+    The adapter is created here, inside the task's own event loop, for the
+    reason in the module docstring -- an httpx client belongs to the loop that
+    opened it -- and is closed alongside the others.
+    """
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    adapter = MessengerAdapter(get_channel_settings())
+    ai = OpenAIClient(settings)
+    try:
+        async with session_factory() as session:
+            await process_meta_payload(session, adapter, ai, settings, payload)
+    finally:
+        await _close_all(
+            (
+                ("openai", ai.aclose),
+                ("messenger", adapter.aclose),
                 ("engine", engine.dispose),
             )
         )
@@ -169,6 +202,50 @@ def process_webhook_event(self: Task, payload: dict[str, Any]) -> None:
 
 @celery_app.task(
     bind=True,
+    name="webhooks.process_meta_event",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=MAX_RETRIES,
+    retry_kwargs={"max_retries": MAX_RETRIES},
+)
+def process_meta_webhook_event(self: Task, payload: dict[str, Any]) -> None:
+    """Durably process one Messenger delivery.
+
+    Idempotent for the same three reasons as the WhatsApp task -- the inbound
+    claim, the generation cache and the outbound reservation all key off the
+    provider message id -- plus one specific to this channel: the adapter
+    discards the page's own echoes before parsing, so a replayed delivery can
+    never be mistaken for a customer turn.
+    """
+    try:
+        asyncio.run(_run_meta(payload))
+    except SoftTimeLimitExceeded as exc:
+        ERRORS_TOTAL.labels(type="task_soft_timeout").inc()
+        logger.error(
+            "meta_webhook_task_timeout",
+            retries=self.request.retries,
+            soft_limit_seconds=settings.celery_task_soft_time_limit,
+        )
+        if self.request.retries >= MAX_RETRIES:
+            WEBHOOK_DEAD_LETTERS_TOTAL.inc()
+            _dead_letter(payload, exc)
+        raise
+    except Exception as exc:
+        if self.request.retries >= MAX_RETRIES:
+            WEBHOOK_DEAD_LETTERS_TOTAL.inc()
+            logger.error(
+                "meta_webhook_dead_lettered",
+                retries=self.request.retries,
+                error=str(exc),
+            )
+            _dead_letter(payload, exc)
+        raise
+
+
+@celery_app.task(
+    bind=True,
     name="conversations.close_idle_sessions",
     autoretry_for=(Exception,),
     retry_backoff=True,
@@ -184,6 +261,10 @@ def close_idle_sessions(self: Task) -> None:
     conditional UPDATE before anything is sent: a second runner claims a
     disjoint set, and a retry claims only what the failed attempt did not.
     Neither can produce a second goodbye.
+
+    Only WhatsApp conversations are swept; see
+    ``ConversationRepository.claim_idle_sessions`` for why, and for what that
+    costs on the other channels.
 
     Retries are few and quick on purpose. A sweep is a statement about the
     present, so a failed one is better replaced by the next scheduled tick
