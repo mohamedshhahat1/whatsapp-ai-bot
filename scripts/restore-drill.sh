@@ -348,6 +348,8 @@ if [ -n "${APP_IMAGE}" ]; then
     log "/health/ready passed against the restored database"
     docker logs "${APP_CONTAINER}" > "${REPORT_DIR}/drill-${DRILL_ID}-app.log" 2>&1 || true
     docker rm -f "${APP_CONTAINER}" >/dev/null 2>&1 || true
+else
+    log "SKIPPED steps 10-11: no application image configured"
 fi
 
 # --------------------------------------------------------------------------
