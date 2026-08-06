@@ -86,9 +86,7 @@ class FakeFcm:
             raise InvalidRegistrationToken("UNREGISTERED")
         if token in self.failing:
             raise RuntimeError("firebase unavailable")
-        self.sent.append(
-            {"token": token, "title": title, "body": body, "data": data}
-        )
+        self.sent.append({"token": token, "title": title, "body": body, "data": data})
         return "projects/test-project/messages/1"
 
     def bodies_for(self, token: str) -> list[str]:
@@ -457,9 +455,8 @@ async def test_inbound_message_in_bot_mode_notifies_nobody(db: AsyncSession) -> 
 
 async def test_inbound_message_in_human_mode_notifies(db: AsyncSession) -> None:
     """The one case that needs a database read to decide."""
-    from tests.conftest import create_customer, new_wa_id, purge
-
     from app.models.conversation import Conversation
+    from tests.conftest import create_customer, new_wa_id, purge
 
     wa_id = new_wa_id()
     created = await create_customer(db, wa_id)
@@ -501,9 +498,7 @@ def test_unknown_platform_is_rejected(
     assert response.status_code == 422
 
 
-def test_short_token_is_rejected(
-    client: Any, admin_headers: dict[str, str]
-) -> None:
+def test_short_token_is_rejected(client: Any, admin_headers: dict[str, str]) -> None:
     response = client.post(
         "/admin/device-token",
         headers=admin_headers,
