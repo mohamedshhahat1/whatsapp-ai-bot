@@ -5,8 +5,9 @@ commit. The caller owns the transaction boundary.
 """
 
 from datetime import UTC, datetime
+from typing import Any, cast
 
-from sqlalchemy import func, select, update
+from sqlalchemy import CursorResult, func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.models.device_token import DeviceToken
@@ -89,12 +90,19 @@ class DeviceTokenRepository(BaseRepository):
         Idempotent by the ``enabled`` predicate: Firebase can reject the same
         dead token on several concurrent sends, and only the first of those is
         news.
+
+        The cast names what SQLAlchemy already returns. ``execute`` is typed
+        as ``Result[Any]``, which has no ``rowcount``; a DML statement gives
+        back a ``CursorResult``, which does. It is a no-op at runtime.
         """
-        result = await self.session.execute(
-            update(DeviceToken)
-            .where(DeviceToken.token == token, DeviceToken.enabled.is_(True))
-            .values(enabled=False, disabled_reason=reason)
-            .execution_options(synchronize_session=False)
+        result = cast(
+            "CursorResult[Any]",
+            await self.session.execute(
+                update(DeviceToken)
+                .where(DeviceToken.token == token, DeviceToken.enabled.is_(True))
+                .values(enabled=False, disabled_reason=reason)
+                .execution_options(synchronize_session=False)
+            ),
         )
         return bool(result.rowcount)
 
@@ -126,9 +134,7 @@ class DeviceTokenRepository(BaseRepository):
         """
         return int(
             await self.session.scalar(
-                select(func.count(DeviceToken.id)).where(
-                    DeviceToken.enabled.is_(True)
-                )
+                select(func.count(DeviceToken.id)).where(DeviceToken.enabled.is_(True))
             )
             or 0
         )

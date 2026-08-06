@@ -28,7 +28,7 @@ def ts(**delta: float) -> str:
     return str(int(moment.timestamp()))
 
 
-def text_payload(body: str = "\u0645\u0631\u062d\u0628\u0627", **kwargs) -> dict:
+def text_payload(body: str = "\\u0645\\u0631\\u062d\\u0628\\u0627", **kwargs) -> dict:
     """One webhook delivery carrying one text message.
 
     Defaults to an Arabic greeting because that is the input that takes the
@@ -98,9 +98,7 @@ def routed(monkeypatch):
 
     def run(payload: dict, **overrides):
         settings = InboundSettings(**overrides)
-        monkeypatch.setattr(
-            webhook_processor, "get_inbound_settings", lambda: settings
-        )
+        monkeypatch.setattr(webhook_processor, "get_inbound_settings", lambda: settings)
         return payload, service, recorded
 
     return run
@@ -116,7 +114,7 @@ async def _process(payload):
 async def test_a_fresh_message_is_answered_normally(routed):
     payload, service, recorded = routed(text_payload(timestamp=ts(seconds=5)))
     await _process(payload)
-    assert service.texts == ["\u0645\u0631\u062d\u0628\u0627"]
+    assert service.texts == ["\\u0645\\u0631\\u062d\\u0628\\u0627"]
     assert recorded == []
 
 
@@ -200,9 +198,7 @@ async def test_status_updates_are_unaffected_by_the_gate(routed):
                     "changes": [
                         {
                             "value": {
-                                "statuses": [
-                                    {"id": "wamid.out", "status": "delivered"}
-                                ]
+                                "statuses": [{"id": "wamid.out", "status": "delivered"}]
                             }
                         }
                     ]
