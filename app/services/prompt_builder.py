@@ -6,7 +6,7 @@ Instructions are composed in labelled layers rather than as one blob of prose:
     company information     trusted, from configuration
     portfolio links        trusted, from configuration (when COMPANY_WEBSITE is set)
     retrieved knowledge     UNTRUSTED reference material, fenced and redacted
-    conversation context    customer name, channel, time
+    conversation context    customer name and time
     first message           only on the customer's opening turn
     response rules          trusted, and stated last so they are not buried
     pricing policy          trusted, and stated after everything else
@@ -21,6 +21,10 @@ The welcome itself is not requested here. It is approved copy that
 ``ChatService`` prepends verbatim, exactly once per conversation; this layer
 only tells the model that it has already been said, so the reply continues
 from it instead of greeting the customer a second time.
+
+Nothing here names the transport. The model is handed a normalized turn and
+writes an answer; which channel carries it is the adapter's business. See the
+conversation context layer for why that is worth stating.
 
 Why the style rules are repeated here
 -------------------------------------
@@ -318,8 +322,10 @@ class PromptBuilder:
                 "will check, and offer to pass the question to a colleague."
             )
 
+        # No channel line here, deliberately. The model is given a normalized
+        # turn and has no use for the transport: naming it would be a fact it
+        # cannot act on, and a wrong one on every channel but the one hardcoded.
         context_lines = [
-            "Channel: WhatsApp",
             f"Current UTC time: {datetime.now(UTC):%Y-%m-%d %H:%M}",
         ]
         if user_name:
