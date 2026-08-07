@@ -1,0 +1,20 @@
+# json_serializable is talking to a snake_case API.
+#
+# Every model under lib/ declares its fields in camelCase -- userId,
+# externalId, waMessageId, totalConversations -- while the FastAPI backend
+# serialises user_id, external_id, wa_message_id, total_conversations.
+# json_serializable defaults to FieldRename.none, which uses the Dart
+# identifier verbatim as the JSON key, and no model carries a @JsonKey to
+# override it.
+#
+# Without this file the mismatch is total rather than cosmetic: a required
+# field resolves to null and fromJson throws, so a successful 200 from the
+# backend still surfaces in the app as "Something went wrong".
+#
+# Applied globally rather than per model so a new model cannot forget it.
+targets:
+  $default:
+    builders:
+      json_serializable:
+        options:
+          field_rename: snake
