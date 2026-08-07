@@ -17,10 +17,11 @@ import '../chat_models.dart';
 /// Every channel needs its own glyph as well as its own colour, and that is
 /// load-bearing rather than tidy: [ChannelBadge] is drawn with
 /// `showLabel: false` on narrow rows, where the icon is the only thing left
-/// to tell one channel from another. Note that several Material names are
-/// aliases for the same codepoint -- `mode_comment_outlined` draws the same
-/// plain bubble as `chat_bubble_outline` -- so distinctness is asserted in
-/// channel_badge_test.dart rather than assumed from the names.
+/// to tell one channel from another. Material's names are a poor guide to
+/// which glyphs actually differ -- `messenger_outline` and
+/// `chat_bubble_outline` are two names for codepoint 0xe155 -- so
+/// distinctness is asserted in channel_badge_test.dart rather than reasoned
+/// about here. The assertion is what caught that pair.
 class ChannelDisplay {
   const ChannelDisplay({
     required this.label,
@@ -37,9 +38,13 @@ class ChannelDisplay {
     icon: Icons.chat_bubble_outline,
     color: Color(0xFF25D366),
   );
+
+  /// Deliberately not `messenger_outline`, which is an alias for the bubble
+  /// WhatsApp already uses. The bolt is Messenger's own mark and shares no
+  /// silhouette with the bubbles, cameras and comment boxes around it.
   static const _messenger = ChannelDisplay(
     label: 'Messenger',
-    icon: Icons.messenger_outline,
+    icon: Icons.bolt,
     color: Color(0xFF0084FF),
   );
   static const _instagramDm = ChannelDisplay(
@@ -52,6 +57,10 @@ class ChannelDisplay {
     icon: Icons.comment_outlined,
     color: Color(0xFF1877F2),
   );
+
+  /// A review bubble rather than a second plain comment bubble: this sits
+  /// next to `_facebookComment` in the same list, and two comment glyphs at
+  /// 10px are hard to tell apart even when their codepoints differ.
   static const _instagramComment = ChannelDisplay(
     label: 'IG comment',
     icon: Icons.rate_review_outlined,

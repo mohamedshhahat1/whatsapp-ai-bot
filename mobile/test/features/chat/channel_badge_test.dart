@@ -21,9 +21,11 @@ void main() {
       expect(ChannelDisplay.of(channelInstagramComment).label, 'IG comment');
     });
 
-    // Grouped rather than counted so a failure names the offenders. Several
-    // Material icon names are aliases for one codepoint, and knowing that two
-    // of five collide is not enough to know which two.
+    // Grouped rather than counted, and the whole map is reported rather than
+    // just the clash. Material names alias one another often enough that
+    // knowing two of five collide does not say which two, and knowing which
+    // two does not say which replacement is safe: messenger_outline and
+    // chat_bubble_outline are both 0xe155, which cost a round trip to learn.
     test('gives each channel its own icon', () {
       final byIcon = <IconData, List<String>>{};
       for (final channel in allChannels) {
@@ -37,7 +39,9 @@ void main() {
         }
       }
 
-      expect(shared, isEmpty, reason: 'showLabel:false leaves the icon as the only cue, so channels sharing a glyph are indistinguishable');
+      final everyGlyph = allChannels.map((c) => '$c=0x${ChannelDisplay.of(c).icon.codePoint.toRadixString(16)}').join(', ');
+
+      expect(shared, isEmpty, reason: 'showLabel:false leaves the icon as the only cue, so channels sharing a glyph are indistinguishable. Every glyph: $everyGlyph');
     });
 
     test('gives each channel its own colour', () {
@@ -79,7 +83,7 @@ void main() {
       await tester.pumpWidget(_host(const ChannelBadge(channel: channelMessenger)));
 
       expect(find.text('Messenger'), findsOneWidget);
-      expect(_iconOf(tester).icon, Icons.messenger_outline);
+      expect(_iconOf(tester).icon, Icons.bolt);
     });
 
     testWidgets('colours the icon with the platform colour', (tester) async {
@@ -94,7 +98,7 @@ void main() {
       await tester.pumpWidget(_host(const ChannelBadge(channel: channelMessenger, showLabel: false)));
 
       expect(find.text('Messenger'), findsNothing);
-      expect(_iconOf(tester).icon, Icons.messenger_outline);
+      expect(_iconOf(tester).icon, Icons.bolt);
     });
 
     testWidgets('renders an unknown channel rather than failing', (tester) async {
