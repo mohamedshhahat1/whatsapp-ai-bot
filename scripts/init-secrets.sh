@@ -151,9 +151,11 @@ placeholder_secret fcm_credentials
 # stack up, so an empty file leaves that one channel unconfigured rather than
 # failing the deploy.
 #
-# To enable a channel later, write the value and restart Alertmanager:
-#   printf '%s' 'https://hooks.slack.com/services/T00/B00/xxxx' \
-#     > ./secrets/alert_slack_webhook_url
+# To enable a channel later, write the credential into its file and restart
+# Alertmanager. Use printf rather than echo: a trailing newline becomes part
+# of the credential and the resulting authentication failure is not obvious.
+#
+#   printf '%s' "$SLACK_WEBHOOK_URL" > ./secrets/alert_slack_webhook_url
 #   chmod 600 ./secrets/alert_slack_webhook_url
 #   docker compose -f docker-compose.prod.yml up -d alertmanager
 #
