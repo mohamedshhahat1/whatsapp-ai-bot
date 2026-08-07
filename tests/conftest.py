@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.channels.constants import MESSENGER, WHATSAPP
 from app.config import get_settings
 from app.db.session import SessionLocal, engine
 from app.main import app
@@ -59,6 +60,40 @@ DELETE FROM conversations WHERE user_id IN (
 """
 
 _DELETE_USERS = "DELETE FROM users WHERE wa_id = :wa_id"
+
+# The same four deletes keyed on (channel, external_id) instead of on wa_id.
+#
+# Needed because wa_id is null for everybody who did not arrive on WhatsApp,
+# so the statements above match nothing for a Messenger customer and would
+# leave rows behind for the next test to trip over. (channel, external_id) is
+# the identity the schema actually enforces -- see uq_users_channel_external_id
+# and migration 0013 -- so this cleans up any customer on any channel,
+# including a WhatsApp one.
+_DELETE_AI_LOGS_BY_CHANNEL = """
+DELETE FROM ai_logs WHERE conversation_id IN (
+    SELECT c.id FROM conversations c
+    JOIN users u ON u.id = c.user_id
+    WHERE u.channel = :channel AND u.external_id = :external_id
+)
+"""
+
+_DELETE_MESSAGES_BY_CHANNEL = """
+DELETE FROM messages WHERE conversation_id IN (
+    SELECT c.id FROM conversations c
+    JOIN users u ON u.id = c.user_id
+    WHERE u.channel = :channel AND u.external_id = :external_id
+)
+"""
+
+_DELETE_CONVERSATIONS_BY_CHANNEL = """
+DELETE FROM conversations WHERE user_id IN (
+    SELECT id FROM users WHERE channel = :channel AND external_id = :external_id
+)
+"""
+
+_DELETE_USERS_BY_CHANNEL = (
+    "DELETE FROM users WHERE channel = :channel AND external_id = :external_id"
+)
 
 
 @pytest.fixture
@@ -126,11 +161,19 @@ async def db() -> AsyncIterator[AsyncSession]:
 
 @dataclass
 class Customer:
-    """A throwaway customer with an open conversation."""
+    """A throwaway customer with an open conversation.
+
+    ``wa_id`` is the empty string for a customer who did not arrive on
+    WhatsApp, matching what the admin API sends clients rather than inventing
+    a page-scoped id in a field every client renders as a phone number.
+    ``external_id`` is the one that is always populated.
+    """
 
     wa_id: str
     user_id: int
     conversation_id: int
+    channel: str = WHATSAPP
+    external_id: str = ""
 
 
 async def purge(session: AsyncSession, wa_id: str) -> None:
@@ -146,6 +189,26 @@ async def purge(session: AsyncSession, wa_id: str) -> None:
     await session.commit()
 
 
+async def purge_channel(
+    session: AsyncSession, channel: str, external_id: str
+) -> None:
+    """Remove a customer identified the way the schema identifies them.
+
+    :func:`purge` is left alone rather than widened: every existing caller
+    passes a wa_id, and changing its signature would mean editing dozens of
+    tests to fix a gap none of them have.
+    """
+    params = {"channel": channel, "external_id": external_id}
+    for statement in (
+        _DELETE_AI_LOGS_BY_CHANNEL,
+        _DELETE_MESSAGES_BY_CHANNEL,
+        _DELETE_CONVERSATIONS_BY_CHANNEL,
+        _DELETE_USERS_BY_CHANNEL,
+    ):
+        await session.execute(text(statement), params)
+    await session.commit()
+
+
 async def create_customer(session: AsyncSession, wa_id: str) -> Customer:
     """Create a customer with an open conversation, through the repositories."""
     user = await UserRepository(session).get_or_create(wa_id=wa_id, name="Test User")
@@ -155,12 +218,49 @@ async def create_customer(session: AsyncSession, wa_id: str) -> Customer:
         wa_id=wa_id,
         user_id=user.id,
         conversation_id=conversation.id,
+        channel=WHATSAPP,
+        external_id=wa_id,
+    )
+
+
+async def create_channel_customer(
+    session: AsyncSession,
+    channel: str,
+    external_id: str,
+    name: str | None = "Test User",
+) -> Customer:
+    """Create a customer on any channel, with an open conversation.
+
+    Goes through the same repository methods production uses, so the row is
+    written by the real ON CONFLICT clause against the real unique constraint
+    rather than being assembled by the test. The conversation is stamped with
+    the channel for the same reason the webhook path stamps it: without it the
+    row falls back to the column's server default and reads as WhatsApp.
+    """
+    user = await UserRepository(session).get_or_create_by_channel(
+        channel=channel, external_id=external_id, name=name
+    )
+    conversation = await ConversationRepository(session).get_or_create_active(
+        user.id, channel=channel
+    )
+    await session.commit()
+    return Customer(
+        wa_id=user.wa_id or "",
+        user_id=user.id,
+        conversation_id=conversation.id,
+        channel=channel,
+        external_id=external_id,
     )
 
 
 def new_wa_id() -> str:
     """A unique WhatsApp id, so tests never collide on the unique index."""
     return "test-" + uuid4().hex[:12]
+
+
+def new_external_id(prefix: str = "psid") -> str:
+    """A unique page-scoped id, for a customer with no phone number."""
+    return f"{prefix}-" + uuid4().hex[:12]
 
 
 @pytest.fixture
@@ -172,6 +272,22 @@ async def customer(db: AsyncSession) -> AsyncIterator[Customer]:
         yield created
     finally:
         await purge(db, wa_id)
+
+
+@pytest.fixture
+async def messenger_customer(db: AsyncSession) -> AsyncIterator[Customer]:
+    """A Messenger customer: a page-scoped id and no phone number at all.
+
+    The absence of a wa_id is the point. A Messenger row that happened to
+    carry one would let a WhatsApp-shaped code path pass by accident, which is
+    the failure this fixture exists to make impossible.
+    """
+    external_id = new_external_id()
+    created = await create_channel_customer(db, MESSENGER, external_id)
+    try:
+        yield created
+    finally:
+        await purge_channel(db, MESSENGER, external_id)
 
 
 @pytest.fixture
