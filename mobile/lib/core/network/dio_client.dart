@@ -3,7 +3,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../config/app_config.dart';
-import '../error/failures.dart';
 import '../storage/secure_storage.dart';
 import 'api_interceptor.dart';
 
@@ -14,12 +13,14 @@ class DioClient {
   late final Dio _dio = _build();
 
   Dio _build() {
-    final dio = Dio(BaseOptions(
-      connectTimeout: const Duration(milliseconds: AppConfig.connectTimeoutMs),
-      receiveTimeout: const Duration(milliseconds: AppConfig.receiveTimeoutMs),
-      sendTimeout: const Duration(milliseconds: AppConfig.sendTimeoutMs),
-      validateStatus: (s) => s != null && s < 500,
-    ));
+    final dio = Dio(
+      BaseOptions(
+        connectTimeout: const Duration(milliseconds: AppConfig.connectTimeoutMs),
+        receiveTimeout: const Duration(milliseconds: AppConfig.receiveTimeoutMs),
+        sendTimeout: const Duration(milliseconds: AppConfig.sendTimeoutMs),
+        validateStatus: (s) => s != null && s < 500,
+      ),
+    );
 
     dio.interceptors.addAll([
       AuthInterceptor(_secureStorage),

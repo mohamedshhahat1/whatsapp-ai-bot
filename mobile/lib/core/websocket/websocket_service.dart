@@ -90,7 +90,10 @@ class WebSocketService {
 
   final SecureStorage _storage;
   WebSocketChannel? _channel;
-  StreamSubscription? _sub;
+
+  /// dynamic because WebSocketChannel.stream is Stream<dynamic>; _onMessage
+  /// checks the payload type itself rather than trusting a narrower argument.
+  StreamSubscription<dynamic>? _sub;
   Timer? _heartbeatTimer;
   Timer? _reconnectTimer;
   int _reconnectAttempts = 0;
