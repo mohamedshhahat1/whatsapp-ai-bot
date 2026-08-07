@@ -417,26 +417,46 @@ jobs:
       # --delete-conflicting-outputs is required, not decorative: a stale
       # .g.dart from an earlier run otherwise blocks the build with a conflict
       # instead of being replaced.
+      #
+      # Reads mobile/build.yaml, which renames every JSON field to snake_case
+      # to match the API. Without it the generated fromJson looks for camelCase
+      # keys the backend never sends.
       - name: Generate code
+        id: codegen
         run: dart run build_runner build --delete-conflicting-outputs
 
-      # Fails the job on analyzer errors. Warnings and lints from
-      # flutter_lints surface in the log without blocking, which is the same
-      # posture the dashboard job takes with eslint.
+      # Correcting the note that used to sit here, which claimed warnings and
+      # lints surface without blocking: they do not. flutter analyze exits
+      # non-zero on ANY issue, infos included, unless given --no-fatal-infos
+      # --no-fatal-warnings. The app currently reports 171 issues and zero
+      # errors, so this step is red for pre-existing style debt alone.
+      #
+      # Left blocking on purpose. The debt is real and suppressing it with
+      # flags would hide the deprecated withOpacity calls and the raw generic
+      # types along with the trailing commas.
       - name: Analyze
         run: flutter analyze
 
-      # mobile/test/ does not exist yet. Failing on an absent directory would
-      # make this job permanently red; asserting success without running
-      # anything would be worse. The warning records which of the two
-      # happened. Delete the guard with the first test.
+      # Gated on codegen rather than on Analyze, so the analyzer backlog above
+      # cannot hide a genuine test failure behind a trailing-comma count. The
+      # Python lint job runs ruff, black and mypy independently for exactly
+      # this reason. The job still fails if either step fails.
+      #
+      # The guard that used to live here skipped the suite whenever
+      # mobile/test/ was empty, and its own comment said to delete it with the
+      # first test. Done -- the suite is required now.
       - name: Test
-        run: |
-          if [ -d test ] && [ -n "$(find test -name '*_test.dart' -print -quit)" ]; then
-            flutter test --reporter expanded
-          else
-            echo "::warning::no Flutter tests found under mobile/test/; codegen and analyze ran, nothing was executed"
-          fi
+        if: always() && steps.codegen.outcome == 'success'
+        run: flutter test --reporter expanded --coverage
+
+      - name: Upload Flutter coverage
+        if: always() && steps.codegen.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-coverage-${{ github.sha }}
+          path: mobile/coverage/lcov.info
+          if-no-files-found: warn
+          retention-days: 30
 
   # ==========================================================================
   # Docker
