@@ -64,6 +64,7 @@ forgot to ask. See ``docs/SESSION_LIFECYCLE.md``.
 
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.channels.base import BaseChannelAdapter
@@ -332,12 +333,30 @@ class SessionService:
         them. One extra SELECT per closed session, on a path that already
         makes a provider call.
 
+        The reload is explicit because ``get`` on its own is not enough.
+        Closing the session UPDATEs the row, which expires ``updated_at`` on
+        whatever instance is already in this session's identity map, and
+        ``get`` hands that same instance straight back rather than re-reading
+        it. Touching the expired attribute would then have to fetch it, and an
+        implicit fetch during plain attribute access is the one thing asyncio
+        cannot service here -- SQLAlchemy raises MissingGreenlet instead of
+        blocking. Awaiting the reload is what makes that IO legal.
+
+        Whether the instance is in the identity map at all depends on the
+        caller, which is why this survived: the sweep's own Celery task opens
+        a fresh session and loads nothing, so it takes a caller that read the
+        conversation before closing it to reach the bad path.
+
         Publishing strictly after the commit matters: a dashboard that acts on
         this event will refetch, and an event sent from inside the transaction
         can be delivered before the close is visible to that read.
         """
         conversation = await self._conversations.get(conversation_id)
         if conversation is None:  # pragma: no cover - deleted mid-sweep
+            return
+        try:
+            await self._session.refresh(conversation)
+        except InvalidRequestError:  # pragma: no cover - deleted mid-sweep
             return
         await publish(
             conversation_closed(
