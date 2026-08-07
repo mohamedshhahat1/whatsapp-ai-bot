@@ -28,14 +28,30 @@ reason a redelivered tick is: the claim below is idempotent.
 Exactly one goodbye
 -------------------
 ``claim_idle_sessions`` takes ``closing_sent_at`` with a conditional UPDATE
-and that claim is COMMITTED BEFORE the WhatsApp call, exactly as
-``MessageRepository.reserve_reply`` commits before sending a reply. WhatsApp's
-send endpoint has no idempotency key, so a crash mid-send can never afterwards
-be distinguished from a success. Writing the intention first means the retry
-finds the claim and declines, trading a rare missing goodbye for a goodbye
-that is never sent twice. For a closing message that trade is even easier than
-it is for a reply: nobody minds an absent pleasantry, and everybody notices
-being thanked for their enquiry twice.
+and that claim is COMMITTED BEFORE the send, exactly as
+``MessageRepository.reserve_reply`` commits before sending a reply. Neither
+Graph send endpoint has an idempotency key, so a crash mid-send can never
+afterwards be distinguished from a success. Writing the intention first means
+the retry finds the claim and declines, trading a rare missing goodbye for a
+goodbye that is never sent twice. For a closing message that trade is even
+easier than it is for a reply: nobody minds an absent pleasantry, and
+everybody notices being thanked for their enquiry twice.
+
+Channels
+--------
+The sweep is channel-polymorphic. Each claimed session carries its own
+channel and its own recipient id, and the goodbye goes out through the
+adapter for that channel, resolved once per sweep by
+``app.channels.outbound.outbound_adapter``. Nothing else in this module knows
+which app the customer is using: the idle rule, the claim, the service-window
+check and the copy are all properties of the conversation.
+
+The re-welcome falls out of this rather than being implemented here.
+:meth:`should_welcome` reads ``welcome_sent_at`` off the conversation row, and
+closing a session releases the customer's slot in the partial unique index, so
+their next message mints a fresh row with a null flag and is greeted. That was
+always true; on channels the sweeper did not claim it simply never got the
+chance to happen, because the session never ended.
 
 Configuration
 -------------
@@ -48,25 +64,37 @@ forgot to ask. See ``docs/SESSION_LIFECYCLE.md``.
 
 from datetime import UTC, datetime
 
+from sqlalchemy.exc import InvalidRequestError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.channels.base import BaseChannelAdapter
+from app.channels.outbound import (
+    ChannelUnavailableError,
+    outbound_adapter,
+    provider_message_id,
+)
 from app.config import Settings
 from app.core.events import conversation_activity, conversation_closed, publish
 from app.core.exceptions import ExternalServiceError
 from app.core.logging import get_logger
 from app.integrations.whatsapp import WhatsAppClient
 from app.models.conversation import Conversation
-from app.repositories.conversation import ConversationRepository
+from app.repositories.conversation import ConversationRepository, IdleSession
 from app.repositories.message import MessageRepository
 from app.services.persona import CLOSING
 from app.services.reply_service import CUSTOMER_SERVICE_WINDOW
 
 logger = get_logger(__name__)
 
-# Most one pass will close. Bounds the transaction and the number of WhatsApp
+# Most one pass will close. Bounds the transaction and the number of provider
 # calls made back to back after an outage; whatever is left waits for the next
 # tick, a minute later.
 SWEEP_BATCH_SIZE = 200
+
+#: Adapters resolved during one sweep, keyed by channel. ``None`` records a
+#: channel that could not be resolved, so the failure is logged once per sweep
+#: rather than once per session.
+AdapterCache = dict[str, BaseChannelAdapter | None]
 
 
 class SessionService:
@@ -110,6 +138,11 @@ class SessionService:
         ``welcome_sent_at`` still set, which is exactly why resuming rather
         than copying was the right shape: the "do not greet them twice" rule
         needs no special case for it.
+
+        Channel-free on purpose, and that is what makes the re-welcome work
+        everywhere: this reads one column on one row, so a Messenger customer
+        returning after their session closed is greeted by the same rule that
+        greets a WhatsApp one.
         """
         if not self.enabled:
             return False
@@ -171,7 +204,7 @@ class SessionService:
         Ordering is the point of this method:
 
             1. claim   -- conditional UPDATE, then COMMIT
-            2. send    -- the WhatsApp call, outside any transaction
+            2. send    -- the provider call, outside any transaction
             3. close   -- status, then COMMIT
             4. publish -- conversation.closed, after the commit
 
@@ -181,6 +214,12 @@ class SessionService:
         a candidate. It is then closed by the reopen path instead -- the
         customer's next message finds an open session and simply continues it,
         which is a strictly better failure than a duplicate goodbye.
+
+        Adapters are resolved lazily and shared across the whole batch. A
+        Messenger adapter owns an httpx client, so building one per session
+        would open up to SWEEP_BATCH_SIZE of them and leak every one; the
+        cache is closed in a ``finally`` so an exception mid-sweep cannot skip
+        that.
 
         Returns 0 without touching the database when the lifecycle is off, or
         when CONVERSATION_CLOSE_AFTER_IDLE says idle sessions should simply be
@@ -203,31 +242,87 @@ class SessionService:
         # Durable before a single message goes out.
         await self._session.commit()
 
-        for target in targets:
-            await self._finish(target.conversation_id, target.wa_id)
+        adapters: AdapterCache = {}
+        try:
+            for target in targets:
+                await self._finish(target, adapters)
+        finally:
+            await self._close_adapters(adapters)
 
         logger.info("idle_sessions_closed", count=len(targets))
         return len(targets)
 
-    async def _finish(self, conversation_id: int, wa_id: str) -> None:
+    def _adapter_for(
+        self, channel: str, cache: AdapterCache
+    ) -> BaseChannelAdapter | None:
+        """The adapter that can carry a goodbye on ``channel``, if there is one.
+
+        Memoised for the whole sweep, the failures included. Caching a failure
+        is the point rather than an optimisation: a deployment with Messenger
+        switched on and unconfigured would otherwise log a misconfiguration
+        line for every one of up to two hundred sessions, which is how a real
+        signal gets trained out of a log.
+
+        Returns ``None`` rather than raising, because every caller's reaction
+        is the same -- close the session without a goodbye -- and the claim is
+        already committed by the time this runs, so there is nothing to abort.
+        """
+        if channel in cache:
+            return cache[channel]
+
+        adapter: BaseChannelAdapter | None = None
+        if self._whatsapp is not None:
+            try:
+                adapter = outbound_adapter(channel, whatsapp_client=self._whatsapp)
+            except ChannelUnavailableError as exc:
+                logger.warning(
+                    "closing_channel_unavailable",
+                    channel=channel,
+                    error=str(exc),
+                )
+        cache[channel] = adapter
+        return adapter
+
+    async def _close_adapters(self, cache: AdapterCache) -> None:
+        """Release every transport this sweep opened.
+
+        ``WhatsAppAdapter.aclose`` is a no-op over the shared cached client,
+        so closing the whole cache indiscriminately cannot pull the transport
+        out from under the rest of the process. A failure here is logged and
+        swallowed: the sessions are already closed, and raising would turn a
+        completed sweep into a retried one.
+        """
+        for channel, adapter in cache.items():
+            if adapter is None:
+                continue
+            try:
+                await adapter.aclose()
+            except Exception:  # pragma: no cover - defensive
+                logger.warning(
+                    "closing_adapter_close_failed", channel=channel, exc_info=True
+                )
+
+    async def _finish(self, target: IdleSession, cache: AdapterCache) -> None:
         """Send the goodbye if it is allowed, close the session, announce it.
 
         The announcement is deliberately here rather than in ``_send_closing``,
         where it used to live. A session closes for several reasons that never
         reach a send -- the closing message switched off, empty copy, nothing
-        ever received, Meta's service window expired, or the send itself
-        failing -- and in every one of those the dashboard previously heard
-        nothing at all. That is the bad case, not the rare one: the
-        conversation list stops polling while its event stream is connected,
-        so a healthy system was precisely the one where the stale row sat
-        there reading "active" until somebody pressed Refresh.
+        ever received, Meta's service window expired, the channel unavailable,
+        or the send itself failing -- and in every one of those the dashboard
+        previously heard nothing at all. That is the bad case, not the rare
+        one: the conversation list stops polling while its event stream is
+        connected, so a healthy system was precisely the one where the stale
+        row sat there reading "active" until somebody pressed Refresh.
         """
-        if await self._should_send_closing(conversation_id):
-            await self._send_closing(conversation_id, wa_id)
+        if await self._should_send_closing(target):
+            adapter = self._adapter_for(target.channel, cache)
+            if adapter is not None:
+                await self._send_closing(target, adapter)
 
-        await self._conversations.close(conversation_id)
+        await self._conversations.close(target.conversation_id)
         await self._session.commit()
-        await self._announce_closed(conversation_id)
+        await self._announce_closed(target.conversation_id)
 
     async def _announce_closed(self, conversation_id: int) -> None:
         """Publish conversation.closed once the close is durable.
@@ -236,7 +331,21 @@ class SessionService:
         sweep happened to know, so ``closed_at`` and ``updated_at`` are the
         values the database actually wrote rather than this process's guess at
         them. One extra SELECT per closed session, on a path that already
-        makes a WhatsApp call.
+        makes a provider call.
+
+        The reload is explicit because ``get`` on its own is not enough.
+        Closing the session UPDATEs the row, which expires ``updated_at`` on
+        whatever instance is already in this session's identity map, and
+        ``get`` hands that same instance straight back rather than re-reading
+        it. Touching the expired attribute would then have to fetch it, and an
+        implicit fetch during plain attribute access is the one thing asyncio
+        cannot service here -- SQLAlchemy raises MissingGreenlet instead of
+        blocking. Awaiting the reload is what makes that IO legal.
+
+        Whether the instance is in the identity map at all depends on the
+        caller, which is why this survived: the sweep's own Celery task opens
+        a fresh session and loads nothing, so it takes a caller that read the
+        conversation before closing it to reach the bad path.
 
         Publishing strictly after the commit matters: a dashboard that acts on
         this event will refetch, and an event sent from inside the transaction
@@ -244,6 +353,10 @@ class SessionService:
         """
         conversation = await self._conversations.get(conversation_id)
         if conversation is None:  # pragma: no cover - deleted mid-sweep
+            return
+        try:
+            await self._session.refresh(conversation)
+        except InvalidRequestError:  # pragma: no cover - deleted mid-sweep
             return
         await publish(
             conversation_closed(
@@ -256,22 +369,30 @@ class SessionService:
             self._settings,
         )
 
-    async def _should_send_closing(self, conversation_id: int) -> bool:
+    async def _should_send_closing(self, target: IdleSession) -> bool:
         """Whether a goodbye may actually be sent to this session.
 
-        Two reasons it may not, and both still close the session silently.
+        Several reasons it may not, and all of them still close the session
+        silently.
 
         The feature can simply be switched off, in which case sessions are
         still bounded -- the next message starts a fresh one and is greeted --
         they just end without a parting message.
 
-        The other is Meta's 24-hour customer service window, and it is not a
+        The customer may have no id to address. That is not expected after
+        0013 made ``external_id`` NOT NULL, but the claim is one-way, so
+        preferring a silent close to a send to the empty string is the only
+        safe reading.
+
+        The last is Meta's 24-hour customer service window, and it is not a
         theoretical concern: it is exactly what happens the first time this
         migration runs against an existing database, and after any outage
         longer than a day. Every conversation left open for months becomes
         eligible at once, and without this check the sweeper would attempt a
         send for each one, be rejected by Meta each time, and turn a routine
-        deploy into thousands of failing API calls.
+        deploy into thousands of failing API calls. One constant covers every
+        channel because every channel profile declares the same 24 hours; the
+        day one does not, this reads it from the profile instead.
 
         Note that PREVENT_DUPLICATE_CLOSING is not consulted here. The
         guarantee it names is structural rather than conditional: this method
@@ -286,8 +407,15 @@ class SessionService:
             return False
         if self._whatsapp is None:  # pragma: no cover - not wired for sending
             return False
+        if not target.recipient_id:
+            logger.warning(
+                "closing_skipped_unaddressable_customer",
+                conversation_id=target.conversation_id,
+                channel=target.channel,
+            )
+            return False
 
-        last_inbound = await self._messages.last_inbound_at(conversation_id)
+        last_inbound = await self._messages.last_inbound_at(target.conversation_id)
         if last_inbound is None:
             # Nothing was ever received here, so there is no open window and
             # nobody expecting a reply.
@@ -295,12 +423,15 @@ class SessionService:
         if datetime.now(UTC) - last_inbound > CUSTOMER_SERVICE_WINDOW:
             logger.info(
                 "closing_skipped_outside_service_window",
-                conversation_id=conversation_id,
+                conversation_id=target.conversation_id,
+                channel=target.channel,
             )
             return False
         return True
 
-    async def _send_closing(self, conversation_id: int, wa_id: str) -> None:
+    async def _send_closing(
+        self, target: IdleSession, adapter: BaseChannelAdapter
+    ) -> None:
         """Deliver the closing copy and record it in the transcript.
 
         A failed send is logged and swallowed. The claim has already been
@@ -308,34 +439,46 @@ class SessionService:
         behaviour rather than a gap: retrying a send whose outcome is unknown
         is precisely how a customer gets thanked for their enquiry twice.
 
+        The provider id is read by ``provider_message_id`` because the two
+        Graph surfaces answer in different shapes; reading only the WhatsApp
+        one stored NULL for every Messenger goodbye, which is what a later
+        delivery-status update has to match against.
+
         The activity event below announces the new transcript line. It is not
         the close announcement -- ``_finish`` publishes that separately, for
         every close -- and the two are distinct on purpose: this one says a
         message arrived, that one says the session ended.
         """
         text = self.closing_text
+        recipient = target.recipient_id or ""
         try:
-            result = await self._whatsapp.send_text(wa_id, text)  # type: ignore[union-attr]
+            result = await adapter.send_text(recipient, text)
         except ExternalServiceError as exc:
             logger.error(
                 "closing_send_failed",
-                conversation_id=conversation_id,
+                conversation_id=target.conversation_id,
+                channel=target.channel,
                 error=str(exc),
             )
             return
 
-        wa_message_id = (result.get("messages") or [{}])[0].get("id")
         await self._messages.create(
-            conversation_id=conversation_id,
+            conversation_id=target.conversation_id,
             direction="outbound",
             content=text,
-            wa_message_id=wa_message_id,
+            wa_message_id=provider_message_id(result),
             status="sent",
         )
-        logger.info("closing_message_sent", conversation_id=conversation_id)
+        logger.info(
+            "closing_message_sent",
+            conversation_id=target.conversation_id,
+            channel=target.channel,
+        )
         # inbound=False: refresh any dashboard showing this conversation
         # without pulling an operator's attention to it. Nobody is waiting.
         await publish(
-            conversation_activity(conversation_id=conversation_id, inbound=False),
+            conversation_activity(
+                conversation_id=target.conversation_id, inbound=False
+            ),
             self._settings,
         )

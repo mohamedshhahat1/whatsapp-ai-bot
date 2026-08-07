@@ -28,6 +28,20 @@ class ConversationRead(BaseModel):
 
     id: int
     user_id: int
+    # Which app the customer wrote from: "whatsapp", "messenger", and so on.
+    # See app/channels/constants.py for the full set and for the icon each
+    # one is displayed with.
+    #
+    # Defaulted rather than required, on the same backward-compatibility rule
+    # as the lifecycle fields below: every conversation that predates the
+    # channel work is on WhatsApp, and a client that ignores this field is
+    # unaffected by its arrival.
+    #
+    # An operator needs this before they need anything else on the row. The
+    # reply window, what formatting survives, and whether an attachment can be
+    # opened all differ by channel, so "where did this come from" is not
+    # decoration.
+    channel: str = WHATSAPP
     # Lifecycle and ownership are separate axes: a conversation stays "active"
     # for the whole time a human operator owns it.
     #
@@ -125,6 +139,12 @@ class ConversationSummary(BaseModel):
     Enough to date a session and say how big it was, without its transcript:
     the panel lists several and loading every message of each would be a large
     payload for a sidebar nobody has clicked yet.
+
+    Deliberately carries no channel. Every summary here belongs to the same
+    customer as the conversation that produced the panel, and identity is
+    (channel, external_id) -- so a customer cannot change channel, and the
+    field would be the same value repeated down the list. ``CustomerHistory``
+    reports it once instead.
     """
 
     model_config = ConfigDict(from_attributes=True)

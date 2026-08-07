@@ -378,6 +378,87 @@ jobs:
           retention-days: 7
 
   # ==========================================================================
+  # Mobile
+  # ==========================================================================
+  mobile:
+    name: Flutter (codegen, analyze, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to a channel rather than a version, which is the weaker choice
+      # and is deliberate. pubspec.yaml constrains intl to ^0.20.2 and records
+      # that analyzer >=6.6.0 needs a _macros package the SDK no longer ships,
+      # so the floor is a recent stable -- but the repository does not record
+      # which one, and pinning a version nobody has resolved against would
+      # trade a floating dependency for a red job. Pin it once a green run has
+      # named a version.
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      # The step this job exists for. freezed and json_serializable output is
+      # not committed, so mobile/ does not compile from a clean checkout until
+      # this runs -- and a @freezed model that gains a field without its
+      # generated code being regenerated fails here rather than on the next
+      # person's laptop.
+      #
+      # --delete-conflicting-outputs is required, not decorative: a stale
+      # .g.dart from an earlier run otherwise blocks the build with a conflict
+      # instead of being replaced.
+      #
+      # Reads mobile/build.yaml, which renames every JSON field to snake_case
+      # to match the API. Without it the generated fromJson looks for camelCase
+      # keys the backend never sends.
+      - name: Generate code
+        id: codegen
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # Correcting the note that used to sit here, which claimed warnings and
+      # lints surface without blocking: they do not. flutter analyze exits
+      # non-zero on ANY issue, infos included, unless given --no-fatal-infos
+      # --no-fatal-warnings. The app currently reports 171 issues and zero
+      # errors, so this step is red for pre-existing style debt alone.
+      #
+      # Left blocking on purpose. The debt is real and suppressing it with
+      # flags would hide the deprecated withOpacity calls and the raw generic
+      # types along with the trailing commas.
+      - name: Analyze
+        run: flutter analyze
+
+      # Gated on codegen rather than on Analyze, so the analyzer backlog above
+      # cannot hide a genuine test failure behind a trailing-comma count. The
+      # Python lint job runs ruff, black and mypy independently for exactly
+      # this reason. The job still fails if either step fails.
+      #
+      # The guard that used to live here skipped the suite whenever
+      # mobile/test/ was empty, and its own comment said to delete it with the
+      # first test. Done -- the suite is required now.
+      - name: Test
+        if: always() && steps.codegen.outcome == 'success'
+        run: flutter test --reporter expanded --coverage
+
+      - name: Upload Flutter coverage
+        if: always() && steps.codegen.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flutter-coverage-${{ github.sha }}
+          path: mobile/coverage/lcov.info
+          if-no-files-found: warn
+          retention-days: 30
+
+  # ==========================================================================
   # Docker
   # ==========================================================================
   docker:
@@ -494,6 +575,10 @@ jobs:
   build:
     name: Publish image
     runs-on: ubuntu-latest
+    # `mobile` is deliberately absent. The image contains the API and the
+    # dashboard build; no Flutter output ships in it, so blocking a backend
+    # release on the mobile app would couple two things that do not deploy
+    # together.
     needs: [test, migrations, frontend, docker, secret-scan, python-security]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:

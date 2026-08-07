@@ -111,6 +111,13 @@ async def _sweep_idle_sessions() -> int:
     """Close every conversation that has gone idle.
 
     No OpenAI client: a closing message is fixed company copy, never generated.
+
+    Only the WhatsApp client is built here, and that is not an oversight. The
+    sweep sends on whichever channel each claimed session came from, but the
+    two kinds of transport are acquired differently: WhatsApp reuses this
+    shared Cloud API client, while every other channel's adapter builds its
+    own from channel settings when the sweep first needs it. SessionService
+    closes those in its own ``finally``, inside this same event loop.
     """
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
@@ -300,9 +307,11 @@ def close_idle_sessions(self: Task) -> None:
     disjoint set, and a retry claims only what the failed attempt did not.
     Neither can produce a second goodbye.
 
-    Only WhatsApp conversations are swept; see
-    ``ConversationRepository.claim_idle_sessions`` for why, and for what that
-    costs on the other channels.
+    WhatsApp and Messenger conversations are both swept, and each goodbye
+    leaves through the adapter for the channel its session came from. The set
+    is not simply every channel; see
+    ``ConversationRepository.SWEEPABLE_CHANNELS`` for what membership of it
+    promises and why a channel that cannot send must stay out of it.
 
     Retries are few and quick on purpose. A sweep is a statement about the
     present, so a failed one is better replaced by the next scheduled tick

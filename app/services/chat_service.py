@@ -108,9 +108,11 @@ The stage 4 and 6 touches pass ``outgoing=True``, which is what
 RESET_IDLE_TIMER_ON_OUTGOING_MESSAGE switches off. Turning it off restores
 exactly the race described above, and is not recommended.
 
-Note that the sweeper only claims WhatsApp conversations today, so sessions on
-other channels never idle-close and therefore never re-welcome. See
-``ConversationRepository.claim_idle_sessions``.
+The sweeper claims WhatsApp and Messenger conversations. A channel joins
+``ConversationRepository.SWEEPABLE_CHANNELS`` only once it has an outbound
+adapter, because closing a session sends a goodbye and a claim that cannot be
+delivered is a session closed in silence. Sessions on the remaining channels
+never idle-close, and so never re-welcome.
 """
 
 from collections.abc import Awaitable, Callable

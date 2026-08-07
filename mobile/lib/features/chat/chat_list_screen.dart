@@ -11,6 +11,7 @@ import '../../shared/widgets/loading_shimmer.dart';
 import '../../shared/widgets/error_view.dart';
 import 'chat_list_provider.dart';
 import 'chat_models.dart';
+import 'widgets/channel_badge.dart';
 import 'widgets/conversation_tile.dart';
 
 class ChatListScreen extends ConsumerStatefulWidget {
@@ -51,7 +52,16 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
     final state = ref.watch(chatListProvider);
     final notifier = ref.read(chatListProvider.notifier);
     final filtered = notifier.filtered;
-    final hasChips = state.modeFilter != null || state.statusFilter != null;
+    // Only offered once the loaded rows actually span more than one channel.
+    // See ChatListNotifier.availableChannels.
+    final channels = notifier.availableChannels;
+    final hasChips = state.modeFilter != null ||
+        state.statusFilter != null ||
+        state.channelFilter != null;
+    // Whether ANY narrowing is in effect, which decides what the empty state
+    // should say. Without this it blamed the status filter for an empty list
+    // that a channel filter or a search had caused.
+    final isNarrowed = hasChips || (state.searchQuery?.isNotEmpty ?? false);
 
     return Scaffold(
       body: CustomScrollView(
@@ -83,6 +93,17 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                   PullDownMenuItem(title: 'All sessions', icon: Icons.all_inclusive, onTap: () => notifier.setStatusFilter(null)),
                   PullDownMenuItem(title: 'Active only', icon: Icons.chat_bubble_outline, onTap: () => notifier.setStatusFilter(statusActive)),
                   PullDownMenuItem(title: 'Closed only', icon: Icons.lock_outline, onTap: () => notifier.setStatusFilter(statusClosed)),
+                  if (channels.length > 1) ...[
+                    const PullDownMenuDivider.large(),
+                    const PullDownMenuTitle(title: Text('Channel')),
+                    PullDownMenuItem(title: 'All channels', icon: Icons.all_inclusive, onTap: () => notifier.setChannelFilter(null)),
+                    for (final channel in channels)
+                      PullDownMenuItem(
+                        title: ChannelDisplay.of(channel).label,
+                        icon: ChannelDisplay.of(channel).icon,
+                        onTap: () => notifier.setChannelFilter(channel),
+                      ),
+                  ],
                 ],
                 buttonBuilder: (context, showMenu) => IconButton(icon: const Icon(Icons.filter_list), onPressed: showMenu),
               ),
@@ -118,6 +139,18 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
                       onDeleted: () => notifier.setStatusFilter(null),
                       selected: true,
                     ),
+                  if (state.channelFilter != null)
+                    FilterChip(
+                      avatar: Icon(
+                        ChannelDisplay.of(state.channelFilter!).icon,
+                        size: 14,
+                        color: ChannelDisplay.of(state.channelFilter!).color,
+                      ),
+                      label: Text(ChannelDisplay.of(state.channelFilter!).label),
+                      onSelected: (_) => notifier.setChannelFilter(null),
+                      onDeleted: () => notifier.setChannelFilter(null),
+                      selected: true,
+                    ),
                 ]),
               ),
             ),
@@ -129,10 +162,10 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
             SliverToBoxAdapter(
               child: _EmptyState(
                 icon: Icons.chat_bubble_outline,
-                title: state.statusFilter == null ? 'No conversations' : 'No matching sessions',
-                subtitle: state.statusFilter == null
-                    ? 'Conversations will appear here when customers message your bot.'
-                    : 'No ${state.statusFilter} sessions right now. Clear the filter to see the rest.',
+                title: isNarrowed ? 'No matching conversations' : 'No conversations',
+                subtitle: isNarrowed
+                    ? 'Nothing matches the filters in effect. Clear them to see the rest.'
+                    : 'Conversations will appear here when customers message your bot.',
               ),
             )
           else

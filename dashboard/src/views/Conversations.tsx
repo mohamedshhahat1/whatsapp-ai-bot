@@ -1,7 +1,9 @@
 import { useState } from "react"
 
 import {
+  ALL_CHANNELS,
   ApiError,
+  CHANNEL_WHATSAPP,
   MODE_HUMAN,
   PAGE_SIZE,
   STATUS_CLOSED,
@@ -9,14 +11,16 @@ import {
   api,
 } from "../api"
 import type {
+  Channel,
   Conversation,
   ConversationStatus,
+  CustomerHistory,
   Message,
   SessionState,
 } from "../api"
 import { Empty, Loader, Refreshing, useAsync } from "../components/Async"
 import { useEvents, useEventsStatus } from "../events"
-import { datetime } from "../format"
+import { channelDisplay, datetime } from "../format"
 
 // Polling is now the fallback, not the mechanism: these intervals apply only
 // while the event stream is down, so a Redis outage makes the dashboard slower
@@ -78,6 +82,50 @@ function isUnclaimedLead(conversation: Conversation): boolean {
 
 function isClosed(conversation: Pick<Conversation, "status">): boolean {
   return conversation.status === STATUS_CLOSED
+}
+
+// Undefined means an older backend that predates the field, and everything
+// from that era was WhatsApp.
+function channelOf(conversation: Conversation): Channel {
+  return conversation.channel ?? CHANNEL_WHATSAPP
+}
+
+// The channels present in the rows on screen, in the canonical order.
+//
+// Used to decide whether the channel column and filter are worth showing at
+// all. Derived from the rows rather than from ALL_CHANNELS so the UI
+// describes this deployment: with only WhatsApp enabled -- the default --
+// neither appears, instead of a column of identical green circles and a
+// filter with four options that can never match.
+//
+// It sees the loaded page only. A channel appearing for the first time on
+// page four is not offered until page four is reached; that is the same
+// limitation the filter itself has, and both are noted in the API wrapper.
+function channelsIn(rows: Conversation[]): Channel[] {
+  const seen = new Set<string>()
+  for (const row of rows) seen.add(channelOf(row))
+  const known = ALL_CHANNELS.filter((channel) => seen.has(channel))
+  const unknown = [...seen]
+    .filter((channel) => !ALL_CHANNELS.includes(channel))
+    .sort()
+  return [...known, ...unknown]
+}
+
+// Something to call this customer, whatever channel they arrived on.
+//
+// This read `name ? name (wa_id) : wa_id`, which rendered as an empty string
+// for an unnamed Messenger customer: the backend sends wa_id: "" for anyone
+// who did not arrive on WhatsApp, and deliberately does not write a
+// page-scoped id there, because a field displayed as a phone number should
+// not sometimes hold something else. external_id is the one identity field
+// populated for every channel.
+//
+// The final fallback is not padding: an older backend sends neither
+// external_id nor channel, and a customer with no name would otherwise leave
+// this blank again.
+function customerLabel(history: CustomerHistory): string {
+  const id = history.external_id || history.wa_id || `user ${history.user_id}`
+  return history.name ? `${history.name} (${id})` : id
 }
 
 // Plain-language rendering of the computed server-side state. The raw values
@@ -162,12 +210,13 @@ function CustomerHistoryPanel({
 
   if (history.error || !history.data) return null
   const { data } = history
-  const label = data.name ? `${data.name} (${data.wa_id})` : data.wa_id
+  const channel = channelDisplay(data.channel)
 
   return (
     <div style={{ marginTop: 4, marginBottom: 12 }}>
       <p className="muted" style={{ fontSize: 12, margin: 0 }}>
-        {label} - {data.total_conversations}{" "}
+        <span title={channel.label}>{channel.icon}</span>{" "}
+        {customerLabel(data)} - {data.total_conversations}{" "}
         {data.total_conversations === 1 ? "conversation" : "conversations"} in
         total
       </p>
@@ -272,6 +321,11 @@ function ConversationView({
   const isLead = detail.data?.tag === TAG_SALES_LEAD
   const closed = detail.data ? isClosed(detail.data) : false
   const state = detail.data?.session_state
+  // Shown only when it is not the default, on the same reasoning as the list
+  // column: a WhatsApp badge on a WhatsApp-only deployment is permanent
+  // furniture that distinguishes nothing.
+  const channel = detail.data ? channelOf(detail.data) : CHANNEL_WHATSAPP
+  const showChannel = Boolean(detail.data) && channel !== CHANNEL_WHATSAPP
   // No operator identity exists server side, so "someone else has this" is a
   // name comparison. It is worth doing anyway: the common accident is two
   // people answering the same customer, not a malicious takeover.
@@ -377,6 +431,11 @@ function ConversationView({
           {isLead && <span className="badge lead">Sales lead</span>}
         </h2>
         <div className="row">
+          {showChannel && (
+            <span className="badge">
+              {channelDisplay(channel).icon} {channelDisplay(channel).label}
+            </span>
+          )}
           {detail.data && closed && <span className="badge closed">closed</span>}
           {detail.data && !closed && sessionLabel(state) && (
             <span className="badge">{sessionLabel(state)}</span>
@@ -534,6 +593,10 @@ export default function Conversations({
   const [statusFilter, setStatusFilter] = useState<ConversationStatus | null>(
     null,
   )
+  // null means every channel. Applied client-side: the list endpoint takes no
+  // channel parameter, so this narrows the loaded page rather than fetching a
+  // full page of matches.
+  const [channelFilter, setChannelFilter] = useState<Channel | null>(null)
   const conversations = useAsync(
     () => api.conversations(PAGE_SIZE, offset, statusFilter),
     [offset, statusFilter],
@@ -549,13 +612,27 @@ export default function Conversations({
   })
 
   const rows = conversations.data ?? []
-  // The endpoint returns a bare array with no total, so a full page is the
-  // only evidence that another one exists.
+  const channels = channelsIn(rows)
+  // Only worth the width once there is something to distinguish.
+  const showChannel = channels.length > 1
+  const visibleRows = channelFilter
+    ? rows.filter((row) => channelOf(row) === channelFilter)
+    : rows
+  // Computed from the UNFILTERED page on purpose. The server decides whether
+  // another page exists; a client-side filter hiding rows says nothing about
+  // that, and using visibleRows here would disable Next as soon as a filter
+  // matched fewer than PAGE_SIZE rows on the current page.
   const hasNext = rows.length === PAGE_SIZE
 
   function changeFilter(value: string) {
     setOffset(0) // Page 3 of "all" is rarely page 3 of "active".
     setStatusFilter(value === "" ? null : (value as ConversationStatus))
+  }
+
+  function changeChannel(value: string) {
+    // No offset reset: this filter does not change what the server returns,
+    // so the current page is still the current page.
+    setChannelFilter(value === "" ? null : (value as Channel))
   }
 
   return (
@@ -572,6 +649,22 @@ export default function Conversations({
             />{" "}
             Open new customer messages automatically
           </label>
+          {showChannel && (
+            <select
+              aria-label="Filter by channel"
+              value={channelFilter ?? ""}
+              style={{ width: "auto" }}
+              onChange={(event) => changeChannel(event.target.value)}
+            >
+              <option value="">All channels</option>
+              {channels.map((channel) => (
+                <option key={channel} value={channel}>
+                  {channelDisplay(channel).icon}{" "}
+                  {channelDisplay(channel).label}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             aria-label="Filter by status"
             value={statusFilter ?? ""}
@@ -589,19 +682,22 @@ export default function Conversations({
 
       <div className="panel">
         <Loader loading={conversations.loading} error={conversations.error}>
-          {rows.length === 0 && (
+          {visibleRows.length === 0 && (
             <Empty>
-              {statusFilter
-                ? `No ${statusFilter} conversations.`
-                : "No conversations yet."}
+              {channelFilter
+                ? `No ${channelDisplay(channelFilter).label} conversations on this page.`
+                : statusFilter
+                  ? `No ${statusFilter} conversations.`
+                  : "No conversations yet."}
             </Empty>
           )}
-          {rows.length > 0 && (
+          {visibleRows.length > 0 && (
             <div className="table-scroll">
               <table>
                 <thead>
                   <tr>
                     <th>ID</th>
+                    {showChannel && <th>Channel</th>}
                     <th>Customer</th>
                     <th>Status</th>
                     <th>Answered by</th>
@@ -609,7 +705,7 @@ export default function Conversations({
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((conversation) => (
+                  {visibleRows.map((conversation) => (
                     <tr
                       key={conversation.id}
                       className={
@@ -634,6 +730,14 @@ export default function Conversations({
                           <span className="badge lead">Lead</span>
                         )}
                       </td>
+                      {showChannel && (
+                        <td>
+                          {channelDisplay(channelOf(conversation)).icon}{" "}
+                          <span className="muted" style={{ fontSize: 12 }}>
+                            {channelDisplay(channelOf(conversation)).label}
+                          </span>
+                        </td>
+                      )}
                       {/* One customer has many sessions, so this is not a
                           unique row identity -- the same user_id appearing
                           several times is correct, not a duplicate. */}
@@ -688,6 +792,9 @@ export default function Conversations({
             </button>
             <span className="muted" style={{ fontSize: 12 }}>
               {offset + 1} - {offset + rows.length}
+              {channelFilter && visibleRows.length !== rows.length
+                ? ` (${visibleRows.length} shown)`
+                : ""}
             </span>
             <button
               disabled={!hasNext}

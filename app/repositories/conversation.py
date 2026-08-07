@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.channels.constants import WHATSAPP
+from app.channels.constants import MESSENGER, WHATSAPP
 from app.core.exceptions import ConflictError
 from app.models.conversation import (
     MODE_BOT,
@@ -75,12 +75,35 @@ _REVIVE: dict[str, Any] = {
     "closing_sent_at": None,
 }
 
+# Which channels the idle sweeper may close, in one reviewable line.
+#
+# Membership is a statement that three things are true of a channel: it has a
+# session worth bounding, a customer id the sweep can resolve, and an outbound
+# adapter that can carry the goodbye. Adding a channel here without the third
+# is the specific way this goes wrong quietly -- the claim stamps
+# closing_sent_at before anything is sent and only ever considers rows where
+# that column is null, so a session claimed for a channel that cannot send is
+# marked closed-and-greeted forever and the customer is told nothing.
+#
+# Instagram DM belongs here as soon as it has an adapter; it has sessions and
+# a resolvable recipient today, and only the transport is missing. The two
+# comment channels never will -- a comment thread is public and has no session
+# to close, and their profiles say so.
+SWEEPABLE_CHANNELS = frozenset({WHATSAPP, MESSENGER})
+
 
 class IdleSession(NamedTuple):
-    """A session claimed for closing, with what the sender needs to act."""
+    """A session claimed for closing, with what the sender needs to act.
+
+    ``recipient_id`` is the customer's id on their own channel -- a phone
+    number on WhatsApp, a page-scoped id on Messenger -- and is None for a row
+    carrying neither, which the caller must treat as unaddressable rather than
+    sending to the empty string.
+    """
 
     conversation_id: int
-    wa_id: str
+    channel: str
+    recipient_id: str | None
 
 
 class ConversationRepository(BaseRepository):
@@ -432,20 +455,14 @@ class ConversationRepository(BaseRepository):
         cares about still works: resuming the AI sets mode back to bot and
         resets the timer, so the session becomes eligible from that moment.
 
-        Restricted to WhatsApp for a harder reason. The claim is destructive
-        and one-way: it stamps ``closing_sent_at``, and this method only ever
-        considers rows where that column is null, so a claimed session can
-        never be claimed again. :meth:`idle_targets` then resolves the id to
-        ``User.wa_id``, which is NULL for every customer who arrived on
-        Messenger or Instagram. Without this filter the first idle Messenger
-        conversation would be permanently marked as closed-and-greeted and the
-        customer would be sent nothing at all.
-
-        The cost is that sessions on other channels never idle-close, and so
-        never become new sessions either. Lifting it needs a sweeper that
-        resolves a recipient per channel and dispatches through that channel's
-        adapter, which is a change to the live closing path and is deliberately
-        not made here.
+        Restricted to :data:`SWEEPABLE_CHANNELS` for a harder reason. The
+        claim is destructive and one-way: it stamps ``closing_sent_at``, and
+        this method only ever considers rows where that column is null, so a
+        claimed session can never be claimed again. A channel whose customers
+        cannot be resolved to a recipient, or which has no adapter to send
+        through, would therefore have its first idle session permanently
+        marked as closed-and-greeted with nothing delivered. Membership of
+        that set is the promise that both exist; see its definition.
 
         ``limit`` bounds one pass so a long outage cannot produce a single
         enormous transaction; the next tick takes the next batch.
@@ -455,7 +472,7 @@ class ConversationRepository(BaseRepository):
             .where(
                 Conversation.status == STATUS_ACTIVE,
                 Conversation.mode == MODE_BOT,
-                Conversation.channel == WHATSAPP,
+                Conversation.channel.in_(SWEEPABLE_CHANNELS),
                 Conversation.closing_sent_at.is_(None),
                 Conversation.last_activity_at < idle_before,
             )
@@ -477,22 +494,42 @@ class ConversationRepository(BaseRepository):
         return [row[0] for row in result.all()]
 
     async def idle_targets(self, conversation_ids: list[int]) -> list[IdleSession]:
-        """Resolve claimed session ids to the WhatsApp numbers to send to.
+        """Resolve claimed session ids to a channel and a recipient.
 
-        WhatsApp only, and safe to leave that way because
-        :meth:`claim_idle_sessions` is the sole producer of these ids and
-        filters to that channel. ``User.wa_id`` is NULL on every other
-        channel, so a row reaching here from anywhere else would resolve to a
-        recipient of None.
+        The channel comes from the conversation rather than from the user so
+        that it describes the visit being closed, which is the thing the
+        goodbye is about.
+
+        A row whose customer has neither id resolves to a recipient of None
+        rather than being dropped. Dropping it would be worse than useless:
+        :meth:`claim_idle_sessions` has already stamped ``closing_sent_at``,
+        so a session missing from this list is one that can never be claimed
+        again and never closed either. The caller closes it silently instead.
         """
         if not conversation_ids:
             return []
         rows = await self.session.execute(
-            select(Conversation.id, User.wa_id)
+            select(
+                Conversation.id,
+                Conversation.channel,
+                User.external_id,
+                User.wa_id,
+            )
             .join(User, User.id == Conversation.user_id)
             .where(Conversation.id.in_(conversation_ids))
         )
-        return [IdleSession(conversation_id=row[0], wa_id=row[1]) for row in rows.all()]
+        return [
+            IdleSession(
+                conversation_id=row[0],
+                channel=row[1],
+                # The same rule as app.channels.outbound.recipient_id, applied
+                # to columns rather than to a loaded User. Deliberately not
+                # imported from there: that module reaches the HTTP clients,
+                # and a repository must not depend on the channel layer.
+                recipient_id=row[2] or row[3],
+            )
+            for row in rows.all()
+        ]
 
     async def close(self, conversation_id: int) -> None:
         """End a session.

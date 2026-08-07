@@ -28,13 +28,18 @@ conversation context layer for why that is worth stating.
 
 Why the style rules are repeated here
 -------------------------------------
-Form of address, message shape, the emoji rules, the WhatsApp formatting
+Form of address, message shape, the emoji rules, the message formatting
 syntax and the rule about not announcing that you are an AI all appear in the
 packaged persona as well. The duplication is deliberate: ``SYSTEM_PROMPT``
 replaces the persona wholesale, so a business that sets it would otherwise
 lose every one of those rules along with the Arabic. The response rules layer
 is always present, which makes it the right home for constraints that should
 hold whatever the persona says.
+
+It is also why no channel is named in it. The persona may reasonably talk
+about one platform -- it is copy for one business, and configuration can
+replace it -- but a layer that is emitted on WhatsApp, Messenger and Instagram
+alike cannot claim to know which one is carrying the reply.
 
 The pricing layer is the strongest case of that. It is last, not out of
 tidiness but because it is the only rule in the file that has to survive a
@@ -108,7 +113,7 @@ would otherwise be writing instructions for the bot. Four things stop that:
 
 None of this is a guarantee -- no prompt-level defence is -- but it removes
 the trivial attack, and the bot has no tools and no write access, so the blast
-radius of a successful injection is the wording of one WhatsApp reply.
+radius of a successful injection is the wording of one reply to one customer.
 
 Note that "these documents outrank your own knowledge" is a statement about
 *precedence of facts*, not about authority: the documents still cannot issue
@@ -376,8 +381,8 @@ class PromptBuilder:
             "sentence. Group a long list under short headings.\n"
             "- Keep it as short as the answer honestly allows. A structured "
             "list may run long; prose may not.\n"
-            "- WhatsApp does NOT render markdown. Bold is a single asterisk on "
-            "each side, *like this*, and a heading is simply a bold line. "
+            "- Messaging apps do NOT render markdown. Bold is a single asterisk "
+            "on each side, *like this*, and a heading is simply a bold line. "
             "Double asterisks, # headings, tables, code blocks and markdown "
             "links all reach the customer as literal characters: never use "
             "them. Italic is _underscores_, used rarely.\n"
