@@ -24,12 +24,14 @@
 # issues against it, so a stack started without it would serve a certificate
 # for the wrong name -- failing loudly here beats failing at the TLS handshake.
 #
-# ALERTING CREDENTIALS are the one exception to the secrets rule. Alertmanager
-# has no environment expansion of its own and only supports *_file for some
-# fields, so its config is rendered by envsubst at start-up from shell
-# environment variables. Put them in a root-owned 0600 env file and source it
-# before `docker compose up`; be aware they are visible via `docker inspect`
-# on the alertmanager-config init container. See docs/ALERTING.md.
+# ALERTING CREDENTIALS are Docker secrets like everything else. This used to be
+# the one exception, on the grounds that Alertmanager has no environment
+# expansion of its own -- but it supports the *_file form for all three
+# credentials in use (SMTP password, Slack webhook URL, Telegram bot token), so
+# Alertmanager reads them straight from /run/secrets and they are never
+# rendered into the config file or passed through the init container's
+# environment. Non-secret alerting settings -- hosts, ports, channels,
+# recipients -- remain ordinary variables. See docs/ALERTING.md.
 
 x-app-environment: &app-environment
   ENVIRONMENT: production
@@ -466,6 +468,14 @@ services:
       - alertmanager-config:/etc/alertmanager
       - ./monitoring/templates:/etc/alertmanager/templates:ro
       - alertmanagerdata:/alertmanager
+    # Alertmanager reads these itself, at notification time, via the *_file
+    # form of each field in alertmanager.yml.tmpl. They are mounted here and
+    # NOT on alertmanager-config: that container only renders the template and
+    # has no need to see a credential in any form.
+    secrets:
+      - alert_smtp_password
+      - alert_slack_webhook_url
+      - alert_telegram_bot_token
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
@@ -482,7 +492,13 @@ services:
 
   alertmanager-config:
     # Renders alertmanager.yml.tmpl. Alertmanager cannot expand environment
-    # variables itself and a Slack webhook URL cannot live in git.
+    # variables itself, so deployment-specific values are substituted here.
+    #
+    # NO CREDENTIALS. The SMTP password, Slack webhook URL and Telegram bot
+    # token are Docker secrets mounted on the `alertmanager` service and read
+    # by Alertmanager through the *_file fields, so they are neither in this
+    # container's environment nor in the rendered file. Only hosts, ports,
+    # channels, recipients and the chat id are substituted below.
     #
     # The envsubst variable list is EXPLICIT and must stay that way. A bare
     # `envsubst` also substitutes $labels and $value inside the Go notification
@@ -493,14 +509,11 @@ services:
       ALERT_SMTP_HOST: "${ALERT_SMTP_HOST:-}"
       ALERT_SMTP_PORT: "${ALERT_SMTP_PORT:-587}"
       ALERT_SMTP_USER: "${ALERT_SMTP_USER:-}"
-      ALERT_SMTP_PASSWORD: "${ALERT_SMTP_PASSWORD:-}"
       ALERT_EMAIL_FROM: "${ALERT_EMAIL_FROM:-}"
       ALERT_EMAIL_TO: "${ALERT_EMAIL_TO:-}"
-      ALERT_SLACK_WEBHOOK_URL: "${ALERT_SLACK_WEBHOOK_URL:-}"
       ALERT_SLACK_CHANNEL: "${ALERT_SLACK_CHANNEL:-#alerts}"
       ALERT_SLACK_CHANNEL_BACKUP: "${ALERT_SLACK_CHANNEL_BACKUP:-${ALERT_SLACK_CHANNEL:-#alerts}}"
       ALERT_SLACK_CHANNEL_COST: "${ALERT_SLACK_CHANNEL_COST:-${ALERT_SLACK_CHANNEL:-#alerts}}"
-      ALERT_TELEGRAM_BOT_TOKEN: "${ALERT_TELEGRAM_BOT_TOKEN:-}"
       ALERT_TELEGRAM_CHAT_ID: "${ALERT_TELEGRAM_CHAT_ID:-0}"
     volumes:
       - ./monitoring/alertmanager.yml.tmpl:/tmpl/alertmanager.yml.tmpl:ro
@@ -510,7 +523,7 @@ services:
       - -c
       - |
         set -e
-        envsubst '$$ALERT_SMTP_HOST $$ALERT_SMTP_PORT $$ALERT_SMTP_USER $$ALERT_SMTP_PASSWORD $$ALERT_EMAIL_FROM $$ALERT_EMAIL_TO $$ALERT_SLACK_WEBHOOK_URL $$ALERT_SLACK_CHANNEL $$ALERT_SLACK_CHANNEL_BACKUP $$ALERT_SLACK_CHANNEL_COST $$ALERT_TELEGRAM_BOT_TOKEN $$ALERT_TELEGRAM_CHAT_ID' \
+        envsubst '$$ALERT_SMTP_HOST $$ALERT_SMTP_PORT $$ALERT_SMTP_USER $$ALERT_EMAIL_FROM $$ALERT_EMAIL_TO $$ALERT_SLACK_CHANNEL $$ALERT_SLACK_CHANNEL_BACKUP $$ALERT_SLACK_CHANNEL_COST $$ALERT_TELEGRAM_CHAT_ID' \
           < /tmpl/alertmanager.yml.tmpl > /out/alertmanager.yml
         echo "rendered /etc/alertmanager/alertmanager.yml"
     restart: "no"
@@ -700,6 +713,17 @@ secrets:
   # because ./secrets/fcm_credentials does not exist yet.
   fcm_credentials:
     file: ./secrets/fcm_credentials
+  # Alerting credentials, read by Alertmanager itself through the *_file form
+  # of each field. Same empty-placeholder rule again: init-secrets.sh creates
+  # all three empty, which leaves the corresponding channel unconfigured
+  # rather than breaking the stack. Fill in the ones you use --
+  # see docs/ALERTING.md.
+  alert_smtp_password:
+    file: ./secrets/alert_smtp_password
+  alert_slack_webhook_url:
+    file: ./secrets/alert_slack_webhook_url
+  alert_telegram_bot_token:
+    file: ./secrets/alert_telegram_bot_token
 
 volumes:
   pgdata:
@@ -708,7 +732,8 @@ volumes:
   grafanadata:
   alertmanagerdata:
   # Rendered Alertmanager config. A volume rather than a bind mount so the
-  # substituted credentials never touch the host filesystem.
+  # rendered file never touches the host filesystem. It no longer contains any
+  # credential -- only the /run/secrets paths Alertmanager reads them from.
   alertmanager-config:
   # Rendered blackbox probe targets.
   prometheus-targets:
