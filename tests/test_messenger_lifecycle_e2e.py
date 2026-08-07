@@ -151,7 +151,7 @@ async def _arrive(session: AsyncSession, customer: Customer, suffix: str = "1") 
     await MessageRepository(session).create(
         conversation_id=customer.conversation_id,
         direction="inbound",
-        content="\\u0645\\u0645\\u0643\\u0646 \\u0627\\u0644\\u0623\\u0633\\u0639\\u0627\\u0631\\u061f",
+        content="\u0645\u0645\u0643\u0646 \u0627\u0644\u0623\u0633\u0639\u0627\u0631\u061f",
         wa_message_id=f"mid.in.{customer.external_id}.{suffix}",
     )
     await ConversationRepository(session).mark_welcome_sent(customer.conversation_id)
