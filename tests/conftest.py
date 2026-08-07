@@ -12,6 +12,14 @@ os.environ.setdefault("ADMIN_API_KEY", "test-admin-key")
 os.environ.setdefault("WHATSAPP_APP_SECRET", "")
 os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
 os.environ.setdefault("USE_TASK_QUEUE", "false")
+# The API pools database connections; the tests must not. run_db() opens a
+# fresh event loop per call and TestClient runs the app in another loop on its
+# own thread, and an asyncpg connection belongs to the loop that opened it --
+# a pooled connection would be handed to a loop that has already closed. Set
+# rather than defaulted, because inheriting a stray "true" from the
+# environment would break the suite in a way that looks nothing like its
+# cause. See app/db/session.py.
+os.environ["DB_POOL_ENABLED"] = "false"
 # CI may set REDIS_PASSWORD for the integration pipeline, but the unit tests
 # that construct Settings(environment="development") must not inherit it.
 # Pop it here so test_development_does_not_require_redis_auth sees a clean env.
