@@ -189,9 +189,7 @@ async def purge(session: AsyncSession, wa_id: str) -> None:
     await session.commit()
 
 
-async def purge_channel(
-    session: AsyncSession, channel: str, external_id: str
-) -> None:
+async def purge_channel(session: AsyncSession, channel: str, external_id: str) -> None:
     """Remove a customer identified the way the schema identifies them.
 
     :func:`purge` is left alone rather than widened: every existing caller
