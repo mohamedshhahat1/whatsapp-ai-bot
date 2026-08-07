@@ -542,11 +542,26 @@ jobs:
         with:
           image-ref: whatsapp-ai-bot:ci
           format: table
-          # CRITICAL only, and unfixed CVEs ignored. Failing on every HIGH in a
-          # Debian base image would break every build for reasons no change in
-          # this repository can fix, and a pipeline that is always red is a
-          # pipeline everybody learns to ignore.
-          severity: CRITICAL
+          # HIGH and CRITICAL both fail the build.
+          #
+          # This was CRITICAL-only, on the argument that failing on every HIGH
+          # in a Debian base image would break every build for reasons no
+          # change in this repository can fix, and that a pipeline which is
+          # always red is one everybody learns to ignore. That argument is
+          # answered by ignore-unfixed, which was already set: only
+          # vulnerabilities with a fix available can fail this step. A HIGH
+          # therefore blocks the build exactly when rebuilding on a patched
+          # base image would clear it, which is an action this repository can
+          # take -- and an unfixable one still cannot wedge the pipeline.
+          #
+          # Nothing is suppressed to achieve that. Unfixed findings are kept
+          # out of the GATE, not out of sight: the informational scan below
+          # runs every severity without ignore-unfixed and uploads the result.
+          #
+          # If a fixable HIGH ever appears that genuinely cannot be cleared by
+          # a base-image bump, record the CVE and the reason here rather than
+          # widening this back to CRITICAL.
+          severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
 
