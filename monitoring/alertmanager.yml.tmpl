@@ -2,8 +2,15 @@
 #
 # Rendered to alertmanager.yml by the alertmanager-config init service in
 # docker-compose.prod.yml. Alertmanager does not expand environment variables
-# itself, and baking a Slack webhook URL or SMTP password into a file in git
-# is not an option.
+# itself, so deployment-specific values have to be substituted in.
+#
+# CREDENTIALS ARE NOT SUBSTITUTED. The SMTP password, the Slack webhook URL
+# and the Telegram bot token are read by Alertmanager from Docker secrets at
+# /run/secrets/*, using the *_file form of each field. Only the PATHS appear
+# below. This is deliberate and is the difference from how this file used to
+# work: substituting the values wrote them into alertmanager.yml on a shared
+# volume, and required passing them through the init container's environment,
+# where `docker inspect` disclosed them.
 #
 # IMPORTANT -- the init service calls envsubst with an EXPLICIT variable list.
 # A bare `envsubst` would also substitute $labels and $value inside the Go
@@ -11,15 +18,17 @@
 # notifications with no detail in them. That failure is invisible until the
 # first real incident, which is the worst possible time to discover it.
 #
-# Channels are opt-in: a receiver whose credentials are unset renders to an
-# empty config block and is skipped. Configure at least one.
+# Channels are opt-in: a receiver whose credential secret is an empty file is
+# not usable, and init-secrets.sh creates all three empty. Configure at least
+# one -- see docs/ALERTING.md.
 
 global:
   resolve_timeout: 5m
   smtp_smarthost: "${ALERT_SMTP_HOST}:${ALERT_SMTP_PORT}"
   smtp_from: "${ALERT_EMAIL_FROM}"
   smtp_auth_username: "${ALERT_SMTP_USER}"
-  smtp_auth_password: "${ALERT_SMTP_PASSWORD}"
+  # Read from the Docker secret, never rendered into this file.
+  smtp_auth_password_file: /run/secrets/alert_smtp_password
   smtp_require_tls: true
 
 templates:
@@ -142,11 +151,15 @@ inhibit_rules:
 
 # ---------------------------------------------------------------------------
 # Receivers.
+#
+# api_url_file and bot_token_file rather than api_url and bot_token: the
+# credential is read from the secret mount at notification time and never
+# written into this file. See the header.
 # ---------------------------------------------------------------------------
 receivers:
   - name: default
     slack_configs:
-      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+      - api_url_file: /run/secrets/alert_slack_webhook_url
         channel: "${ALERT_SLACK_CHANNEL}"
         send_resolved: true
         title: '{{ template "slack.title" . }}'
@@ -154,13 +167,13 @@ receivers:
 
   - name: critical
     slack_configs:
-      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+      - api_url_file: /run/secrets/alert_slack_webhook_url
         channel: "${ALERT_SLACK_CHANNEL}"
         send_resolved: true
         title: '{{ template "slack.title" . }}'
         text: '{{ template "slack.text" . }}'
     telegram_configs:
-      - bot_token: "${ALERT_TELEGRAM_BOT_TOKEN}"
+      - bot_token_file: /run/secrets/alert_telegram_bot_token
         chat_id: ${ALERT_TELEGRAM_CHAT_ID}
         parse_mode: HTML
         send_resolved: true
@@ -174,13 +187,13 @@ receivers:
 
   - name: warning
     slack_configs:
-      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+      - api_url_file: /run/secrets/alert_slack_webhook_url
         channel: "${ALERT_SLACK_CHANNEL}"
         send_resolved: true
         title: '{{ template "slack.title" . }}'
         text: '{{ template "slack.text" . }}'
     telegram_configs:
-      - bot_token: "${ALERT_TELEGRAM_BOT_TOKEN}"
+      - bot_token_file: /run/secrets/alert_telegram_bot_token
         chat_id: ${ALERT_TELEGRAM_CHAT_ID}
         parse_mode: HTML
         send_resolved: true
@@ -188,7 +201,7 @@ receivers:
 
   - name: data-protection
     slack_configs:
-      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+      - api_url_file: /run/secrets/alert_slack_webhook_url
         channel: "${ALERT_SLACK_CHANNEL_BACKUP}"
         send_resolved: true
         title: '{{ template "slack.title" . }}'
@@ -202,7 +215,7 @@ receivers:
 
   - name: cost
     slack_configs:
-      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+      - api_url_file: /run/secrets/alert_slack_webhook_url
         channel: "${ALERT_SLACK_CHANNEL_COST}"
         send_resolved: true
         title: '{{ template "slack.title" . }}'
@@ -216,7 +229,7 @@ receivers:
 
   - name: chat-only
     slack_configs:
-      - api_url: "${ALERT_SLACK_WEBHOOK_URL}"
+      - api_url_file: /run/secrets/alert_slack_webhook_url
         channel: "${ALERT_SLACK_CHANNEL}"
         send_resolved: false
         title: '{{ template "slack.title" . }}'
