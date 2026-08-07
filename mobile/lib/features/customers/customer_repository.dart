@@ -15,7 +15,7 @@ class CustomerRepository {
       final res = await _dio.get(ApiEndpoints.customers(offset: offset, limit: limit));
       final list = res.data as List;
       return list.map((e) => CustomerActivity.fromJson(e as Map<String, dynamic>)).toList();
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 
   Future<List<UserRead>> listUsers({int offset = 0, int limit = 50}) async {
@@ -23,21 +23,21 @@ class CustomerRepository {
       final res = await _dio.get(ApiEndpoints.users(offset: offset, limit: limit));
       final list = res.data as List;
       return list.map((e) => UserRead.fromJson(e as Map<String, dynamic>)).toList();
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 
   Future<StatsRead> stats() async {
     try {
       final res = await _dio.get(ApiEndpoints.stats());
       return StatsRead.fromJson(res.data as Map<String, dynamic>);
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 
   Future<UnblockResponse> unblock(String waId) async {
     try {
       final res = await _dio.post(ApiEndpoints.unblock(waId));
       return UnblockResponse.fromJson(res.data as Map<String, dynamic>);
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 }
 
