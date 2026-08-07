@@ -44,9 +44,7 @@ async def _purge_channel(
 
 
 async def _count_wa(session: AsyncSession, wa_id: str) -> int:
-    total = await session.scalar(
-        select(func.count(User.id)).where(User.wa_id == wa_id)
-    )
+    total = await session.scalar(select(func.count(User.id)).where(User.wa_id == wa_id))
     return int(total or 0)
 
 
@@ -145,9 +143,7 @@ async def test_naming_one_constraint_would_leave_the_other_unguarded(
                     wa_id=wa_id,
                     name="Different channel",
                 )
-                .on_conflict_do_nothing(
-                    constraint="uq_users_channel_external_id"
-                )
+                .on_conflict_do_nothing(constraint="uq_users_channel_external_id")
             )
         await db.rollback()
 

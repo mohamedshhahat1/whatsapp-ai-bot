@@ -230,9 +230,7 @@ class ReplyService:
 
         # Raises ChannelUnavailableError -- also a 409 -- when the channel is
         # switched off or enabled without credentials.
-        adapter = outbound_adapter(
-            conversation.channel, whatsapp_client=self._whatsapp
-        )
+        adapter = outbound_adapter(conversation.channel, whatsapp_client=self._whatsapp)
 
         last_inbound = await self._messages.last_inbound_at(conversation.id)
         if last_inbound is None:

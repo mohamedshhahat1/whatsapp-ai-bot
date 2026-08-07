@@ -218,7 +218,5 @@ class TestUnaddressableCustomer:
         rather than quietly pass.
         """
         service = _service(_client(), enable_conversation_closing_message=True)
-        target = IdleSession(
-            conversation_id=7, channel=MESSENGER, recipient_id=None
-        )
+        target = IdleSession(conversation_id=7, channel=MESSENGER, recipient_id=None)
         assert await service._should_send_closing(target) is False
