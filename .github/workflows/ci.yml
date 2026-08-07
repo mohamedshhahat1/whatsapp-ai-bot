@@ -378,6 +378,67 @@ jobs:
           retention-days: 7
 
   # ==========================================================================
+  # Mobile
+  # ==========================================================================
+  mobile:
+    name: Flutter (codegen, analyze, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to a channel rather than a version, which is the weaker choice
+      # and is deliberate. pubspec.yaml constrains intl to ^0.20.2 and records
+      # that analyzer >=6.6.0 needs a _macros package the SDK no longer ships,
+      # so the floor is a recent stable -- but the repository does not record
+      # which one, and pinning a version nobody has resolved against would
+      # trade a floating dependency for a red job. Pin it once a green run has
+      # named a version.
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Resolve dependencies
+        run: flutter pub get
+
+      # The step this job exists for. freezed and json_serializable output is
+      # not committed, so mobile/ does not compile from a clean checkout until
+      # this runs -- and a @freezed model that gains a field without its
+      # generated code being regenerated fails here rather than on the next
+      # person's laptop.
+      #
+      # --delete-conflicting-outputs is required, not decorative: a stale
+      # .g.dart from an earlier run otherwise blocks the build with a conflict
+      # instead of being replaced.
+      - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      # Fails the job on analyzer errors. Warnings and lints from
+      # flutter_lints surface in the log without blocking, which is the same
+      # posture the dashboard job takes with eslint.
+      - name: Analyze
+        run: flutter analyze
+
+      # mobile/test/ does not exist yet. Failing on an absent directory would
+      # make this job permanently red; asserting success without running
+      # anything would be worse. The warning records which of the two
+      # happened. Delete the guard with the first test.
+      - name: Test
+        run: |
+          if [ -d test ] && [ -n "$(find test -name '*_test.dart' -print -quit)" ]; then
+            flutter test --reporter expanded
+          else
+            echo "::warning::no Flutter tests found under mobile/test/; codegen and analyze ran, nothing was executed"
+          fi
+
+  # ==========================================================================
   # Docker
   # ==========================================================================
   docker:
@@ -494,6 +555,10 @@ jobs:
   build:
     name: Publish image
     runs-on: ubuntu-latest
+    # `mobile` is deliberately absent. The image contains the API and the
+    # dashboard build; no Flutter output ships in it, so blocking a backend
+    # release on the mobile app would couple two things that do not deploy
+    # together.
     needs: [test, migrations, frontend, docker, secret-scan, python-security]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     permissions:
