@@ -13,6 +13,13 @@
 # Schema upgrades run in the one-shot `migrate` service before app and worker
 # start; no manual `alembic upgrade head` step is required on deploy.
 #
+# THREE PROCESSES run the application: `app` serves HTTP, `worker` consumes the
+# queue, and `beat` emits the scheduled ticks. All three are required. Dropping
+# beat does not break anything visibly -- it removes the idle-session sweep,
+# the closing message, the re-welcome that depends on a session having ended,
+# the operator-session purge and audit retention, while every container keeps
+# reporting healthy.
+#
 # DOMAIN is required. nginx renders its config from it and Let's Encrypt
 # issues against it, so a stack started without it would serve a certificate
 # for the wrong name -- failing loudly here beats failing at the TLS handshake.
@@ -189,6 +196,71 @@ services:
     # Must exceed CELERY_TASK_TIME_LIMIT (300s) so even a task being killed by
     # its own hard limit has time to unwind. Keep the two in step.
     stop_grace_period: 330s
+    restart: unless-stopped
+
+  beat:
+    # The scheduler. Emits the ticks defined in celery_app.py's beat_schedule:
+    # the idle-session sweep every 60s, the operator-session purge hourly and
+    # the audit-log purge daily. It executes nothing itself -- every tick is a
+    # message onto the webhooks queue that `worker` picks up.
+    #
+    # Without this service the stack looks completely healthy and quietly does
+    # none of that. Sessions open, get greeted and are tracked, and then never
+    # close: no goodbye is sent, and since a session that never ends never
+    # releases the customer's slot in uq_active_conversation_per_user, the
+    # welcome never fires a second time either.
+    image: ${APP_IMAGE:-ghcr.io/mohamedshhahat1/whatsapp-ai-bot:latest}
+    # --schedule is set explicitly because the default writes
+    # celerybeat-schedule into the working directory, which is /app here --
+    # application state inside the code directory of a disposable container.
+    # Losing the file on restart is fine: the schedule itself comes from
+    # celery_app.py and this only records when each task last ran.
+    command: >-
+      celery -A app.workers.celery_app.celery_app beat
+      --loglevel=info
+      --schedule=/tmp/celerybeat-schedule
+    environment: *app-environment
+    secrets: *app-secrets
+    # EXACTLY ONE. Two schedulers emit two ticks for every scheduled task. The
+    # conditional claim in ConversationRepository.claim_idle_sessions makes
+    # that harmless for correctness -- nobody is told goodbye twice -- so the
+    # symptom is not a visible bug but a silently doubled query load against
+    # the conversations table. Do not `docker compose up --scale beat=2`.
+    deploy:
+      replicas: 1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      # Beat has no inspect endpoint -- `celery inspect ping` answers for
+      # workers only -- so this reads the age of the schedule file instead.
+      # PersistentScheduler rewrites it every few minutes, so a stale file
+      # means the scheduler is wedged rather than merely idle, which is
+      # exactly the failure worth catching. A liveness check would not: a beat
+      # process can be alive and emitting nothing.
+      #
+      # The glob matters. shelve appends a backend-dependent suffix to the
+      # filename, so matching /tmp/celerybeat-schedule exactly would work on
+      # one base image and silently never match on another.
+      test:
+        - CMD
+        - python
+        - -c
+        - import glob, os, sys, time; f = glob.glob('/tmp/celerybeat-schedule*'); sys.exit(0 if f and time.time() - max(os.path.getmtime(p) for p in f) < 900 else 1)
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      # Generous: the file is not written until the first sync, which is
+      # several minutes after start-up.
+      start_period: 300s
+    # 30s, not the worker's 330s. Beat holds no tasks -- it emits ticks and
+    # forgets them -- so there is nothing to drain and a long grace period
+    # would only make every deploy slower.
+    stop_grace_period: 30s
     restart: unless-stopped
 
   db:
