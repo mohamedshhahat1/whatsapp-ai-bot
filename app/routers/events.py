@@ -19,10 +19,12 @@ import time
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from redis.asyncio import Redis
+from starlette.responses import PlainTextResponse
 
 from app.config import Settings, get_settings
 from app.core.events import CHANNEL
 from app.core.logging import get_logger
+from app.core.ratelimit import websocket_key, ws_upgrade_limiter
 
 logger = get_logger(__name__)
 router = APIRouter(tags=["events"])
@@ -30,6 +32,9 @@ router = APIRouter(tags=["events"])
 # Close codes. 1008 is "policy violation", which is what a failed handshake is.
 POLICY_VIOLATION = 1008
 INTERNAL_ERROR = 1011
+# 1013 is "try again later", the closest close-frame equivalent of a 429. Used
+# only where an HTTP status cannot be sent; see _refuse_upgrade.
+TRY_AGAIN_LATER = 1013
 
 # A client that connects and says nothing is either broken or probing.
 AUTH_TIMEOUT_SECONDS = 5.0
@@ -42,6 +47,26 @@ HEARTBEAT_SECONDS = 20.0
 # How long to block waiting for a published event before checking whether a
 # heartbeat is due.
 POLL_SECONDS = 1.0
+
+
+async def _refuse_upgrade(websocket: WebSocket) -> None:
+    """Turn away a handshake that exceeded the limit, before accepting it.
+
+    Sent as an HTTP 429 rather than a close frame because at this point the
+    exchange is still HTTP -- once ``accept`` has run, a status code can no
+    longer be expressed and the client only ever sees a socket that closed.
+    ``send_denial_response`` needs the ASGI ``websocket.http.response``
+    extension (uvicorn has it); without it the only way to refuse is a close
+    frame, so fall back to one rather than failing the request.
+    """
+    logger.warning("dashboard_stream_rate_limited")
+    try:
+        await websocket.send_denial_response(
+            PlainTextResponse("Too Many Requests", status_code=429)
+        )
+    except RuntimeError:
+        with contextlib.suppress(Exception):
+            await websocket.close(code=TRY_AGAIN_LATER)
 
 
 async def _authenticate(websocket: WebSocket, settings: Settings) -> bool:
@@ -81,6 +106,12 @@ async def _authenticate(websocket: WebSocket, settings: Settings) -> bool:
 async def dashboard_events(websocket: WebSocket) -> None:
     """Forward dashboard events to one authenticated operator."""
     settings = get_settings()
+    # Before accept(), and before authentication: an unauthenticated caller
+    # would otherwise complete a handshake, allocate a Redis client and hold
+    # the socket for AUTH_TIMEOUT_SECONDS on every attempt.
+    if not ws_upgrade_limiter.allow(websocket_key(websocket)):
+        await _refuse_upgrade(websocket)
+        return
     await websocket.accept()
     if not await _authenticate(websocket, settings):
         return
