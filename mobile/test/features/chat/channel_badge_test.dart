@@ -21,9 +21,23 @@ void main() {
       expect(ChannelDisplay.of(channelInstagramComment).label, 'IG comment');
     });
 
+    // Grouped rather than counted so a failure names the offenders. Several
+    // Material icon names are aliases for one codepoint, and knowing that two
+    // of five collide is not enough to know which two.
     test('gives each channel its own icon', () {
-      final icons = allChannels.map((c) => ChannelDisplay.of(c).icon).toSet();
-      expect(icons.length, allChannels.length, reason: 'two channels sharing an icon are indistinguishable in a list');
+      final byIcon = <IconData, List<String>>{};
+      for (final channel in allChannels) {
+        byIcon.putIfAbsent(ChannelDisplay.of(channel).icon, () => <String>[]).add(channel);
+      }
+
+      final shared = <String>[];
+      for (final entry in byIcon.entries) {
+        if (entry.value.length > 1) {
+          shared.add('${entry.value.join(' + ')} all draw 0x${entry.key.codePoint.toRadixString(16)}');
+        }
+      }
+
+      expect(shared, isEmpty, reason: 'showLabel:false leaves the icon as the only cue, so channels sharing a glyph are indistinguishable');
     });
 
     test('gives each channel its own colour', () {
@@ -38,6 +52,13 @@ void main() {
       final display = ChannelDisplay.of('telegram');
       expect(display.label, 'telegram');
       expect(display.icon, Icons.forum_outlined);
+    });
+
+    // The fallback glyph has to stay clear of the five real ones too,
+    // otherwise an unrecognised channel impersonates a known one.
+    test('does not reuse a real channel glyph for the fallback', () {
+      final known = allChannels.map((c) => ChannelDisplay.of(c).icon).toSet();
+      expect(known.contains(ChannelDisplay.of('telegram').icon), isFalse);
     });
 
     test('never throws on an unknown channel', () {

@@ -13,6 +13,14 @@ import '../chat_models.dart';
 /// use fixed colours rather than the theme's. They are defined here rather
 /// than in AppColors: AppColors describes this product's palette, and these
 /// are quotations from someone else's.
+///
+/// Every channel needs its own glyph as well as its own colour, and that is
+/// load-bearing rather than tidy: [ChannelBadge] is drawn with
+/// `showLabel: false` on narrow rows, where the icon is the only thing left
+/// to tell one channel from another. Note that several Material names are
+/// aliases for the same codepoint -- `mode_comment_outlined` draws the same
+/// plain bubble as `chat_bubble_outline` -- so distinctness is asserted in
+/// channel_badge_test.dart rather than assumed from the names.
 class ChannelDisplay {
   const ChannelDisplay({
     required this.label,
@@ -46,7 +54,7 @@ class ChannelDisplay {
   );
   static const _instagramComment = ChannelDisplay(
     label: 'IG comment',
-    icon: Icons.mode_comment_outlined,
+    icon: Icons.rate_review_outlined,
     color: Color(0xFF8A3AB9),
   );
 
