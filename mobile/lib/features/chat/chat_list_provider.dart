@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/config/app_config.dart';
 import '../../core/error/failures.dart';
-import '../../core/storage/secure_storage.dart';
 import '../../core/websocket/websocket_service.dart';
 import 'chat_models.dart';
 import 'chat_repository.dart';
@@ -67,12 +66,11 @@ class ChatListState {
 }
 
 class ChatListNotifier extends StateNotifier<ChatListState> {
-  ChatListNotifier(this._repo, this._wsService, this._storage) : super(const ChatListState()) { _init(); }
+  ChatListNotifier(this._repo, this._wsService) : super(const ChatListState()) { _init(); }
 
   final ChatRepository _repo;
   final WebSocketService _wsService;
-  final SecureStorage _storage;
-  StreamSubscription? _wsSub;
+  StreamSubscription<WsEvent>? _wsSub;
 
   void _init() { _wsSub = _wsService.eventStream.listen(_onWsEvent); }
 
@@ -218,5 +216,5 @@ class ChatListNotifier extends StateNotifier<ChatListState> {
 }
 
 final chatListProvider = StateNotifierProvider<ChatListNotifier, ChatListState>((ref) {
-  return ChatListNotifier(ref.watch(chatRepositoryProvider), ref.watch(webSocketServiceProvider), ref.watch(secureStorageProvider));
+  return ChatListNotifier(ref.watch(chatRepositoryProvider), ref.watch(webSocketServiceProvider));
 });
