@@ -5,9 +5,26 @@ FROM node:22-slim AS dashboard
 
 WORKDIR /dashboard
 
-# Copy manifests first so `npm ci` is cached until dependencies change.
+# Copy manifests first so the install layer is cached until dependencies
+# change. The glob makes the lockfile optional, because there is not one yet.
 COPY dashboard/package.json dashboard/package-lock.json* ./
-RUN npm install
+
+# npm ci is the reproducible install: it installs exactly what the lockfile
+# pins and fails if the lockfile and package.json have drifted apart. It also
+# fails hard when no lockfile exists at all, and this repository has no
+# dashboard/package-lock.json -- so an unconditional `npm ci` here would break
+# every image build rather than make it reproducible.
+#
+# Run `npm install` once in dashboard/ and commit the lockfile; this step then
+# tightens automatically with no change needed here. Same shape as the
+# frontend job in .github/workflows/ci.yml, deliberately.
+RUN if [ -f package-lock.json ]; then \
+        echo "lockfile found - using npm ci"; \
+        npm ci; \
+    else \
+        echo "WARNING: dashboard/package-lock.json is missing; falling back to npm install"; \
+        npm install; \
+    fi
 
 COPY dashboard/ ./
 RUN npm run build
