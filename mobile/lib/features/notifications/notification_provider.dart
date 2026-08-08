@@ -41,6 +41,10 @@ class NotificationNotifier extends StateNotifier<List<AppNotification>> {
 
   void markRead(int id) { state = state.map((n) => n.id == id ? (n..isRead = true) : n).toList(); }
   void markAllRead() { state = state.map((n) => n..isRead = true).toList(); }
+  // Every state transition belongs here rather than in a widget. The state
+  // setter is protected, and writing it from the outside also meant reading
+  // the list a second time to compute the replacement.
+  void remove(int id) { state = state.where((n) => n.id != id).toList(); }
   void clear() { state = []; }
   int get unreadCount => state.where((n) => !n.isRead).length;
 
