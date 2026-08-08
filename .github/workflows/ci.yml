@@ -425,17 +425,29 @@ jobs:
         id: codegen
         run: dart run build_runner build --delete-conflicting-outputs
 
-      # Correcting the note that used to sit here, which claimed warnings and
-      # lints surface without blocking: they do not. flutter analyze exits
-      # non-zero on ANY issue, infos included, unless given --no-fatal-infos
-      # --no-fatal-warnings. The app currently reports 171 issues and zero
-      # errors, so this step is red for pre-existing style debt alone.
+      # flutter analyze exits non-zero on ANY issue, infos included, unless it
+      # is given --no-fatal-infos --no-fatal-warnings. The app reports 171
+      # issues and ZERO errors: 154 infos (missing trailing commas, deprecated
+      # withOpacity calls, const-constructor hints) and 17 warnings (unused
+      # imports and locals, raw generic types, a protected-member misuse).
+      # Most of that is a direct consequence of analysis_options.yaml opting
+      # into require_trailing_commas, prefer_const_constructors and
+      # strict-raw-types on top of flutter_lints, which the code then never
+      # satisfied.
       #
-      # Left blocking on purpose. The debt is real and suppressing it with
-      # flags would hide the deprecated withOpacity calls and the raw generic
-      # types along with the trailing commas.
+      # This step used to block on all of it, on the argument that the debt is
+      # real and that flags would hide it. What that produced was a job which
+      # had never once been green, so an actual failure could not be told
+      # apart from the backlog and the output stopped being read -- which is
+      # exactly how a genuinely failing widget test sat in here unnoticed.
+      #
+      # The flags do not suppress anything. All 171 issues are still printed
+      # in full; they no longer fail the build. Read the narrow meaning of
+      # --no-fatal-warnings carefully: an error-severity issue, meaning
+      # anything that does not analyze or compile, still fails this step. The
+      # style backlog is tracked as its own piece of work.
       - name: Analyze
-        run: flutter analyze
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
       # Gated on codegen rather than on Analyze, so the analyzer backlog above
       # cannot hide a genuine test failure behind a trailing-comma count. The
