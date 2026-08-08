@@ -8,12 +8,21 @@ The AI logs are recorded against a model name that has no row in
 model_pricing, so the pricing LATERAL finds nothing and cost falls back to the
 defaults passed in. That makes the expected spend computable by hand instead
 of depending on whatever migration 0002 seeded.
+
+Cleaning up is this module's own responsibility, unlike everywhere else in the
+suite. ``_add_log`` writes rows whose ``conversation_id`` is NULL, because the
+rollup counts API calls rather than conversations, and both cleanup helpers in
+conftest delete ai_logs by joining through a customer's conversations. Neither
+``purge`` nor ``purge_channel`` can reach a row that hangs off no conversation,
+so the ``rollup_tables`` fixture below removes them by model name instead.
 """
 
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select, update
+import pytest
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.ai_log import AILog
@@ -36,6 +45,11 @@ DEFAULTS = PriceDefaults(input_price=Decimal("1"), output_price=Decimal("2"))
 
 DAY = date(2001, 3, 4)
 NEXT_DAY = date(2001, 3, 5)
+EMPTY_DAY = date(2001, 1, 1)
+
+# Every day this module rolls up, so the fixture can clear the stored summaries
+# as well as the logs they were computed from.
+ROLLED_DAYS = (DAY, NEXT_DAY, EMPTY_DAY)
 
 
 def _add_log(
@@ -82,6 +96,35 @@ async def _add_message_at(
     await db.commit()
 
 
+async def _clear_rollup_rows(session: AsyncSession) -> None:
+    """Delete only what this module writes.
+
+    ``model`` is the discriminator rather than a date range: UNPRICED_MODEL is
+    unique to this file, so the delete cannot reach a log another test owns
+    even if that test picked the same day.
+    """
+    await session.execute(delete(AILog).where(AILog.model == UNPRICED_MODEL))
+    await session.execute(
+        delete(AnalyticsDaily).where(AnalyticsDaily.day.in_(ROLLED_DAYS))
+    )
+    await session.commit()
+
+
+@pytest.fixture
+async def rollup_tables(db: AsyncSession) -> AsyncIterator[None]:
+    """Give each database test an empty slate to count against.
+
+    Before as well as after. Clearing only on teardown would still leave the
+    first test of a run exposed to rows a previous, interrupted run left
+    behind, which is the same failure one process later.
+    """
+    await _clear_rollup_rows(db)
+    try:
+        yield
+    finally:
+        await _clear_rollup_rows(db)
+
+
 def test_day_bounds_is_half_open_and_anchored_to_utc() -> None:
     start, end = day_bounds(DAY)
     assert start == datetime(2001, 3, 4, tzinfo=UTC)
@@ -110,7 +153,7 @@ def test_complete_days_before_converts_to_utc_before_taking_the_date() -> None:
 
 
 async def test_first_rollup_summarises_the_day(
-    db: AsyncSession, customer: Customer
+    db: AsyncSession, customer: Customer, rollup_tables: None
 ) -> None:
     _add_log(db, when=datetime(2001, 3, 4, 9, 0, tzinfo=UTC))
     _add_log(
@@ -148,7 +191,9 @@ async def test_first_rollup_summarises_the_day(
     assert row.messages == 1
 
 
-async def test_rerunning_the_same_night_does_not_duplicate(db: AsyncSession) -> None:
+async def test_rerunning_the_same_night_does_not_duplicate(
+    db: AsyncSession, rollup_tables: None
+) -> None:
     _add_log(db, when=datetime(2001, 3, 4, 12, 0, tzinfo=UTC))
     await db.commit()
 
@@ -168,7 +213,9 @@ async def test_rerunning_the_same_night_does_not_duplicate(db: AsyncSession) -> 
     assert rows[0].requests == 1
 
 
-async def test_rerunning_picks_up_rows_that_arrived_late(db: AsyncSession) -> None:
+async def test_rerunning_picks_up_rows_that_arrived_late(
+    db: AsyncSession, rollup_tables: None
+) -> None:
     """The conflict action must be DO UPDATE, not DO NOTHING.
 
     A re-run exists precisely to catch rows written after the first attempt.
@@ -193,7 +240,9 @@ async def test_rerunning_picks_up_rows_that_arrived_late(db: AsyncSession) -> No
     assert row.requests == 2
 
 
-async def test_midnight_belongs_to_exactly_one_day(db: AsyncSession) -> None:
+async def test_midnight_belongs_to_exactly_one_day(
+    db: AsyncSession, rollup_tables: None
+) -> None:
     """The range is half-open, so 00:00:00 starts a day rather than ending one."""
     _add_log(db, when=datetime(2001, 3, 4, 23, 59, 59, tzinfo=UTC))
     _add_log(db, when=datetime(2001, 3, 5, 0, 0, 0, tzinfo=UTC))
@@ -212,17 +261,18 @@ async def test_midnight_belongs_to_exactly_one_day(db: AsyncSession) -> None:
     assert later.requests == 1
 
 
-async def test_a_day_with_no_activity_is_stored_as_zeros(db: AsyncSession) -> None:
+async def test_a_day_with_no_activity_is_stored_as_zeros(
+    db: AsyncSession, rollup_tables: None
+) -> None:
     """ "Rolled up, nothing happened" must be distinguishable from "never run".
 
     The aggregates are bare, so they return one row even over an empty range.
     """
-    empty_day = date(2001, 1, 1)
     rollup = AnalyticsRollupRepository(db)
-    await rollup.rollup_day(empty_day, DEFAULTS)
+    await rollup.rollup_day(EMPTY_DAY, DEFAULTS)
     await db.commit()
 
-    row = await rollup.get(empty_day)
+    row = await rollup.get(EMPTY_DAY)
     assert row is not None
     assert row.requests == 0
     assert row.errors == 0
@@ -232,7 +282,9 @@ async def test_a_day_with_no_activity_is_stored_as_zeros(db: AsyncSession) -> No
     assert row.avg_latency_ms == 0.0
 
 
-async def test_rollup_days_processes_each_day_given(db: AsyncSession) -> None:
+async def test_rollup_days_processes_each_day_given(
+    db: AsyncSession, rollup_tables: None
+) -> None:
     _add_log(db, when=datetime(2001, 3, 4, 6, 0, tzinfo=UTC))
     _add_log(db, when=datetime(2001, 3, 5, 6, 0, tzinfo=UTC))
     await db.commit()
