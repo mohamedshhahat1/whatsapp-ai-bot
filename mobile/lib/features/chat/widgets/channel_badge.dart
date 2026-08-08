@@ -17,9 +17,11 @@ import '../chat_models.dart';
 /// Every channel needs its own glyph as well as its own colour, and that is
 /// load-bearing rather than tidy: [ChannelBadge] is drawn with
 /// `showLabel: false` on narrow rows, where the icon is the only thing left
-/// to tell one channel from another. Note that several Material names are
-/// aliases for the same codepoint -- `mode_comment_outlined` draws the same
-/// plain bubble as `chat_bubble_outline` -- so distinctness is asserted in
+/// to tell one channel from another. Several Material names are aliases for
+/// a single codepoint, so picking distinct-sounding names proves nothing --
+/// `chat_bubble_outline` and `messenger_outline` both resolve to 0xe155,
+/// which is why WhatsApp draws a handset in a bubble rather than the plain
+/// bubble you would otherwise reach for. Distinctness is asserted in
 /// channel_badge_test.dart rather than assumed from the names.
 class ChannelDisplay {
   const ChannelDisplay({
@@ -34,7 +36,7 @@ class ChannelDisplay {
 
   static const _whatsapp = ChannelDisplay(
     label: 'WhatsApp',
-    icon: Icons.chat_bubble_outline,
+    icon: Icons.perm_phone_msg_outlined,
     color: Color(0xFF25D366),
   );
   static const _messenger = ChannelDisplay(
