@@ -205,9 +205,13 @@ jobs:
       - name: Run migrations
         run: alembic upgrade head
 
+      # -rs reports the reason for every skipped test. Without it a skip is a
+      # bare number in the summary line and an intentional skip cannot be told
+      # apart from a test that quietly stopped running.
       - name: Pytest
         run: |
           pytest \
+            -rs \
             --junitxml=reports/junit.xml \
             --cov=app \
             --cov-report=term-missing \
@@ -332,14 +336,31 @@ jobs:
       - name: TypeScript compilation
         run: npx tsc --noEmit
 
+      # Every version is exact. Three of these used to be installed with no
+      # constraint at all and two with a range, inside the very job that
+      # enforces npm ci everywhere else -- so the linter that gates the
+      # dashboard could change under the repository between two runs of the
+      # same commit.
+      #
+      # These are the versions the ranges resolved to on the last green run,
+      # so this freezes a known-good set rather than adopting a new one:
+      # eslint@9 and @eslint/js@^9.0.0 both resolved to 9.39.5, the current
+      # 9.x maintenance line, and the three unconstrained packages to their
+      # then-latest. eslint.config.js is a flat config written against the
+      # ESLint 9 API; moving to the 10.x line is a separate change with its
+      # own review.
+      #
+      # They stay out of package.json on purpose. npm ci must keep installing
+      # exactly the lockfile, and the lint tooling is not a dashboard runtime
+      # dependency -- pinning here is what makes this step reproducible.
       - name: Lint
         run: |
           npm install --no-save --no-audit --no-fund \
-            eslint@9 \
-            @eslint/js@^9.0.0 \
-            typescript-eslint \
-            eslint-plugin-react-hooks \
-            eslint-plugin-react-refresh
+            eslint@9.39.5 \
+            @eslint/js@9.39.5 \
+            typescript-eslint@8.66.0 \
+            eslint-plugin-react-hooks@7.1.1 \
+            eslint-plugin-react-refresh@0.5.3
           npx eslint .
 
       - name: Build
@@ -437,7 +458,10 @@ jobs:
       # in full; they no longer fail the build. Read the narrow meaning of
       # --no-fatal-warnings carefully: an error-severity issue, meaning
       # anything that does not analyze or compile, still fails this step. The
-      # style backlog is tracked as its own piece of work.
+      # style backlog is tracked as its own piece of work on
+      # chore/flutter-lint-debt, and this comment is the record that the
+      # analyzer here is NOT clean -- the gate is deliberately narrowed to
+      # errors, not satisfied.
       - name: Analyze
         run: flutter analyze --no-fatal-infos --no-fatal-warnings
 
@@ -497,20 +521,32 @@ jobs:
         run: |
           set -e
           # Compose refuses to evaluate a file whose declared secret sources do
-          # not exist, so create placeholders. This doubles as a check that the
-          # secrets list in the compose file and init-secrets.sh agree.
+          # not exist, so create a placeholder for each one. The names are read
+          # out of the compose file itself rather than restated here.
+          #
+          # The comment that used to sit here claimed this doubled as a check
+          # that the compose file and scripts/init-secrets.sh agree. It never
+          # did: `config -q` does not look at a secret's file at all, so the
+          # hard-coded list drifted four names behind the compose file and this
+          # step stayed green throughout. That comparison now lives in
+          # tests/test_secret_wiring.py, which fails the Tests job when the two
+          # disagree -- and which also checks that only Alertmanager receives
+          # the alert_* credentials.
+          names="$(awk '
+            /^secrets:/ { inblock = 1; next }
+            inblock && /^[^[:space:]]/ { inblock = 0 }
+            inblock && /^  [a-z]/ { sub(/:.*/, ""); sub(/^  /, ""); print }
+          ' docker-compose.prod.yml)"
+          test -n "$names" || {
+            echo "::error::no secrets parsed from docker-compose.prod.yml"
+            exit 1
+          }
+          count=$(echo "$names" | wc -l)
           mkdir -p secrets
-          for name in \
-            database_url postgres_password redis_password \
-            redis_exporter_password openai_api_key whatsapp_token \
-            whatsapp_phone_number_id whatsapp_verify_token \
-            whatsapp_app_secret admin_api_key grafana_admin_password \
-            backup_s3_access_key_id backup_s3_secret_access_key \
-            backup_gcs_credentials backup_azure_sas_token \
-            backup_encryption_passphrase
-          do
+          for name in $names; do
             printf 'ci-placeholder' > "secrets/$name"
           done
+          echo "created $count secret placeholders"
           docker compose -f docker-compose.prod.yml config -q
           echo "production compose is valid"
 

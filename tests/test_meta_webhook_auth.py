@@ -181,16 +181,23 @@ def test_a_signed_payload_that_is_not_an_object_is_not_dispatched(
 ) -> None:
     """Correctly signed, valid JSON, wrong shape.
 
-    Either answer is defensible here -- 400 because it is unusable, or 200 to
-    stop the retries -- so the status is not what is asserted. What matters is
-    that a body which passes verification but is not an envelope neither
-    reaches the processor nor takes the route down with a 500.
+    The route's contract for anything it has verified but cannot use is to
+    acknowledge and drop it: 200 with {"status": "ignored"}, the same answer
+    it gives a delivery for a switched-off channel or an unrecognised
+    product. Acknowledging stops Meta retrying a body that will never become
+    processable, and it is deliberately not a 400 for that reason.
+
+    Asserting the exact status and body rather than merely "not a 500" is
+    what makes this a contract test. A route that began returning 403 here --
+    refusing input whose signature it had already accepted -- or that quietly
+    started dispatching the list would both have satisfied the weaker check.
     """
     body = _body(["not", "an", "envelope"])
 
     response = client.post("/webhook/meta", content=body, headers=_signed(body))
 
-    assert response.status_code != 500
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored"}
     assert delivered == []
 
 
