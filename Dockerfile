@@ -14,25 +14,17 @@ FROM node:22-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172
 WORKDIR /dashboard
 
 # Copy manifests first so the install layer is cached until dependencies
-# change. The glob makes the lockfile optional, because there is not one yet.
-COPY dashboard/package.json dashboard/package-lock.json* ./
+# change. Both are required and the lockfile is no longer globbed: if it ever
+# goes missing the build should stop here, at COPY, with a clear message
+# rather than carry on and install something else.
+COPY dashboard/package.json dashboard/package-lock.json ./
 
-# npm ci is the reproducible install: it installs exactly what the lockfile
-# pins and fails if the lockfile and package.json have drifted apart. It also
-# fails hard when no lockfile exists at all, and this repository has no
-# dashboard/package-lock.json -- so an unconditional `npm ci` here would break
-# every image build rather than make it reproducible.
-#
-# Run `npm install` once in dashboard/ and commit the lockfile; this step then
-# tightens automatically with no change needed here. Same shape as the
-# frontend job in .github/workflows/ci.yml, deliberately.
-RUN if [ -f package-lock.json ]; then \
-        echo "lockfile found - using npm ci"; \
-        npm ci; \
-    else \
-        echo "WARNING: dashboard/package-lock.json is missing; falling back to npm install"; \
-        npm install; \
-    fi
+# npm ci, unconditionally. It installs exactly what the lockfile pins, and it
+# fails rather than resolving newer versions when the lockfile and
+# package.json have drifted apart -- which is the entire reason to run it in a
+# build. `npm install` is the wrong command here: it is free to move versions
+# inside their caret ranges, so the image would not be reproducible.
+RUN npm ci
 
 COPY dashboard/ ./
 RUN npm run build

@@ -321,21 +321,13 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
 
-      # npm ci is correct and is used whenever a lockfile exists. This
-      # repository has no dashboard/package-lock.json, and npm ci fails hard
-      # without one -- so CI would be permanently red rather than
-      # reproducible. Run `npm install` locally in dashboard/ once and commit
-      # the lockfile; this step then tightens automatically with no change
-      # here.
+      # npm ci, not npm install: it installs exactly what
+      # dashboard/package-lock.json pins, and fails instead of resolving newer
+      # versions inside the caret ranges when the lockfile and package.json
+      # have drifted apart. That failure is the useful signal -- it means
+      # package.json was edited without the lockfile being regenerated.
       - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            echo "lockfile found - using npm ci"
-            npm ci
-          else
-            echo "::warning::dashboard/package-lock.json is missing; falling back to npm install. Commit a lockfile for reproducible builds."
-            npm install
-          fi
+        run: npm ci
 
       - name: TypeScript compilation
         run: npx tsc --noEmit
