@@ -75,6 +75,27 @@ def _mounted(service: dict[str, Any]) -> set[str]:
     return mounted
 
 
+def _config_lines(template: str) -> list[str]:
+    """The template's real configuration lines: no comments, no list markers.
+
+    The template explains the *_file mechanism in prose and names the inline
+    keys while doing so, so a raw substring search finds the commentary rather
+    than the configuration. Dropping comment lines and stripping the "- " of a
+    sequence item leaves each line starting with its own YAML key -- and the
+    stripping matters, because a credential inlined as a list entry has to
+    still be caught.
+    """
+    lines: list[str] = []
+    for raw in template.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        while line.startswith("- "):
+            line = line[2:].strip()
+        lines.append(line)
+    return lines
+
+
 def test_every_declared_secret_is_initialised(compose: dict[str, Any]) -> None:
     declared = _declared(compose)
     initialised = _initialised()
@@ -144,5 +165,11 @@ def test_alertmanager_reads_credentials_from_files() -> None:
     assert "api_url_file: /run/secrets/alert_slack_webhook_url" in template
     assert "bot_token_file: /run/secrets/alert_telegram_bot_token" in template
 
+    lines = _config_lines(template)
+    # If the parser stopped finding configuration the sweep below would pass
+    # vacuously, so prove it is reading the keys it is meant to be reading.
+    assert [line for line in lines if line.startswith("api_url_file:")]
+
     for inline in ("smtp_auth_password:", "api_url:", "bot_token:"):
-        assert inline not in template, f"{inline} would inline a credential"
+        offenders = [line for line in lines if line.startswith(inline)]
+        assert not offenders, f"{inline} would inline a credential"
