@@ -38,7 +38,7 @@ whole deployment down rather than leave one notification channel unconfigured.
 Re-running the script never overwrites them.
 
 `docker-compose.prod.yml` declares each one as `file: ./secrets/<name>` and
-mounts all three on the **`alertmanager`** service only -- not on
+mounts all three on the **`alertmanager`** service only — not on
 `alertmanager-config`, which renders the config template and has no need to see
 a credential in any form. Alertmanager reads each file at notification time, so
 the rendered `alertmanager.yml` contains paths and never a value.
@@ -48,11 +48,11 @@ the rendered `alertmanager.yml` contains paths and never a value.
 > variables, which meant `docker inspect` on the init container disclosed them.
 > `ALERT_SMTP_PASSWORD`, `ALERT_SLACK_WEBHOOK_URL` and
 > `ALERT_TELEGRAM_BOT_TOKEN` are no longer read by anything. If a sourced env
-> file still sets them, delete those lines -- they have no effect and are only
+> file still sets them, delete those lines — they have no effect and are only
 > one more copy of a credential.
 
 All channels are opt-in. A channel whose secret file is still empty is simply
-not configured. **Configure at least one** -- the pipeline runs happily with
+not configured. **Configure at least one** — the pipeline runs happily with
 zero receivers and delivers nothing, which looks identical to having no alerts.
 
 ### Writing a credential
@@ -89,7 +89,7 @@ ALERT_TELEGRAM_CHAT_ID=-1001234567890
 ```
 
 Group chat IDs are negative. Supergroup IDs start `-100`. Getting this wrong
-fails silently -- Telegram returns an error Alertmanager logs and nothing
+fails silently — Telegram returns an error Alertmanager logs and nothing
 else happens.
 
 ### Email
@@ -127,7 +127,7 @@ does not, check `docker compose logs alertmanager`.
 Read those logs on the first deploy even if you are not testing delivery yet.
 All three secrets are mounted whether or not anything has been written into
 them, and an empty file is the expected state for a channel you have not
-configured -- but confirm Alertmanager started clean rather than assuming it
+configured — but confirm Alertmanager started clean rather than assuming it
 did.
 
 ---
@@ -144,7 +144,7 @@ did.
 
 ## Grouping, routing, silencing
 
-**Grouping** is by `alertname`, `severity` and `service` -- deliberately *not*
+**Grouping** is by `alertname`, `severity` and `service` — deliberately *not*
 by instance. When a host dies, grouping by instance sends one notification per
 alert per target; this collapses it into a single message.
 
@@ -164,7 +164,7 @@ which in practice is nowhere anyone looks.
 | `BackupFailed` | `BackupMissing` |
 | any `critical` | the `warning` of the same alert + service |
 
-**Silencing** is done in the Alertmanager UI (`127.0.0.1:9093` -- bound to
+**Silencing** is done in the Alertmanager UI (`127.0.0.1:9093` — bound to
 localhost, reach it over an SSH tunnel) or the API:
 
 ```bash
@@ -184,7 +184,7 @@ ssh -L 9093:127.0.0.1:9093 user@server
 | Alert | Fires when | Severity | What to do |
 |---|---|---|---|
 | `ApiDown` | `up{job="api"} == 0` for 2m | critical | Meta retries webhooks for a limited window then drops them permanently. Check `docker compose ps`, then app logs. |
-| `WorkerDown` | `up{job="worker"} == 0` for 2m | critical | Webhooks still queue, so nothing looks broken externally -- but nobody is being answered. Check for OOM kills. |
+| `WorkerDown` | `up{job="worker"} == 0` for 2m | critical | Webhooks still queue, so nothing looks broken externally — but nobody is being answered. Check for OOM kills. |
 | `WorkerCrashLooping` | >3 restarts in 30m | critical | `up` cannot see this; the worker is back before the next scrape. Usually OOM or an import-time exception. |
 | `HostDown` | `up{job="node"} == 0` | critical | Alone: the exporter died. With everything else: the machine is gone. |
 | `PostgresDown` | `pg_up == 0` | critical | Total outage. No message can be stored. |
@@ -203,7 +203,7 @@ ssh -L 9093:127.0.0.1:9093 user@server
 | `WebhookDeadLetters` | any in 1h | critical | A delivery exhausted all five retries. Customer got no reply at all. |
 | `DeadLetterQueueNotEmpty` | any in 24h, for 30m | warning | Drain and investigate. See the note below on why this counts arrivals rather than queue depth. |
 | `TaskTimeouts` | >3 in 15m | warning | Usually a hung external call. Check OpenAI and Meta status before raising the limit. |
-| `HighAbuseBlockRate` | >5 blocks in 15m | warning | Genuine attack, or thresholds too tight -- several photos in a row trips it. |
+| `HighAbuseBlockRate` | >5 blocks in 15m | warning | Genuine attack, or thresholds too tight — several photos in a row trips it. |
 | `SustainedRateLimiting` | >50 in 1h | info | If these are real customers, `CUSTOMER_LIMIT_*` is too low. |
 
 ### Integrations
@@ -212,18 +212,18 @@ ssh -L 9093:127.0.0.1:9093 user@server
 |---|---|---|---|
 | `OpenAIErrorRate` | >20% failing for 10m | warning | Customers getting the fallback reply. |
 | `OpenAIDown` | 100% failing for 5m | critical | Key revoked, no credit, or org rate limited. |
-| `WhatsAppApiFailures` | >5 errors in 15m | critical | Replies generated then failing to send -- costs tokens, delivers nothing. |
+| `WhatsAppApiFailures` | >5 errors in 15m | critical | Replies generated then failing to send — costs tokens, delivers nothing. |
 | `WhatsAppTokenLikelyExpired` | >20 send errors in 1h *while inbound still arrives* | critical | That asymmetry is the signature of a revoked token. Rotate `WHATSAPP_TOKEN`. |
 
 ### Cost
 
 | Alert | Fires when | Severity | What to do |
 |---|---|---|---|
-| `SpendApproachingLimit` | spend >= 80% of ceiling | warning | Derived from `openai_spend_guard_limit_usd`, so it follows the setting automatically. |
-| `DailySpendExceeded` | spend >= ceiling | critical | Circuit breaker open. Nobody is being answered until midnight UTC. |
+| `SpendApproachingLimit` | spend ≥ 80% of ceiling | warning | Derived from `openai_spend_guard_limit_usd`, so it follows the setting automatically. |
+| `DailySpendExceeded` | spend ≥ ceiling | critical | Circuit breaker open. Nobody is being answered until midnight UTC. |
 | `SpendGuardTripped` | any trip in 1h | critical | Everyone routed to a human. |
-| `HighTokenUsage` | tokens >= 80% of daily ceiling | warning | Tokens and dollars diverge -- a cheaper model burns more tokens for the same money. |
-| `TokenBurstAnomaly` | 5x the 6h baseline | warning | Catches a runaway prompt long before either daily ceiling notices. A retrieval bug stuffing the whole knowledge base into every request looks normal per-request. |
+| `HighTokenUsage` | tokens ≥ 80% of daily ceiling | warning | Tokens and dollars diverge — a cheaper model burns more tokens for the same money. |
+| `TokenBurstAnomaly` | 5× the 6h baseline | warning | Catches a runaway prompt long before either daily ceiling notices. A retrieval bug stuffing the whole knowledge base into every request looks normal per-request. |
 
 ### Resources
 
@@ -231,7 +231,7 @@ ssh -L 9093:127.0.0.1:9093 user@server
 |---|---|---|---|
 | `DiskAlmostFull` | <20% free for 15m | warning | Check `backup_local_bytes_total` before assuming it is the database. |
 | `DiskCriticallyFull` | <5% free for 5m | critical | Postgres stops accepting writes when it cannot extend a file. Fires faster than the warning because 5% can vanish in an hour. |
-| `MemoryPressure` | <10% available for 10m | warning | `MemAvailable`, not `MemFree` -- low free memory is normal on Linux. The OOM killer usually takes the worker mid-send. |
+| `MemoryPressure` | <10% available for 10m | warning | `MemAvailable`, not `MemFree` — low free memory is normal on Linux. The OOM killer usually takes the worker mid-send. |
 | `CpuOverload` | >90% for 15m | warning | The nightly `pg_dump -Z9` is expected to saturate a core for a few minutes. Fifteen is not that. |
 | `SSLCertExpiringSoon` | <21 days | warning | Let's Encrypt renews at 30 days, so 21 means renewal already failed once. |
 | `SSLCertExpiringCritical` | <7 days | critical | Renewal is definitively broken. When the cert expires Meta stops delivering webhooks entirely. |
@@ -239,7 +239,7 @@ ssh -L 9093:127.0.0.1:9093 user@server
 ### Data protection
 
 All age-based, because the failure that actually happens is a backup container
-running happily while producing nothing -- and liveness checks cannot see that.
+running happily while producing nothing — and liveness checks cannot see that.
 
 | Alert | Fires when | Severity | What to do |
 |---|---|---|---|
@@ -248,7 +248,7 @@ running happily while producing nothing -- and liveness checks cannot see that.
 | `OffsiteUploadMissing` | nothing uploaded in 36h | critical | Local backups may be fine, but the only copies are on the same machine as the database. Expired Azure SAS or rotated S3 key fails exactly like this. |
 | `OffsiteVerificationFailed` | `backup_remote_verify_status == 0` | critical | Remote object would not download or did not match its checksum. |
 | `OffsiteVerificationStale` | not verified in 3 days | warning | The verification job itself stopped. Unverified backups are assumptions. |
-| `RestoreDrillFailed` | `restore_drill_status == 0` | critical | A backup that will not restore is not a backup. Drill environment is preserved -- see `/backups/drills/`. |
+| `RestoreDrillFailed` | `restore_drill_status == 0` | critical | A backup that will not restore is not a backup. Drill environment is preserved — see `/backups/drills/`. |
 | `RestoreDrillStale` | no passing drill in 10 days | warning | Drills run weekly. Ten days means it stopped, quietly returning you to untested backups. |
 
 ---
@@ -257,7 +257,7 @@ running happily while producing nothing -- and liveness checks cannot see that.
 
 **Dead-letter alerting counts arrivals, not queue depth.** A depth gauge would
 need refreshing from Redis on a schedule. One updated only on write stays stuck
-above zero forever once the queue is drained by hand -- a permanent alert that
+above zero forever once the queue is drained by hand — a permanent alert that
 gets muted and then hides the next real incident. Counting arrivals over 24h is
 a weaker signal but an honest one: it clears on its own.
 

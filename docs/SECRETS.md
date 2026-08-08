@@ -17,7 +17,7 @@ Highest priority first (`Settings.settings_customise_sources`):
 | 3 | `<FIELD>_FILE` env vars | Kubernetes projected volumes, Vault Agent templates |
 | 4 | HashiCorp Vault (KV v2) | central secret store with rotation & audit |
 | 5 | Docker secrets in `SECRETS_DIR` (`/run/secrets`) | Docker Compose / Swarm |
-| 6 | `.env` file | **development only** -- skipped in production |
+| 6 | `.env` file | **development only** — skipped in production |
 
 Required in production: `OPENAI_API_KEY`, `WHATSAPP_TOKEN`,
 `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`,
@@ -54,7 +54,7 @@ leaves them alone on a re-run:
 | `alert_slack_webhook_url` | Slack alerts | a Slack incoming webhook |
 | `alert_telegram_bot_token` | Telegram alerts | `@BotFather` |
 
-Fill one in with `printf`, never `echo` -- a trailing newline becomes part of
+Fill one in with `printf`, never `echo` — a trailing newline becomes part of
 the credential and the authentication failure that follows does not say so:
 
 ```bash
@@ -84,8 +84,8 @@ This replaces an earlier arrangement in which the values were substituted into
 the rendered config from `ALERT_SMTP_PASSWORD`, `ALERT_SLACK_WEBHOOK_URL` and
 `ALERT_TELEGRAM_BOT_TOKEN`. Those variables are no longer read by anything and
 should be removed from any env file that still sets them. The non-secret half
-of alerting -- SMTP host and port, sender and recipient, channel names, the
-Telegram chat id -- stays in the deployment environment; it is configuration,
+of alerting — SMTP host and port, sender and recipient, channel names, the
+Telegram chat id — stays in the deployment environment; it is configuration,
 not credentials. See [docs/ALERTING.md](ALERTING.md).
 
 ### Swarm
@@ -118,8 +118,8 @@ child processes and crash dumps.
 
 ```bash
 vault kv put secret/whatsapp-ai-bot \
-  OPENAI_API_KEY=... \
-  WHATSAPP_TOKEN=... \
+  OPENAI_API_KEY=sk-... \
+  WHATSAPP_TOKEN=EAAG... \
   WHATSAPP_APP_SECRET=... \
   ADMIN_API_KEY=...
 ```
@@ -152,7 +152,7 @@ The pipeline never stores credentials in the repository:
 | Variable | `DEPLOY_ENABLED`, `DEPLOY_URL` | enable deploy + health-check URL |
 
 Test jobs use obviously fake values (`test-key`, `test-admin-key`). Production
-secrets live only on the server (Docker secrets) or in Vault -- the deploy job
+secrets live only on the server (Docker secrets) or in Vault — the deploy job
 never transports them.
 
 ## 5. Leak prevention
