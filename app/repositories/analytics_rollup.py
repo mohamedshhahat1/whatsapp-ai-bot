@@ -148,9 +148,7 @@ class AnalyticsRollupRepository(BaseRepository):
             .join(messages, true())
         )
 
-        statement = pg_insert(AnalyticsDaily).from_select(
-            list(ROLLUP_COLUMNS), source
-        )
+        statement = pg_insert(AnalyticsDaily).from_select(list(ROLLUP_COLUMNS), source)
         updates: dict[str, Any] = {
             name: getattr(statement.excluded, name) for name in ROLLUP_COLUMNS[1:]
         }
@@ -165,9 +163,7 @@ class AnalyticsRollupRepository(BaseRepository):
             )
         )
 
-    async def rollup_days(
-        self, days: list[date], defaults: PriceDefaults
-    ) -> int:
+    async def rollup_days(self, days: list[date], defaults: PriceDefaults) -> int:
         """Roll up several days, returning how many were processed.
 
         Sequential rather than one combined statement. The nightly job passes

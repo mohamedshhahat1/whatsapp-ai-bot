@@ -103,9 +103,9 @@ def test_complete_days_before_is_oldest_first() -> None:
 
 def test_complete_days_before_converts_to_utc_before_taking_the_date() -> None:
     """A local clock already past midnight does not advance the UTC day."""
-    cairo_just_after_midnight = datetime(
-        2026, 8, 9, 0, 30, tzinfo=UTC
-    ) - timedelta(hours=3)
+    cairo_just_after_midnight = datetime(2026, 8, 9, 0, 30, tzinfo=UTC) - timedelta(
+        hours=3
+    )
     assert complete_days_before(cairo_just_after_midnight, 1) == [date(2026, 8, 7)]
 
 
@@ -213,7 +213,7 @@ async def test_midnight_belongs_to_exactly_one_day(db: AsyncSession) -> None:
 
 
 async def test_a_day_with_no_activity_is_stored_as_zeros(db: AsyncSession) -> None:
-    """"Rolled up, nothing happened" must be distinguishable from "never run".
+    """ "Rolled up, nothing happened" must be distinguishable from "never run".
 
     The aggregates are bare, so they return one row even over an empty range.
     """
