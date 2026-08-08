@@ -72,7 +72,7 @@ async def receive_meta_webhook(
 ) -> dict[str, str]:
     """Validate the Meta signature, ACK fast, and enqueue processing.
 
-    Three refusals, in this order:
+    Four refusals, in this order:
 
     1. A bad signature is a 403 and nothing else happens. The body is not
        parsed, because parsing unverified input is the thing the signature
@@ -80,11 +80,14 @@ async def receive_meta_webhook(
     2. Messenger switched off ACKs and drops. Meta keeps delivering to a
        subscribed webhook regardless of what this application thinks, so the
        switch has to be enforced here rather than assumed.
-    3. Anything whose ``object`` is not ``page`` ACKs and drops -- Instagram
+    3. A body that is valid JSON but not an object ACKs and drops. There is
+       no envelope to read, and reaching for one anyway is how this route
+       used to answer 500.
+    4. Anything whose ``object`` is not ``page`` ACKs and drops -- Instagram
        and the comment surfaces arrive on this same URL and are not wired
        yet, and apologising to a commenter would be worse than silence.
 
-    The last two answer 200 deliberately. A non-200 tells Meta the delivery
+    The last three answer 200 deliberately. A non-200 tells Meta the delivery
     failed and it will retry the same payload for hours.
     """
     settings = get_settings()
@@ -107,6 +110,19 @@ async def receive_meta_webhook(
         payload = json.loads(raw_body)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="Invalid JSON") from exc
+
+    # Valid JSON is not necessarily an envelope. A signed body can decode to a
+    # list, a string or a number, and every one of those reached .get() below
+    # as an AttributeError that escaped as a 500 -- the one answer that cannot
+    # be right, because Meta retries it for hours and the body will never
+    # become usable. Dropped with a 200, like every other unusable shape.
+    if not isinstance(payload, dict):
+        logger.info(
+            "meta_webhook_ignored",
+            reason="payload_not_an_object",
+            payload_type=type(payload).__name__,
+        )
+        return {"status": "ignored"}
 
     object_type = payload.get("object")
     if object_type != "page":
