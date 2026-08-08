@@ -16,28 +16,75 @@ exporters + app  -->  Prometheus  -->  Alertmanager  -->  Slack
 
 ## Setup
 
-All channels are opt-in. A receiver whose credentials are unset renders empty
-and is skipped. **Configure at least one** — the pipeline runs happily with
+Alerting has two halves, kept deliberately apart:
+
+| | Where it lives | Examples |
+|---|---|---|
+| **Credentials** | Docker secrets, read by Alertmanager itself | SMTP password, Slack webhook URL, Telegram bot token |
+| **Everything else** | Environment variables, substituted into the config at start-up | hosts, ports, sender and recipient addresses, channel names, chat id |
+
+There are three credentials:
+
+| Secret | Local file | Read by Alertmanager as |
+|---|---|---|
+| `alert_smtp_password` | `./secrets/alert_smtp_password` | `smtp_auth_password_file` |
+| `alert_slack_webhook_url` | `./secrets/alert_slack_webhook_url` | `api_url_file`, on every Slack receiver |
+| `alert_telegram_bot_token` | `./secrets/alert_telegram_bot_token` | `bot_token_file`, on every Telegram receiver |
+
+`./scripts/init-secrets.sh` creates all three as **empty placeholder files**
+with mode `0600`. They have to exist even when unused: Docker refuses to start
+a stack whose declared secret file is missing, so an absent file would take the
+whole deployment down rather than leave one notification channel unconfigured.
+Re-running the script never overwrites them.
+
+`docker-compose.prod.yml` declares each one as `file: ./secrets/<name>` and
+mounts all three on the **`alertmanager`** service only — not on
+`alertmanager-config`, which renders the config template and has no need to see
+a credential in any form. Alertmanager reads each file at notification time, so
+the rendered `alertmanager.yml` contains paths and never a value.
+
+> Alerting credentials used to be the one exception to the secrets rule: they
+> were substituted into the rendered config by envsubst from shell environment
+> variables, which meant `docker inspect` on the init container disclosed them.
+> `ALERT_SMTP_PASSWORD`, `ALERT_SLACK_WEBHOOK_URL` and
+> `ALERT_TELEGRAM_BOT_TOKEN` are no longer read by anything. If a sourced env
+> file still sets them, delete those lines — they have no effect and are only
+> one more copy of a credential.
+
+All channels are opt-in. A channel whose secret file is still empty is simply
+not configured. **Configure at least one** — the pipeline runs happily with
 zero receivers and delivers nothing, which looks identical to having no alerts.
+
+### Writing a credential
+
+```bash
+printf '%s' "$THE_VALUE" > ./secrets/alert_slack_webhook_url
+chmod 600 ./secrets/alert_slack_webhook_url
+docker compose -f docker-compose.prod.yml up -d alertmanager
+```
+
+Use `printf`, never `echo`. A trailing newline becomes part of the credential
+and the authentication failure that follows does not say so.
 
 ### Slack
 
-Create an Incoming Webhook in your Slack workspace, then:
+Create an Incoming Webhook in your Slack workspace and write the URL into
+`./secrets/alert_slack_webhook_url` as above. The rest is configuration:
 
 ```bash
-ALERT_SLACK_WEBHOOK_URL=<the webhook URL>
 ALERT_SLACK_CHANNEL=#alerts
-ALERT_SLACK_CHANNEL_BACKUP=#alerts-backups   # optional, defaults to #alerts
-ALERT_SLACK_CHANNEL_COST=#alerts-cost        # optional
+ALERT_SLACK_CHANNEL_BACKUP=#alerts-backups   # optional, defaults to ALERT_SLACK_CHANNEL
+ALERT_SLACK_CHANNEL_COST=#alerts-cost        # optional, defaults to ALERT_SLACK_CHANNEL
 ```
 
 ### Telegram
 
 Create a bot via `@BotFather`, add it to a group, then get the chat ID by
-messaging the group and reading `getUpdates` from the Bot API.
+messaging the group and reading `getUpdates` from the Bot API. The bot token
+goes into `./secrets/alert_telegram_bot_token`; the chat ID is configuration,
+not a credential:
 
 ```bash
-ALERT_TELEGRAM_BOT_TOKEN=123456:ABC-DEF...
 ALERT_TELEGRAM_CHAT_ID=-1001234567890
 ```
 
@@ -47,11 +94,12 @@ else happens.
 
 ### Email
 
+The SMTP password goes into `./secrets/alert_smtp_password`. Everything else:
+
 ```bash
 ALERT_SMTP_HOST=smtp.example.com
 ALERT_SMTP_PORT=587
 ALERT_SMTP_USER=alerts@example.com
-ALERT_SMTP_PASSWORD=<app password>
 ALERT_EMAIL_FROM=alerts@example.com
 ALERT_EMAIL_TO=oncall@example.com
 ```
@@ -75,6 +123,12 @@ docker compose -f docker-compose.prod.yml exec alertmanager \
 
 A message should appear in every configured channel within ~10 seconds. If it
 does not, check `docker compose logs alertmanager`.
+
+Read those logs on the first deploy even if you are not testing delivery yet.
+All three secrets are mounted whether or not anything has been written into
+them, and an empty file is the expected state for a channel you have not
+configured — but confirm Alertmanager started clean rather than assuming it
+did.
 
 ---
 

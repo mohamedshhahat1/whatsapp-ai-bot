@@ -68,11 +68,14 @@ void main() {
   });
 
   group('ChannelBadge', () {
+    // Not chat_bubble_outline: that name is an alias for messenger_outline,
+    // so asserting it here would pass while the two channels drew the same
+    // glyph. See the note on ChannelDisplay.
     testWidgets('draws the WhatsApp icon and label', (tester) async {
       await tester.pumpWidget(_host(const ChannelBadge(channel: channelWhatsapp)));
 
       expect(find.text('WhatsApp'), findsOneWidget);
-      expect(_iconOf(tester).icon, Icons.chat_bubble_outline);
+      expect(_iconOf(tester).icon, Icons.perm_phone_msg_outlined);
     });
 
     testWidgets('draws the Messenger icon and label', (tester) async {

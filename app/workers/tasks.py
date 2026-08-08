@@ -12,6 +12,7 @@ import json
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 import redis
@@ -28,6 +29,11 @@ from app.core.metrics import ERRORS_TOTAL, WEBHOOK_DEAD_LETTERS_TOTAL
 from app.core.retention_config import get_retention_settings
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
+from app.repositories.analytics import PriceDefaults
+from app.repositories.analytics_rollup import (
+    AnalyticsRollupRepository,
+    complete_days_before,
+)
 from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
 from app.services.session_service import SessionService
@@ -42,6 +48,14 @@ configure_logging(debug=settings.debug)
 logger = get_logger(__name__)
 
 MAX_RETRIES = 5
+
+# How many complete days each nightly rollup recomputes.
+#
+# Two rather than one so a single missed night heals itself: the next run
+# covers yesterday and the day before, and the upsert makes the second pass
+# over an already-summarised day a no-op in effect. It does not heal a longer
+# outage -- see rollup_daily_analytics for why that is left explicit.
+ANALYTICS_ROLLUP_LOOKBACK_DAYS = 2
 
 
 async def _close_all(
@@ -165,6 +179,37 @@ async def _purge_audit_logs() -> int:
     try:
         async with session_factory() as session:
             return await AuditService(session).purge_older_than(cutoff)
+    finally:
+        await _close_all((("engine", engine.dispose),))
+
+
+def _price_defaults() -> PriceDefaults:
+    """Fallback prices for calls no model_pricing row covers.
+
+    Built from the same two settings AnalyticsService uses, so an unpriced
+    call costs the same in the rollup as it does in the live query.
+    """
+    return PriceDefaults(
+        input_price=Decimal(str(settings.openai_input_price_per_1m)),
+        output_price=Decimal(str(settings.openai_output_price_per_1m)),
+    )
+
+
+async def _rollup_analytics(lookback: int) -> int:
+    """Recompute the stored summary for the most recent complete days.
+
+    No external clients: this reads two tables and writes a third.
+    """
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            days = complete_days_before(datetime.now(UTC), lookback)
+            processed = await AnalyticsRollupRepository(session).rollup_days(
+                days, _price_defaults()
+            )
+            await session.commit()
+            return processed
     finally:
         await _close_all((("engine", engine.dispose),))
 
@@ -424,5 +469,63 @@ def purge_expired_audit_logs(self: Task) -> None:
     logger.info(
         "audit_purge_completed",
         deleted=deleted,
+        duration_seconds=round(time.monotonic() - started, 3),
+    )
+
+
+@celery_app.task(
+    bind=True,
+    name="analytics.rollup_daily",
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=3,
+)
+def rollup_daily_analytics(self: Task, lookback: int | None = None) -> None:
+    """Nightly job: store the pre-aggregated summary for completed days.
+
+    Emitted by beat once a day. Safe to run twice and safe to retry: the day
+    is the primary key of analytics_daily and the write is an upsert, so a
+    repeat recomputes the same figures in place rather than duplicating them.
+
+    Retries are more generous than the other periodic tasks, and the reason is
+    the opposite of theirs. The idle sweep gives up quickly because its next
+    tick is a minute away and a fresh sweep beats a retried one. Here the next
+    tick is twenty-four hours away, so abandoning a failed run leaves a
+    missing day on the dashboard until tomorrow.
+
+    ``lookback`` overrides how many complete days are recomputed, for
+    backfilling by hand::
+
+        celery -A app.workers.celery_app.celery_app call \\
+            analytics.rollup_daily --args='[30]'
+
+    Backfilling is deliberately manual. Beat down for a week leaves a gap the
+    normal two-day lookback cannot reach, and having every tick scan an
+    unbounded range to find out would be a worse trade than leaving the gap
+    visible and filling it deliberately.
+    """
+    started = time.monotonic()
+    days = ANALYTICS_ROLLUP_LOOKBACK_DAYS if lookback is None else lookback
+    try:
+        processed = asyncio.run(_rollup_analytics(days))
+    except SoftTimeLimitExceeded:
+        ERRORS_TOTAL.labels(type="analytics_rollup_timeout").inc()
+        logger.error("analytics_rollup_timeout", retries=self.request.retries)
+        raise
+    except Exception as exc:
+        logger.error(
+            "analytics_rollup_failed",
+            retries=self.request.retries,
+            error=str(exc),
+        )
+        raise
+
+    # Logged unconditionally: this runs once a day, so the line is cheap, and
+    # its absence is the only signal that the nightly tick stopped arriving.
+    logger.info(
+        "analytics_rollup_completed",
+        days=processed,
         duration_seconds=round(time.monotonic() - started, 3),
     )

@@ -8,6 +8,7 @@ provide it for work that has external side effects.
 """
 
 from celery import Celery
+from celery.schedules import crontab
 from celery.signals import worker_ready, worker_shutdown
 
 from app.config import get_settings
@@ -48,6 +49,25 @@ OPERATOR_SESSION_PURGE_INTERVAL_SECONDS = 3600
 # capped, so a first run facing years of history simply finishes over several
 # days rather than in one long transaction.
 AUDIT_PURGE_INTERVAL_SECONDS = 86400
+
+# When to roll up yesterday's analytics.
+#
+# The only entry in the schedule expressed as a time of day rather than an
+# interval, and the only one that should be. The others describe a resolution
+# ("look for idle sessions every minute"), where the phase does not matter. A
+# nightly rollup is different: an 86400-second interval would fire at whatever
+# time the beat process last restarted, so "nightly" would drift to the middle
+# of the afternoon after one redeploy.
+#
+# Twenty past midnight UTC, not on the hour, so rows written either side of
+# the boundary have settled before the day they belong to is summarised.
+ANALYTICS_ROLLUP_HOUR = 0
+ANALYTICS_ROLLUP_MINUTE = 20
+
+# Six hours, comfortably inside the daily period. Without an expiry, a stack
+# that was down for three days would run three identical ticks on recovery,
+# each recomputing the same two days.
+ANALYTICS_ROLLUP_EXPIRES_SECONDS = 21600
 
 celery_app = Celery(
     "whatsapp_ai_bot",
@@ -140,6 +160,17 @@ celery_app.conf.update(
             "options": {
                 "queue": "webhooks",
                 "expires": float(AUDIT_PURGE_INTERVAL_SECONDS),
+            },
+        },
+        "rollup-daily-analytics": {
+            "task": "analytics.rollup_daily",
+            "schedule": crontab(
+                hour=ANALYTICS_ROLLUP_HOUR,
+                minute=ANALYTICS_ROLLUP_MINUTE,
+            ),
+            "options": {
+                "queue": "webhooks",
+                "expires": float(ANALYTICS_ROLLUP_EXPIRES_SECONDS),
             },
         },
     },

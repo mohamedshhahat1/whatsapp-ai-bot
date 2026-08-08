@@ -136,6 +136,36 @@ placeholder_secret backup_azure_sas_token
 # never in the mobile app, which uses a different file (google-services.json).
 placeholder_secret fcm_credentials
 
+# Alerting credentials (docs/ALERTING.md).
+#
+# Read by Alertmanager itself through the *_file form of each field --
+# smtp_auth_password_file, api_url_file, bot_token_file -- so they are never
+# substituted into the rendered alertmanager.yml and never pass through the
+# alertmanager-config init container's environment, where `docker inspect`
+# would disclose them.
+#
+# Empty placeholders because alerting is opt-in and none of these can be
+# generated: a Slack webhook URL and a Telegram bot token are issued by those
+# services, and the SMTP password belongs to a mail account. An operator who
+# uses only Slack should not be made to invent an SMTP password to bring the
+# stack up, so an empty file leaves that one channel unconfigured rather than
+# failing the deploy.
+#
+# To enable a channel later, write the credential into its file and restart
+# Alertmanager. Use printf rather than echo: a trailing newline becomes part
+# of the credential and the resulting authentication failure is not obvious.
+#
+#   printf '%s' "$SLACK_WEBHOOK_URL" > ./secrets/alert_slack_webhook_url
+#   chmod 600 ./secrets/alert_slack_webhook_url
+#   docker compose -f docker-compose.prod.yml up -d alertmanager
+#
+# The non-secret half of alerting -- SMTP host and port, sender and recipient
+# addresses, channel names, the Telegram chat id -- stays in the deployment
+# environment. Those are configuration, not credentials.
+placeholder_secret alert_smtp_password
+placeholder_secret alert_slack_webhook_url
+placeholder_secret alert_telegram_bot_token
+
 # Values only you can provide
 prompt_secret openai_api_key "OpenAI API key (sk-...)"
 prompt_secret whatsapp_token "WhatsApp Cloud API token"

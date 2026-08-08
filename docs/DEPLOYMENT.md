@@ -384,11 +384,13 @@ or email. Configure at least one receiver: most of these alerts exist precisely
 for failures that are otherwise invisible, and an unrouted alert is a log line
 nobody reads.
 
-Alerting credentials are the one exception to the Docker-secrets rule.
-Alertmanager has no environment expansion of its own, so its config is rendered
-by envsubst at start-up from shell environment variables. Keep them in a
-root-owned `0600` env file and source it before `docker compose up`, and be
-aware they are visible via `docker inspect` on the config init container.
+Alerting credentials are Docker secrets like everything else:
+`alert_smtp_password`, `alert_slack_webhook_url` and
+`alert_telegram_bot_token`, mounted on the `alertmanager` service and read by
+Alertmanager through the `*_file` form of each field. `init-secrets.sh` creates
+all three as empty placeholders; fill in the ones you use. Only the non-secret
+half -- SMTP host and port, sender and recipient, channel names, the Telegram
+chat id -- is substituted into the rendered config from the environment.
 
 The three alerts that matter most:
 
