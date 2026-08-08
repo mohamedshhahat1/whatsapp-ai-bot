@@ -2,22 +2,29 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../storage/secure_storage.dart';
 import '../../features/splash/splash_screen.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/auth_provider.dart';
 import '../../features/chat/chat_list_screen.dart';
 import '../../features/chat/chat_detail_screen.dart';
-import '../../features/chat/chat_models.dart';
 import '../../features/customers/customers_screen.dart';
 import '../../features/customers/customer_detail_screen.dart';
-import '../../features/customers/customer_models.dart';
 import '../../features/analytics/analytics_screen.dart';
 import '../../features/notifications/notifications_screen.dart';
 import '../../features/settings/settings_screen.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
-  final isAuthenticated = ref.watch(authStateProvider);
+  // Load-bearing, despite looking like a discarded read. This subscription is
+  // what invalidates the provider -- and so rebuilds the router -- when auth
+  // state flips. The redirect below uses ref.read, which does not subscribe,
+  // so without this watch a logout would not force redirect to re-evaluate
+  // and a signed-out operator would sit on a protected screen until the next
+  // navigation.
+  //
+  // The analyzer previously flagged the result being assigned to an unused
+  // local and suggested removing the variable. Only the assignment was
+  // removable; do not remove the call.
+  ref.watch(authStateProvider);
 
   return GoRouter(
     initialLocation: '/splash',
