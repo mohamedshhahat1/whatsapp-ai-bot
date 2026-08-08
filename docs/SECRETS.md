@@ -17,7 +17,7 @@ Highest priority first (`Settings.settings_customise_sources`):
 | 3 | `<FIELD>_FILE` env vars | Kubernetes projected volumes, Vault Agent templates |
 | 4 | HashiCorp Vault (KV v2) | central secret store with rotation & audit |
 | 5 | Docker secrets in `SECRETS_DIR` (`/run/secrets`) | Docker Compose / Swarm |
-| 6 | `.env` file | **development only** — skipped in production |
+| 6 | `.env` file | **development only** -- skipped in production |
 
 Required in production: `OPENAI_API_KEY`, `WHATSAPP_TOKEN`,
 `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`,
@@ -35,6 +35,60 @@ Each file is mounted read-only at `/run/secrets/<name>`; the file name matches
 the settings field (`openai_api_key`, `database_url`, ...), so no code change
 is needed to consume it. Postgres reads its own password via
 `POSTGRES_PASSWORD_FILE`, Grafana via `GF_SECURITY_ADMIN_PASSWORD__FILE`.
+
+### Optional credentials are empty placeholders, not missing files
+
+Docker refuses to start a stack when the file backing a declared secret does
+not exist. Optional credentials are therefore created **empty** rather than
+left out: an empty file disables the one feature it belongs to, while a missing
+file takes the entire deployment down. `init-secrets.sh` writes these empty and
+leaves them alone on a re-run:
+
+| Secret | Enables | Value comes from |
+|---|---|---|
+| `backup_s3_access_key_id`, `backup_s3_secret_access_key` | off-site backups (S3, B2) | your storage provider |
+| `backup_gcs_credentials` | off-site backups (GCS) | a service-account JSON file |
+| `backup_azure_sas_token` | off-site backups (Azure) | a container SAS |
+| `fcm_credentials` | mobile push notifications | a Firebase service-account JSON file |
+| `alert_smtp_password` | email alerts | the sending mail account |
+| `alert_slack_webhook_url` | Slack alerts | a Slack incoming webhook |
+| `alert_telegram_bot_token` | Telegram alerts | `@BotFather` |
+
+Fill one in with `printf`, never `echo` -- a trailing newline becomes part of
+the credential and the authentication failure that follows does not say so:
+
+```bash
+printf '%s' "$THE_VALUE" > ./secrets/alert_slack_webhook_url
+chmod 600 ./secrets/alert_slack_webhook_url
+docker compose -f docker-compose.prod.yml up -d alertmanager
+```
+
+### Alertmanager reads its own secrets
+
+The three `alert_*` files are the only secrets the **application** never reads.
+Alertmanager reads them itself, through the `*_file` form of each field in
+`monitoring/alertmanager.yml.tmpl`:
+
+| Secret | Alertmanager field |
+|---|---|
+| `alert_smtp_password` | `smtp_auth_password_file` |
+| `alert_slack_webhook_url` | `api_url_file`, on every Slack receiver |
+| `alert_telegram_bot_token` | `bot_token_file`, on every Telegram receiver |
+
+They are mounted on the `alertmanager` service only. The `alertmanager-config`
+init container renders the template and is deliberately given none of them, so
+`docker inspect` on it discloses nothing and the rendered config on the shared
+volume holds only `/run/secrets/...` paths.
+
+This replaces an earlier arrangement in which the values were substituted into
+the rendered config from `ALERT_SMTP_PASSWORD`, `ALERT_SLACK_WEBHOOK_URL` and
+`ALERT_TELEGRAM_BOT_TOKEN`. Those variables are no longer read by anything and
+should be removed from any env file that still sets them. The non-secret half
+of alerting -- SMTP host and port, sender and recipient, channel names, the
+Telegram chat id -- stays in the deployment environment; it is configuration,
+not credentials. See [docs/ALERTING.md](ALERTING.md).
+
+### Swarm
 
 On Docker Swarm, switch the `secrets:` block to external secrets:
 
@@ -64,8 +118,8 @@ child processes and crash dumps.
 
 ```bash
 vault kv put secret/whatsapp-ai-bot \
-  OPENAI_API_KEY=sk-... \
-  WHATSAPP_TOKEN=EAAG... \
+  OPENAI_API_KEY=... \
+  WHATSAPP_TOKEN=... \
   WHATSAPP_APP_SECRET=... \
   ADMIN_API_KEY=...
 ```
@@ -84,7 +138,8 @@ VAULT_SECRET_ID=...
 
 Keys are matched to settings fields case-insensitively. If Vault is enabled but
 unreachable, startup raises `SecretLoadError` instead of silently falling back
-to defaults.
+to defaults. Alertmanager does not use Vault: it reads the three `alert_*`
+Docker secrets directly.
 
 ## 4. GitHub Secrets (CI/CD)
 
@@ -97,7 +152,7 @@ The pipeline never stores credentials in the repository:
 | Variable | `DEPLOY_ENABLED`, `DEPLOY_URL` | enable deploy + health-check URL |
 
 Test jobs use obviously fake values (`test-key`, `test-admin-key`). Production
-secrets live only on the server (Docker secrets) or in Vault — the deploy job
+secrets live only on the server (Docker secrets) or in Vault -- the deploy job
 never transports them.
 
 ## 5. Leak prevention
@@ -108,6 +163,9 @@ never transports them.
   `secrets/`.
 - Secrets are never logged: structlog only records field names, and
   `app/core/metrics.py` labels contain no credentials.
+- Nothing rendered at start-up contains a credential. The Alertmanager config
+  is generated into a named volume from a template that substitutes only
+  non-secret values, so the generated file is safe to read during an incident.
 
 ## 6. Rotation
 
@@ -118,3 +176,10 @@ never transports them.
 
 Rotate `ADMIN_API_KEY` and `WHATSAPP_VERIFY_TOKEN` with
 `openssl rand -base64 36`.
+
+The `alert_*` credentials rotate the same way but recreate a different service,
+because the application never reads them:
+
+```bash
+docker compose -f docker-compose.prod.yml up -d --force-recreate alertmanager
+```
