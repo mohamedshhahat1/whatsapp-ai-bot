@@ -24,7 +24,6 @@ class _CustomerDetailScreenState extends ConsumerState<CustomerDetailScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(customerListProvider);
     final customer = state.customers.where((c) => c.waId == widget.waId).firstOrNull;
-    final theme = Theme.of(context);
     return Scaffold(
       body: CustomScrollView(
         slivers: [

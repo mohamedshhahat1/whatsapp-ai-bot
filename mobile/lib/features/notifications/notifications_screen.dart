@@ -36,7 +36,7 @@ class NotificationsScreen extends ConsumerWidget {
                   key: ValueKey(n.id),
                   direction: DismissDirection.endToStart,
                   background: Container(color: AppColors.error, alignment: Alignment.centerRight, padding: const EdgeInsets.only(right: 16), child: const Icon(Icons.delete, color: Colors.white)),
-                  onDismissed: (_) { ref.read(notificationProvider.notifier).state = ref.read(notificationProvider).where((nn) => nn.id != n.id).toList(); },
+                  onDismissed: (_) => notifier.remove(n.id),
                   child: ListTile(
                     onTap: () { notifier.markRead(n.id); if (n.conversationId != null) context.push('/chats/${n.conversationId}'); },
                     leading: CircleAvatar(backgroundColor: isLead ? AppColors.gold : AppColors.primary, child: Icon(isLead ? Icons.star : Icons.notifications, color: Colors.white, size: 18)),

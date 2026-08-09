@@ -6,7 +6,6 @@ import 'package:pull_down_button/pull_down_button.dart';
 
 import '../../core/theme/app_colors.dart';
 import '../../core/utils/formatters.dart';
-import '../../shared/widgets/loading_shimmer.dart';
 import '../../shared/widgets/error_view.dart';
 import 'chat_detail_provider.dart';
 import 'chat_models.dart';

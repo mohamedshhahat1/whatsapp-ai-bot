@@ -70,7 +70,7 @@ class ChatDetailNotifier extends StateNotifier<ChatDetailState> {
   final ChatRepository _repo;
   final WebSocketService _wsService;
   final SecureStorage _storage;
-  StreamSubscription? _wsSub;
+  StreamSubscription<WsEvent>? _wsSub;
   int? _conversationId;
 
   Future<void> load(int conversationId) async {
