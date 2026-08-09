@@ -58,6 +58,21 @@ class AuditLog(Base):
     # BigInteger because this table only grows: it is never updated, and
     # pruning it is a deliberate operational act rather than routine.
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    # Nullable, and that is the design rather than a gap.
+    #
+    # NULL means "this action was not performed inside a tenant": either it
+    # predates 0016_tenant_ownership, or it is a platform-level act by the
+    # shared ADMIN_API_KEY identity, which holds no tenant membership by
+    # decision. Keeping the two distinguishable is a requirement, and a
+    # nullable column says it directly.
+    #
+    # Historical rows keep NULL because they cannot be filled: 0010 installs a
+    # BEFORE UPDATE trigger that raises unconditionally, and 0012 kept it that
+    # way. Backfilling would mean weakening or bypassing the append-only
+    # guarantee, which is a far worse trade than an unattributed old row.
+    tenant_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tenants.id", ondelete="RESTRICT"), nullable=True, index=True
+    )
     # RESTRICT, not CASCADE or SET NULL. A trail that can lose its subject is
     # not a trail, so an operator who leaves is deactivated instead.
     operator_id: Mapped[int] = mapped_column(
