@@ -54,55 +54,79 @@ class ConversationTile extends StatelessWidget {
           decoration: BoxDecoration(color: highlightLead ? AppColors.goldGlow.withValues(alpha: 0.15) : null, border: Border(bottom: BorderSide(color: theme.dividerColor, width: 0.5))),
           child: Row(
             children: [
-              Stack(children: [
-                CircleAvatar(radius: 28, backgroundColor: highlightLead ? AppColors.gold : AppColors.primary, child: Text(Formatters.initials(conversation.assignedOperator, '?'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600))),
-                if (highlightLead)
-                  Positioned(right: 0, bottom: 0, child: Container(padding: const EdgeInsets.all(3), decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle), child: const Icon(Icons.star, size: 12, color: AppColors.gold))).animate().shimmer(duration: 1500.ms),
-              ]),
+              Stack(
+                children: [
+                  CircleAvatar(radius: 28, backgroundColor: highlightLead ? AppColors.gold : AppColors.primary, child: Text(Formatters.initials(conversation.assignedOperator, '?'), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600))),
+                  if (highlightLead)
+                    Positioned(right: 0, bottom: 0, child: Container(padding: const EdgeInsets.all(3), decoration: const BoxDecoration(color: Colors.white, shape: BoxShape.circle), child: const Icon(Icons.star, size: 12, color: AppColors.gold))).animate().shimmer(duration: 1500.ms),
+                ],
+              ),
               const SizedBox(width: 12),
-              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Row(children: [
-                  Expanded(child: Text(conversation.assignedOperator ?? 'Customer #${conversation.userId}', style: theme.textTheme.titleMedium?.copyWith(fontWeight: isUnread ? FontWeight.w700 : FontWeight.w500), maxLines: 1, overflow: TextOverflow.ellipsis)),
-                  Text(Formatters.chatTime(conversation.updatedAt), style: theme.textTheme.bodySmall?.copyWith(color: isUnread ? AppColors.primary : null, fontWeight: isUnread ? FontWeight.w600 : null)),
-                ]),
-                const SizedBox(height: 4),
-                Row(children: [
-                  // First in the row on purpose. Which app someone wrote from
-                  // decides the reply window, what formatting survives and
-                  // whether an attachment can be opened, so it outranks who is
-                  // currently answering.
-                  if (showChannel) ...[
-                    ChannelBadge(channel: conversation.channel),
-                    const SizedBox(width: 4),
-                  ],
-                  Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: isHuman ? AppColors.humanMode.withValues(alpha: 0.15) : AppColors.botMode.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)), child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    Icon(isHuman ? Icons.person : Icons.smart_toy, size: 10, color: isHuman ? AppColors.humanMode : AppColors.botMode),
-                    const SizedBox(width: 3),
-                    Text(isHuman ? 'Human' : 'Bot', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: isHuman ? AppColors.humanMode : AppColors.botMode)),
-                  ])),
-                  if (isLead) ...[
-                    const SizedBox(width: 4),
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: AppColors.gold.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(6)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.star, size: 10, color: AppColors.gold), SizedBox(width: 3), Text('Lead', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.gold))])),
-                  ],
-                  if (stateLabel != null) ...[
-                    const SizedBox(width: 4),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: theme.disabledColor.withValues(alpha: 0.18),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Row(mainAxisSize: MainAxisSize.min, children: [
-                        Icon(isClosed ? Icons.lock_outline : Icons.schedule,
-                            size: 10, color: theme.disabledColor),
-                        const SizedBox(width: 3),
-                        Text(stateLabel, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: theme.disabledColor)),
-                      ]),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(child: Text(conversation.assignedOperator ?? 'Customer #${conversation.userId}', style: theme.textTheme.titleMedium?.copyWith(fontWeight: isUnread ? FontWeight.w700 : FontWeight.w500), maxLines: 1, overflow: TextOverflow.ellipsis)),
+                        Text(Formatters.chatTime(conversation.updatedAt), style: theme.textTheme.bodySmall?.copyWith(color: isUnread ? AppColors.primary : null, fontWeight: isUnread ? FontWeight.w600 : null)),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        // First in the row on purpose. Which app someone wrote
+                        // from decides the reply window, what formatting
+                        // survives and whether an attachment can be opened, so
+                        // it outranks who is currently answering.
+                        if (showChannel) ...[
+                          ChannelBadge(channel: conversation.channel),
+                          const SizedBox(width: 4),
+                        ],
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(color: isHuman ? AppColors.humanMode.withValues(alpha: 0.15) : AppColors.botMode.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(isHuman ? Icons.person : Icons.smart_toy, size: 10, color: isHuman ? AppColors.humanMode : AppColors.botMode),
+                              const SizedBox(width: 3),
+                              Text(isHuman ? 'Human' : 'Bot', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: isHuman ? AppColors.humanMode : AppColors.botMode)),
+                            ],
+                          ),
+                        ),
+                        if (isLead) ...[
+                          const SizedBox(width: 4),
+                          Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: AppColors.gold.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(6)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.star, size: 10, color: AppColors.gold), SizedBox(width: 3), Text('Lead', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.gold))])),
+                        ],
+                        if (stateLabel != null) ...[
+                          const SizedBox(width: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: theme.disabledColor.withValues(alpha: 0.18),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  isClosed ? Icons.lock_outline : Icons.schedule,
+                                  size: 10,
+                                  color: theme.disabledColor,
+                                ),
+                                const SizedBox(width: 3),
+                                Text(stateLabel, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: theme.disabledColor)),
+                              ],
+                            ),
+                          ),
+                        ],
+                        const Spacer(),
+                      ],
                     ),
                   ],
-                  const Spacer(),
-                ]),
-              ])),
+                ),
+              ),
               if (isUnread)
                 Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(12)), child: const Text('\u25cf', style: TextStyle(color: Colors.white, fontSize: 10))).animate().scale(),
             ],
