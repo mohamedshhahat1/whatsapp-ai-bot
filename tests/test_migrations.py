@@ -29,6 +29,9 @@ CORE_TABLES = ("users", "conversations", "messages", "ai_logs")
 CHANNEL_IDENTITY = "0009_channel_identity"
 EXTERNAL_ID_NOT_NULL = "0013_external_id_not_null"
 
+#: Phase 1b. Attaches the business tables to a tenant.
+TENANT_OWNERSHIP = "0016_tenant_ownership"
+
 _DROP_NOT_NULL = "ALTER TABLE users ALTER COLUMN external_id DROP NOT NULL"
 _SET_NOT_NULL = "ALTER TABLE users ALTER COLUMN external_id SET NOT NULL"
 
@@ -37,19 +40,28 @@ SELECT is_nullable FROM information_schema.columns
 WHERE table_name = 'users' AND column_name = 'external_id'
 """
 
+# INSERT ... SELECT rather than VALUES, because tenant_id is NOT NULL as of
+# 0016 and its value is a sequence-assigned id nobody can hard-code. Resolving
+# it from the slug keeps these fixtures independent of insertion order.
 _INSERT_LEGACY_ROW = """
-INSERT INTO users (channel, external_id, wa_id, name)
-VALUES ('whatsapp', NULL, :wa_id, 'Pre-0013 row')
+INSERT INTO users (tenant_id, channel, external_id, wa_id, name)
+SELECT t.id, 'whatsapp', NULL, :wa_id, 'Pre-0013 row'
+  FROM tenants AS t
+ WHERE t.slug = 'default'
 """
 
 _INSERT_MESSENGER_ROW = """
-INSERT INTO users (channel, external_id, wa_id, name)
-VALUES ('messenger', :external_id, NULL, 'Messenger row')
+INSERT INTO users (tenant_id, channel, external_id, wa_id, name)
+SELECT t.id, 'messenger', :external_id, NULL, 'Messenger row'
+  FROM tenants AS t
+ WHERE t.slug = 'default'
 """
 
 _INSERT_UNREACHABLE_ROW = """
-INSERT INTO users (channel, external_id, wa_id, name)
-VALUES ('whatsapp', NULL, NULL, 'No id at all')
+INSERT INTO users (tenant_id, channel, external_id, wa_id, name)
+SELECT t.id, 'whatsapp', NULL, NULL, 'No id at all'
+  FROM tenants AS t
+ WHERE t.slug = 'default'
 """
 
 
@@ -126,6 +138,60 @@ def test_the_downgrade_only_relaxes_the_constraint() -> None:
     assert "op.execute" not in source
 
 
+def test_tenant_ownership_follows_the_tenancy_foundation() -> None:
+    """1b builds on 1a. Reordering them would add a key to a missing table."""
+    revision = _scripts().get_revision(TENANT_OWNERSHIP)
+    assert revision.down_revision == "0015_tenancy_foundation"
+
+
+def test_the_tenant_backfill_runs_before_the_columns_are_tightened() -> None:
+    """Same expand/contract discipline as 0013, one table wider.
+
+    SET NOT NULL before the backfill would abort on every existing row, which
+    on a populated deployment means the migration fails after having taken an
+    ACCESS EXCLUSIVE lock for nothing.
+    """
+    source = inspect.getsource(_migration(TENANT_OWNERSHIP).upgrade)
+    assert source.index("add_column") < source.index("_backfill")
+    assert source.index("_backfill") < source.index("alter_column")
+
+
+def test_the_tenant_downgrade_refuses_rather_than_destroying_data() -> None:
+    """The pre-1b schema cannot represent two tenants, so it must not try.
+
+    analytics_daily would need two rows under one primary key, and two tenants'
+    customers sharing a phone number would collide on a global unique index.
+    Merging or deleting to make that fit would silently destroy one tenant's
+    data, so the downgrade raises instead -- and this asserts, at the source
+    level, that no data statement was ever added to make it "work".
+    """
+    module = _migration(TENANT_OWNERSHIP)
+    source = inspect.getsource(module.downgrade)
+    assert "RuntimeError" in source
+    assert "TENANT_IDS_IN_USE" in source
+    assert "DELETE FROM" not in source
+    assert "UPDATE " not in source
+
+
+def test_the_tenant_migration_exposes_its_sql_for_testing() -> None:
+    """The 0013 precedent: tests drive the real statements, not copies of them."""
+    module = _migration(TENANT_OWNERSHIP)
+    for name in (
+        "BACKFILL_USERS",
+        "BACKFILL_CONVERSATIONS",
+        "BACKFILL_MESSAGES",
+        "BACKFILL_DOCUMENTS",
+        "BACKFILL_DOCUMENT_CHUNKS",
+        "BACKFILL_AI_LOGS_VIA_CONVERSATION",
+        "BACKFILL_AI_LOGS_DETACHED",
+        "BACKFILL_ANALYTICS_DAILY",
+        "UNBACKFILLED_ROWS",
+        "POPULATED_OWNED_TABLES",
+        "TENANT_IDS_IN_USE",
+    ):
+        assert getattr(module, name, "").strip(), f"{name} missing or empty"
+
+
 # --- What landed in the database --------------------------------------------
 
 
@@ -173,6 +239,12 @@ async def test_both_identity_indexes_survive_the_contract_step(
 
     The phone number is still WhatsApp's identifier and still what operators
     search by, so 0013 tightens external_id without taking anything away.
+
+    Both names survive 0016 as well, which is why that migration recreates
+    them under the same names rather than introducing new ones: ix_users_wa_id
+    keeps the lookup and loses only its uniqueness, and
+    uq_users_channel_external_id stays a constraint because the writer names it
+    in ON CONFLICT ON CONSTRAINT.
     """
     for name in ("uq_users_channel_external_id", "ix_users_wa_id"):
         exists = await db.scalar(
