@@ -30,56 +30,68 @@ class ErrorInterceptor extends Interceptor {
       case DioExceptionType.connectionTimeout:
       case DioExceptionType.sendTimeout:
       case DioExceptionType.receiveTimeout:
-        handler.reject(DioException(
-          requestOptions: err.requestOptions,
-          type: err.type,
-          error: const TimeoutFailure(),
-        ));
+        handler.reject(
+          DioException(
+            requestOptions: err.requestOptions,
+            type: err.type,
+            error: const TimeoutFailure(),
+          ),
+        );
         return;
       case DioExceptionType.connectionError:
-        handler.reject(DioException(
-          requestOptions: err.requestOptions,
-          type: err.type,
-          error: const OfflineFailure(),
-        ));
+        handler.reject(
+          DioException(
+            requestOptions: err.requestOptions,
+            type: err.type,
+            error: const OfflineFailure(),
+          ),
+        );
         return;
       case DioExceptionType.badResponse:
         final status = err.response?.statusCode ?? 500;
         final detail = _extractDetail(err.response);
         if (status == 401) {
-          handler.reject(DioException(
-            requestOptions: err.requestOptions,
-            type: err.type,
-            error: UnauthorizedFailure(message: detail),
-          ));
+          handler.reject(
+            DioException(
+              requestOptions: err.requestOptions,
+              type: err.type,
+              error: UnauthorizedFailure(message: detail),
+            ),
+          );
           return;
         }
         if (status == 404) {
-          handler.reject(DioException(
-            requestOptions: err.requestOptions,
-            type: err.type,
-            error: NotFoundFailure(message: detail),
-          ));
+          handler.reject(
+            DioException(
+              requestOptions: err.requestOptions,
+              type: err.type,
+              error: NotFoundFailure(message: detail),
+            ),
+          );
           return;
         }
-        handler.reject(DioException(
-          requestOptions: err.requestOptions,
-          type: err.type,
-          error: ServerFailure(message: detail, statusCode: status),
-        ));
+        handler.reject(
+          DioException(
+            requestOptions: err.requestOptions,
+            type: err.type,
+            error: ServerFailure(message: detail, statusCode: status),
+          ),
+        );
         return;
       default:
-        handler.reject(DioException(
-          requestOptions: err.requestOptions,
-          type: err.type,
-          error: UnknownFailure(message: err.message ?? 'Unknown error'),
-        ));
+        handler.reject(
+          DioException(
+            requestOptions: err.requestOptions,
+            type: err.type,
+            error: UnknownFailure(message: err.message ?? 'Unknown error'),
+          ),
+        );
     }
   }
 
-  String _extractDetail(Response? response) {
+  String _extractDetail(Response<dynamic>? response) {
     if (response?.data is Map) {
- final data = response!.data as Map;
+      final data = response!.data as Map;
       if (data.containsKey('detail')) return data['detail'].toString();
     }
     return response?.statusMessage ?? 'Unknown error';

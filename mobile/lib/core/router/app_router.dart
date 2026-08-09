@@ -2,22 +2,23 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../storage/secure_storage.dart';
 import '../../features/splash/splash_screen.dart';
 import '../../features/auth/login_screen.dart';
 import '../../features/auth/auth_provider.dart';
 import '../../features/chat/chat_list_screen.dart';
 import '../../features/chat/chat_detail_screen.dart';
-import '../../features/chat/chat_models.dart';
 import '../../features/customers/customers_screen.dart';
 import '../../features/customers/customer_detail_screen.dart';
-import '../../features/customers/customer_models.dart';
 import '../../features/analytics/analytics_screen.dart';
 import '../../features/notifications/notifications_screen.dart';
 import '../../features/settings/settings_screen.dart';
 
 final appRouterProvider = Provider<GoRouter>((ref) {
-  final isAuthenticated = ref.watch(authStateProvider);
+  // Watched, not read, and the value is deliberately discarded: this is what
+  // rebuilds the provider -- and therefore the GoRouter -- when the operator
+  // logs in or out, so the redirect below runs again against the new state.
+  // The redirect itself uses ref.read so it does not subscribe a second time.
+  ref.watch(authStateProvider);
 
   return GoRouter(
     initialLocation: '/splash',
