@@ -8,6 +8,10 @@ the signature check, the global switch, the parse and the per-channel switch
 have to happen in that sequence or a live deployment either leaks work or
 starts answering Meta with retryable errors.
 
+It also covers the comment surfaces, which arrive on those same two objects
+under ``changes`` rather than ``messaging``. One object therefore names two
+channels, and the route accepts a delivery when either of them is switched on.
+
 Every POST is signed. CI exports WHATSAPP_APP_SECRET, so the allow_unsigned
 escape hatch that makes local runs convenient is shut on the runner -- an
 unsigned delivery here would pass locally and 403 in CI.
@@ -32,6 +36,9 @@ APP_SECRET = "test-meta-app-secret"
 IG_ACCOUNT = "17841400000000001"
 PAGE_ID = "100000000000001"
 CUSTOMER = "6789012345678901"
+COMMENT_ID = PAGE_ID + "_200000000000002"
+POST_ID = PAGE_ID + "_300000000000003"
+IG_COMMENT_ID = "17900000000000001"
 
 INSTAGRAM_DELIVERY: dict[str, Any] = {
     "object": "instagram",
@@ -54,6 +61,56 @@ INSTAGRAM_DELIVERY: dict[str, Any] = {
 PAGE_DELIVERY: dict[str, Any] = {
     "object": "page",
     "entry": [{"id": PAGE_ID, "time": 1730000000000, "messaging": []}],
+}
+
+# A comment on a page post. Note ``created_time`` is epoch SECONDS on the
+# ``feed`` field, unlike the millisecond timestamps carried by ``messaging``
+# above, and that a comment is field=feed AND item=comment AND verb=add.
+PAGE_COMMENT_DELIVERY: dict[str, Any] = {
+    "object": "page",
+    "entry": [
+        {
+            "id": PAGE_ID,
+            "time": 1730000000,
+            "changes": [
+                {
+                    "field": "feed",
+                    "value": {
+                        "from": {"id": CUSTOMER, "name": "Customer"},
+                        "item": "comment",
+                        "verb": "add",
+                        "comment_id": COMMENT_ID,
+                        "post_id": POST_ID,
+                        "created_time": 1730000000,
+                        "message": "hello",
+                    },
+                }
+            ],
+        }
+    ],
+}
+
+# Facebook Login for Business delivers Instagram comments under ``changes``
+# with the id in ``comment_id``. Business Login puts ``value`` directly on the
+# entry with the id in ``id`` instead; see docs/CHANNELS.md for both shapes.
+INSTAGRAM_COMMENT_DELIVERY: dict[str, Any] = {
+    "object": "instagram",
+    "entry": [
+        {
+            "id": IG_ACCOUNT,
+            "time": 1730000000,
+            "changes": [
+                {
+                    "field": "comments",
+                    "value": {
+                        "from": {"id": CUSTOMER, "username": "customer"},
+                        "comment_id": IG_COMMENT_ID,
+                        "text": "hello",
+                    },
+                }
+            ],
+        }
+    ],
 }
 
 
@@ -111,6 +168,39 @@ def all_meta_off(monkeypatch: pytest.MonkeyPatch) -> None:
         meta_webhook,
         "get_channel_settings",
         lambda: _channels(enable_instagram_dm=False, enable_messenger=False),
+    )
+
+
+@pytest.fixture
+def facebook_comments_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Facebook comments on, both DM surfaces off.
+
+    A page that answers publicly without running a DM bot is a legitimate
+    deployment, and it is the exact combination a one-channel-per-object
+    lookup could not serve: the object's DM channel is Messenger, and
+    Messenger is off.
+    """
+    monkeypatch.setattr(
+        meta_webhook,
+        "get_channel_settings",
+        lambda: _channels(
+            enable_messenger=False,
+            enable_instagram_dm=False,
+            enable_facebook_comments=True,
+        ),
+    )
+
+
+@pytest.fixture
+def instagram_comments_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        meta_webhook,
+        "get_channel_settings",
+        lambda: _channels(
+            enable_messenger=False,
+            enable_instagram_dm=False,
+            enable_instagram_comments=True,
+        ),
     )
 
 
@@ -196,6 +286,79 @@ def test_a_body_that_is_not_an_object_is_acknowledged_and_dropped(
     assert response.status_code == 200
     assert response.json() == {"status": "ignored"}
     assert delivered == []
+
+
+# --- Comment surfaces -------------------------------------------------------
+
+
+def test_a_page_comment_is_handed_over_when_only_comments_are_on(
+    client: TestClient,
+    facebook_comments_only: None,
+    delivered: list[dict[str, Any]],
+) -> None:
+    """The delivery the previous routing could not accept at all.
+
+    The object is ``page``, whose DM channel is Messenger, and Messenger is off
+    here. Resolving a single channel per object therefore refused a comment
+    this deployment had explicitly switched on.
+    """
+    body = _body(PAGE_COMMENT_DELIVERY)
+    response = client.post("/webhook/meta", content=body, headers=_signed(body))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "queued"}
+    assert delivered == [PAGE_COMMENT_DELIVERY]
+
+
+def test_a_page_comment_is_dropped_while_both_page_surfaces_are_off(
+    client: TestClient, instagram_only: None, delivered: list[dict[str, Any]]
+) -> None:
+    """Enabling an Instagram surface must not open the route to page traffic."""
+    body = _body(PAGE_COMMENT_DELIVERY)
+    response = client.post("/webhook/meta", content=body, headers=_signed(body))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ignored"}
+    assert delivered == []
+
+
+def test_a_comment_delivery_is_accepted_whenever_any_page_surface_is_on(
+    client: TestClient, messenger_only: None, delivered: list[dict[str, Any]]
+) -> None:
+    """The route gates on the object's switches, never on the entries inside.
+
+    Both page surfaces arrive as ``object: page``, and telling them apart would
+    mean parsing the body in the request handler -- work before the ACK, which
+    is what this route exists to avoid. So a comment delivery is accepted while
+    Messenger alone is on, and the Messenger adapter then finds no ``messaging``
+    array and produces no events. Accepting and finding nothing costs one no-op
+    task; a 4xx would have Meta retrying for hours.
+    """
+    body = _body(PAGE_COMMENT_DELIVERY)
+    response = client.post("/webhook/meta", content=body, headers=_signed(body))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "queued"}
+
+
+def test_an_instagram_comment_is_handed_over_when_that_surface_is_on(
+    client: TestClient,
+    instagram_comments_only: None,
+    delivered: list[dict[str, Any]],
+) -> None:
+    """Accepted by the route today; the adapter that parses it lands in step 3.
+
+    Worth pinning now because the two are separate concerns: the switch decides
+    whether a delivery is worth queueing, and the task then resolves whatever
+    adapters exist. Until the Instagram comment adapter is written the task
+    resolves none for this payload and returns having opened nothing.
+    """
+    body = _body(INSTAGRAM_COMMENT_DELIVERY)
+    response = client.post("/webhook/meta", content=body, headers=_signed(body))
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "queued"}
+    assert delivered == [INSTAGRAM_COMMENT_DELIVERY]
 
 
 # --- Ordering ---------------------------------------------------------------
