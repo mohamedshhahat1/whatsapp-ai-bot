@@ -91,19 +91,87 @@ jobs:
             -e WHATSAPP_APP_SECRET=drill -e ADMIN_API_KEY=drill \
             whatsapp-ai-bot:drill alembic upgrade head
 
+      # A drill against an empty database proves the schema restores but not
+      # that the DATA does, and the integrity checks in steps 9-10 need rows
+      # with real foreign keys between them to mean anything.
+      #
+      # This used to insert one customer and end with
+      # `|| echo "::warning::seed insert skipped"`. That fallback was not
+      # hypothetical protection: the insert named (wa_id, name, created_at) and
+      # migration 0013 made external_id NOT NULL with no default, so it had
+      # already been failing -- the job stayed green and every later step
+      # verified an empty database. A warning nobody reads is not a check.
+      #
+      # So: no fallback, ON_ERROR_STOP is on, and the next step fails the job
+      # if any of the three tables is empty. If a future migration changes the
+      # column layout again, this breaks loudly on the commit that does it.
+      #
+      # The tenant is resolved from the tenants table rather than hard-coded,
+      # because ids are assigned by a sequence; 0015 seeds the default tenant
+      # on an empty database, which is exactly what this is.
       - name: Seed representative rows
-        env:
-          PGPASSWORD: sourcepass
         run: |
-          # A drill against an empty database proves the schema restores but
-          # not that the DATA does. The integrity checks in steps 9-10 need
-          # rows with real foreign keys between them to mean anything.
           docker exec -e PGPASSWORD=sourcepass drill-source \
-            psql -U postgres -d whatsapp_ai_bot -v ON_ERROR_STOP=1 -c "
-              INSERT INTO users (wa_id, name, created_at)
-              VALUES ('201000000001', 'Drill User', now())
-              ON CONFLICT DO NOTHING;
-            " || echo "::warning::seed insert skipped (column layout differs); drill will run against schema only"
+            psql -U postgres -d whatsapp_ai_bot -v ON_ERROR_STOP=1 <<'SQL'
+            INSERT INTO users (tenant_id, channel, external_id, wa_id, name, created_at)
+            SELECT t.id, 'whatsapp', '201000000001', '201000000001',
+                   'Drill User', now()
+              FROM tenants AS t
+             WHERE t.slug = 'default'
+            ON CONFLICT DO NOTHING;
+
+            INSERT INTO conversations (
+                tenant_id, user_id, channel, status, mode,
+                last_activity_at, created_at, updated_at
+            )
+            SELECT u.tenant_id, u.id, 'whatsapp', 'active', 'bot',
+                   now(), now(), now()
+              FROM users AS u
+             WHERE u.channel = 'whatsapp'
+               AND u.external_id = '201000000001'
+            ON CONFLICT DO NOTHING;
+
+            INSERT INTO messages (
+                tenant_id, conversation_id, wa_message_id, direction,
+                type, content, created_at
+            )
+            SELECT c.tenant_id, c.id, 'wamid.drill.0001', 'inbound',
+                   'text', 'drill message', now()
+              FROM conversations AS c
+              JOIN users AS u ON u.id = c.user_id
+             WHERE u.channel = 'whatsapp'
+               AND u.external_id = '201000000001'
+            ON CONFLICT DO NOTHING;
+          SQL
+
+      - name: Verify the seed landed
+        run: |
+          set -e
+          for table in users conversations messages; do
+            count=$(docker exec -e PGPASSWORD=sourcepass drill-source \
+              psql -U postgres -d whatsapp_ai_bot -tAc \
+              "SELECT count(*) FROM $table")
+            echo "$table: $count row(s)"
+            test "$count" -gt 0 || {
+              echo "::error::$table is empty; the drill would verify nothing"
+              exit 1
+            }
+          done
+          # The row that makes steps 9-10 meaningful: a message reachable from
+          # a customer through a conversation, all three in the same tenant.
+          joined=$(docker exec -e PGPASSWORD=sourcepass drill-source \
+            psql -U postgres -d whatsapp_ai_bot -tAc "
+              SELECT count(*)
+                FROM messages AS m
+                JOIN conversations AS c
+                  ON c.id = m.conversation_id AND c.tenant_id = m.tenant_id
+                JOIN users AS u
+                  ON u.id = c.user_id AND u.tenant_id = c.tenant_id")
+          echo "joined across the tenant-carrying keys: $joined row(s)"
+          test "$joined" -gt 0 || {
+            echo "::error::seeded rows are not referentially connected"
+            exit 1
+          }
 
       - name: Create the backup
         env:
@@ -130,7 +198,8 @@ jobs:
           RESTORE_DRILL_APP_PORT: "58000"
           # The seeded database has no knowledge base, so documents and
           # model_pricing may legitimately be absent depending on which
-          # migrations created them. Assert the three tables that always exist.
+          # migrations created them. Assert the three tables that always exist
+          # -- and which the seed above now guarantees are populated.
           RESTORE_DRILL_TABLES: "users conversations messages"
         run: |
           chmod +x scripts/restore-drill.sh

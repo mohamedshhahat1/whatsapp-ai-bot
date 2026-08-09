@@ -9,6 +9,11 @@ model_pricing, so the pricing LATERAL finds nothing and cost falls back to the
 defaults passed in. That makes the expected spend computable by hand instead
 of depending on whatever migration 0002 seeded.
 
+Since 0016 the rollup writes one row per tenant per day, so these tests name
+the tenant they are asserting about rather than assuming the table holds a
+single row. Cross-tenant separation is covered in test_tenant_ownership.py,
+which has the fixture for a second tenant.
+
 Cleaning up is this module's own responsibility, unlike everywhere else in the
 suite. ``_add_log`` writes rows whose ``conversation_id`` is NULL, because the
 rollup counts API calls rather than conversations, and both cleanup helpers in
@@ -56,13 +61,21 @@ def _add_log(
     db: AsyncSession,
     *,
     when: datetime,
+    tenant_id: int,
     prompt: int = 100,
     completion: int = 50,
     latency: int = 200,
     error: str | None = None,
 ) -> None:
+    """Add one usage row directly, bypassing the repository.
+
+    ``tenant_id`` is required rather than defaulted. These rows are built by
+    hand, so nothing would resolve a fallback for them -- and a test that
+    guessed the tenant would be asserting about a row it had not placed.
+    """
     db.add(
         AILog(
+            tenant_id=tenant_id,
             conversation_id=None,
             model=UNPRICED_MODEL,
             prompt_tokens=prompt,
@@ -102,6 +115,11 @@ async def _clear_rollup_rows(session: AsyncSession) -> None:
     ``model`` is the discriminator rather than a date range: UNPRICED_MODEL is
     unique to this file, so the delete cannot reach a log another test owns
     even if that test picked the same day.
+
+    The stored summaries are cleared for every tenant, not just the default
+    one. The rollup writes a row per tenant, so leaving another tenant's row
+    behind would both break the counts here and block that tenant's teardown
+    -- analytics_daily references tenants ON DELETE RESTRICT.
     """
     await session.execute(delete(AILog).where(AILog.model == UNPRICED_MODEL))
     await session.execute(
@@ -153,12 +171,16 @@ def test_complete_days_before_converts_to_utc_before_taking_the_date() -> None:
 
 
 async def test_first_rollup_summarises_the_day(
-    db: AsyncSession, customer: Customer, rollup_tables: None
+    db: AsyncSession,
+    customer: Customer,
+    default_tenant: int,
+    rollup_tables: None,
 ) -> None:
-    _add_log(db, when=datetime(2001, 3, 4, 9, 0, tzinfo=UTC))
+    _add_log(db, when=datetime(2001, 3, 4, 9, 0, tzinfo=UTC), tenant_id=default_tenant)
     _add_log(
         db,
         when=datetime(2001, 3, 4, 17, 0, tzinfo=UTC),
+        tenant_id=default_tenant,
         latency=400,
         error="upstream timeout",
     )
@@ -176,6 +198,7 @@ async def test_first_rollup_summarises_the_day(
 
     row = await rollup.get(DAY)
     assert row is not None
+    assert row.tenant_id == default_tenant
     assert row.requests == 2
     # count() over the nullable error column counts failures only.
     assert row.errors == 1
@@ -192,9 +215,9 @@ async def test_first_rollup_summarises_the_day(
 
 
 async def test_rerunning_the_same_night_does_not_duplicate(
-    db: AsyncSession, rollup_tables: None
+    db: AsyncSession, default_tenant: int, rollup_tables: None
 ) -> None:
-    _add_log(db, when=datetime(2001, 3, 4, 12, 0, tzinfo=UTC))
+    _add_log(db, when=datetime(2001, 3, 4, 12, 0, tzinfo=UTC), tenant_id=default_tenant)
     await db.commit()
 
     rollup = AnalyticsRollupRepository(db)
@@ -205,7 +228,14 @@ async def test_rerunning_the_same_night_does_not_duplicate(
 
     db.expire_all()
     rows = (
-        (await db.execute(select(AnalyticsDaily).where(AnalyticsDaily.day == DAY)))
+        (
+            await db.execute(
+                select(AnalyticsDaily).where(
+                    AnalyticsDaily.day == DAY,
+                    AnalyticsDaily.tenant_id == default_tenant,
+                )
+            )
+        )
         .scalars()
         .all()
     )
@@ -214,7 +244,7 @@ async def test_rerunning_the_same_night_does_not_duplicate(
 
 
 async def test_rerunning_picks_up_rows_that_arrived_late(
-    db: AsyncSession, rollup_tables: None
+    db: AsyncSession, default_tenant: int, rollup_tables: None
 ) -> None:
     """The conflict action must be DO UPDATE, not DO NOTHING.
 
@@ -222,14 +252,14 @@ async def test_rerunning_picks_up_rows_that_arrived_late(
     DO NOTHING would skip the day for having been seen, and the rollup would
     silently under-report forever.
     """
-    _add_log(db, when=datetime(2001, 3, 4, 1, 0, tzinfo=UTC))
+    _add_log(db, when=datetime(2001, 3, 4, 1, 0, tzinfo=UTC), tenant_id=default_tenant)
     await db.commit()
 
     rollup = AnalyticsRollupRepository(db)
     await rollup.rollup_day(DAY, DEFAULTS)
     await db.commit()
 
-    _add_log(db, when=datetime(2001, 3, 4, 2, 0, tzinfo=UTC))
+    _add_log(db, when=datetime(2001, 3, 4, 2, 0, tzinfo=UTC), tenant_id=default_tenant)
     await db.commit()
     await rollup.rollup_day(DAY, DEFAULTS)
     await db.commit()
@@ -241,11 +271,17 @@ async def test_rerunning_picks_up_rows_that_arrived_late(
 
 
 async def test_midnight_belongs_to_exactly_one_day(
-    db: AsyncSession, rollup_tables: None
+    db: AsyncSession, default_tenant: int, rollup_tables: None
 ) -> None:
     """The range is half-open, so 00:00:00 starts a day rather than ending one."""
-    _add_log(db, when=datetime(2001, 3, 4, 23, 59, 59, tzinfo=UTC))
-    _add_log(db, when=datetime(2001, 3, 5, 0, 0, 0, tzinfo=UTC))
+    _add_log(
+        db,
+        when=datetime(2001, 3, 4, 23, 59, 59, tzinfo=UTC),
+        tenant_id=default_tenant,
+    )
+    _add_log(
+        db, when=datetime(2001, 3, 5, 0, 0, 0, tzinfo=UTC), tenant_id=default_tenant
+    )
     await db.commit()
 
     rollup = AnalyticsRollupRepository(db)
@@ -266,7 +302,10 @@ async def test_a_day_with_no_activity_is_stored_as_zeros(
 ) -> None:
     """ "Rolled up, nothing happened" must be distinguishable from "never run".
 
-    The aggregates are bare, so they return one row even over an empty range.
+    This is why the statement is driven FROM tenants and LEFT JOINs the
+    aggregates rather than grouping them by tenant_id. A grouped aggregate over
+    an empty range returns no rows at all, so an idle day would leave a gap
+    indistinguishable from a scheduler that never ran.
     """
     rollup = AnalyticsRollupRepository(db)
     await rollup.rollup_day(EMPTY_DAY, DEFAULTS)
@@ -283,10 +322,10 @@ async def test_a_day_with_no_activity_is_stored_as_zeros(
 
 
 async def test_rollup_days_processes_each_day_given(
-    db: AsyncSession, rollup_tables: None
+    db: AsyncSession, default_tenant: int, rollup_tables: None
 ) -> None:
-    _add_log(db, when=datetime(2001, 3, 4, 6, 0, tzinfo=UTC))
-    _add_log(db, when=datetime(2001, 3, 5, 6, 0, tzinfo=UTC))
+    _add_log(db, when=datetime(2001, 3, 4, 6, 0, tzinfo=UTC), tenant_id=default_tenant)
+    _add_log(db, when=datetime(2001, 3, 5, 6, 0, tzinfo=UTC), tenant_id=default_tenant)
     await db.commit()
 
     rollup = AnalyticsRollupRepository(db)
