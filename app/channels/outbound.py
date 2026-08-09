@@ -18,7 +18,12 @@ from typing import Any
 from app.channels.base import BaseChannelAdapter
 from app.channels.config import ChannelSettings, get_channel_settings
 from app.channels.constants import WHATSAPP, is_known
-from app.channels.registry import adapter_class, is_enabled, missing_credentials
+from app.channels.registry import (
+    adapter_class,
+    is_enabled,
+    meta_dm_channel,
+    missing_credentials,
+)
 from app.core.exceptions import ConflictError
 from app.core.logging import get_logger
 from app.integrations.whatsapp import WhatsAppClient
@@ -48,7 +53,7 @@ def _register_adapters() -> None:
     HTTP client into the import graph of everything that resolves an adapter,
     including the WhatsApp worker.
     """
-    from app.channels import messenger, whatsapp  # noqa: F401
+    from app.channels import instagram, messenger, whatsapp  # noqa: F401
 
 
 def recipient_id(user: User) -> str | None:
@@ -114,13 +119,59 @@ def outbound_adapter(
     return cls(resolved)  # type: ignore[call-arg]
 
 
+def meta_inbound_adapter(
+    object_type: str,
+    *,
+    settings: ChannelSettings | None = None,
+) -> BaseChannelAdapter | None:
+    """The adapter that parses and answers a Meta delivery of ``object_type``.
+
+    A sibling of :func:`outbound_adapter` rather than a branch inside it,
+    because the two differ in the one way that matters at the call site: this
+    one returns None where that one raises. Every caller here is serving a
+    webhook, and an unavailable channel has to end in a 200 -- Meta retries
+    anything else for hours, and a raised error in a Celery task is retried
+    five more times for a delivery that will never become servable.
+
+    None therefore covers all four ordinary states: an object this app does not
+    serve, a switched-off channel, a channel switched on without its
+    credentials, and a channel whose adapter is not written yet. Only the third
+    is logged loudly, because it is the only one a deployer needs to fix.
+
+    No WhatsApp branch: WhatsApp does not arrive on this route.
+    """
+    channel = meta_dm_channel(object_type)
+    if channel is None:
+        return None
+
+    resolved = settings or get_channel_settings()
+
+    if not is_enabled(channel, resolved):
+        return None
+
+    missing = missing_credentials(channel, resolved)
+    if missing:
+        logger.error(
+            "meta_inbound_channel_misconfigured",
+            channel=channel,
+            missing=list(missing),
+        )
+        return None
+
+    _register_adapters()
+    cls = adapter_class(channel)
+    if cls is None:
+        return None
+    return cls(resolved)  # type: ignore[call-arg]
+
+
 def provider_message_id(response: dict[str, Any]) -> str | None:
     """The platform's id for a message just sent, whichever shape it came in.
 
-    WhatsApp answers ``{"messages": [{"id": ...}]}``; Messenger answers
-    ``{"message_id": ...}``. Reading only the first shape -- which the reply
-    path did -- stores NULL for every Messenger reply, and the provider id is
-    what the delivery-status and idempotency paths key on.
+    WhatsApp answers ``{"messages": [{"id": ...}]}``; Messenger and Instagram
+    both answer ``{"message_id": ...}``. Reading only the first shape -- which
+    the reply path did -- stores NULL for every Messenger reply, and the
+    provider id is what the delivery-status and idempotency paths key on.
     """
     sent = response.get("messages")
     if isinstance(sent, list) and sent:

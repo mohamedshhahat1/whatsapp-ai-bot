@@ -37,6 +37,29 @@ REQUIRED_CREDENTIALS: dict[str, tuple[str, ...]] = {
     INSTAGRAM_COMMENT: ("instagram_account_id", "instagram_token"),
 }
 
+#: The channels that arrive on the shared ``/webhook/meta`` route. WhatsApp is
+#: absent deliberately: it has its own route with its own verify token, and
+#: keeping it out means turning every Meta surface off cannot silence it.
+META_CHANNELS: frozenset[str] = frozenset(
+    {MESSENGER, INSTAGRAM_DM, FACEBOOK_COMMENT, INSTAGRAM_COMMENT}
+)
+
+#: Which private-message channel each Meta webhook ``object`` carries.
+#:
+#: Meta subscribes one URL for the whole app and names the surface in the
+#: envelope's ``object`` field: ``page`` is Messenger, ``instagram`` is
+#: Instagram DM. The two share a ``messaging`` array and little else, so the
+#: object is the only safe thing to route on -- inferring the surface from the
+#: array's shape would attribute an Instagram conversation to Messenger, and
+#: ``conversations.channel`` is what every analytics figure is grouped by.
+#:
+#: Comment surfaces arrive on these same two objects under ``changes`` rather
+#: than ``messaging``, so they are resolved separately. See docs/CHANNELS.md.
+META_DM_CHANNELS: dict[str, str] = {
+    "page": MESSENGER,
+    "instagram": INSTAGRAM_DM,
+}
+
 _ADAPTERS: dict[str, type[BaseChannelAdapter]] = {}
 
 
@@ -64,6 +87,25 @@ def enabled_channels(settings: ChannelSettings | None = None) -> frozenset[str]:
     """Every channel currently switched on."""
     resolved = settings or get_channel_settings()
     return frozenset(c for c, on in resolved.switches.items() if on)
+
+
+def meta_dm_channel(object_type: str) -> str | None:
+    """The private-message channel a Meta ``object`` delivers, if this app
+    serves one at all.
+    """
+    return META_DM_CHANNELS.get(object_type)
+
+
+def any_meta_channel_enabled(settings: ChannelSettings | None = None) -> bool:
+    """Whether any surface served by the shared Meta webhook is switched on.
+
+    The route uses this to decide whether a delivery is worth parsing at all: a
+    deployment with every Meta channel off should not spend CPU on a body it
+    will discard, and must not answer 4xx either, because Meta retries anything
+    that is not a 200 for hours.
+    """
+    resolved = settings or get_channel_settings()
+    return any(resolved.switches.get(channel, False) for channel in META_CHANNELS)
 
 
 def missing_credentials(
