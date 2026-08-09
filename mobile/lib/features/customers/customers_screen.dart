@@ -105,7 +105,7 @@ class _EmptyState extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.all(48),
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant.withOpacity(0.3)).animate().scale(duration: 600.ms),
+        Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
         const SizedBox(height: 16),
         Text(title, style: theme.textTheme.titleMedium),
         const SizedBox(height: 8),

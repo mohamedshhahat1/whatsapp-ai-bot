@@ -20,10 +20,10 @@ class HandoffBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       decoration: BoxDecoration(
         gradient: LinearGradient(colors: isLead
-            ? [AppColors.gold.withOpacity(0.15), AppColors.goldGlow.withOpacity(0.05)]
+            ? [AppColors.gold.withValues(alpha: 0.15), AppColors.goldGlow.withValues(alpha: 0.05)]
             : isHuman
-                ? [AppColors.humanMode.withOpacity(0.15), AppColors.humanMode.withOpacity(0.05)]
-                : [AppColors.botMode.withOpacity(0.15), AppColors.botMode.withOpacity(0.05)]),
+                ? [AppColors.humanMode.withValues(alpha: 0.15), AppColors.humanMode.withValues(alpha: 0.05)]
+                : [AppColors.botMode.withValues(alpha: 0.15), AppColors.botMode.withValues(alpha: 0.05)]),
         border: Border(bottom: BorderSide(color: theme.dividerColor, width: 0.5)),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -33,7 +33,7 @@ class HandoffBanner extends StatelessWidget {
           Text(isHuman ? 'Human Mode' : 'Bot Mode', style: theme.textTheme.labelSmall?.copyWith(color: isHuman ? AppColors.humanMode : AppColors.botMode, fontWeight: FontWeight.w700)),
           if (isLead) ...[
             const SizedBox(width: 8),
-            Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.2), borderRadius: BorderRadius.circular(6)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.star, size: 10, color: AppColors.gold), SizedBox(width: 3), Text('Sales Lead', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.gold))])).animate().shimmer(duration: 2000.ms),
+            Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: AppColors.gold.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(6)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.star, size: 10, color: AppColors.gold), SizedBox(width: 3), Text('Sales Lead', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.gold))])).animate().shimmer(duration: 2000.ms),
           ],
           const Spacer(),
           if (conversation.assignedOperator != null) Text(conversation.assignedOperator!, style: theme.textTheme.bodySmall),

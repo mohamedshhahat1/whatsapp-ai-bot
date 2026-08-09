@@ -32,7 +32,7 @@ class _CustomerDetailScreenState extends ConsumerState<CustomerDetailScreen> {
             flexibleSpace: FlexibleSpaceBar(
               title: Text(customer?.name ?? 'Customer', style: const TextStyle(fontSize: 16)),
               background: Container(
-                decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [AppColors.primary.withOpacity(0.3), Colors.transparent])),
+                decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [AppColors.primary.withValues(alpha: 0.3), Colors.transparent])),
                 child: const Center(child: Icon(Icons.person, size: 64, color: Colors.white70)),
               ),
             ),

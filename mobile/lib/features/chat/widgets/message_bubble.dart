@@ -29,7 +29,7 @@ class MessageBubble extends StatelessWidget {
             bottomLeft: isOutbound ? const Radius.circular(16) : Radius.zero,
             bottomRight: isOutbound ? Radius.zero : const Radius.circular(16),
           ),
-          boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.05), blurRadius: 2, offset: const Offset(0, 1))],
+          boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.05), blurRadius: 2, offset: const Offset(0, 1))],
         ),
         child: Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
           if (message.type == 'text')
@@ -48,10 +48,10 @@ class MessageBubble extends StatelessWidget {
             Text(message.content ?? message.type, style: TextStyle(color: textColor, fontSize: 15)),
           const SizedBox(height: 4),
           Row(mainAxisSize: MainAxisSize.min, children: [
-            Text(Formatters.messageTime(message.createdAt), style: TextStyle(fontSize: 10, color: textColor.withOpacity(0.6))),
+            Text(Formatters.messageTime(message.createdAt), style: TextStyle(fontSize: 10, color: textColor.withValues(alpha: 0.6))),
             if (isOutbound) ...[
               const SizedBox(width: 4),
-              _StatusIcon(status: message.status, color: textColor.withOpacity(0.6)),
+              _StatusIcon(status: message.status, color: textColor.withValues(alpha: 0.6)),
             ],
           ]),
         ]),
@@ -66,9 +66,9 @@ class _MediaPlaceholder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Row(mainAxisSize: MainAxisSize.min, children: [
-      Icon(icon, color: color.withOpacity(0.7), size: 20),
+      Icon(icon, color: color.withValues(alpha: 0.7), size: 20),
       const SizedBox(width: 8),
-      Text(label, style: TextStyle(color: color.withOpacity(0.7), fontSize: 14)),
+      Text(label, style: TextStyle(color: color.withValues(alpha: 0.7), fontSize: 14)),
     ]);
   }
 }

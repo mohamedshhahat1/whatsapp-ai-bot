@@ -13,7 +13,7 @@ class ErrorView extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.all(48),
       child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.cloud_off, size: 64, color: AppColors.error.withOpacity(0.3)).animate().scale(duration: 600.ms),
+        Icon(Icons.cloud_off, size: 64, color: AppColors.error.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
         const SizedBox(height: 16),
         Text('Something went wrong', style: theme.textTheme.titleMedium),
         const SizedBox(height: 8),

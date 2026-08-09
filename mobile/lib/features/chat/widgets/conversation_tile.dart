@@ -51,7 +51,7 @@ class ConversationTile extends StatelessWidget {
         opacity: isClosed ? 0.62 : 1.0,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(color: highlightLead ? AppColors.goldGlow.withOpacity(0.15) : null, border: Border(bottom: BorderSide(color: theme.dividerColor, width: 0.5))),
+          decoration: BoxDecoration(color: highlightLead ? AppColors.goldGlow.withValues(alpha: 0.15) : null, border: Border(bottom: BorderSide(color: theme.dividerColor, width: 0.5))),
           child: Row(
             children: [
               Stack(children: [
@@ -75,21 +75,21 @@ class ConversationTile extends StatelessWidget {
                     ChannelBadge(channel: conversation.channel),
                     const SizedBox(width: 4),
                   ],
-                  Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: isHuman ? AppColors.humanMode.withOpacity(0.15) : AppColors.botMode.withOpacity(0.15), borderRadius: BorderRadius.circular(6)), child: Row(mainAxisSize: MainAxisSize.min, children: [
+                  Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: isHuman ? AppColors.humanMode.withValues(alpha: 0.15) : AppColors.botMode.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)), child: Row(mainAxisSize: MainAxisSize.min, children: [
                     Icon(isHuman ? Icons.person : Icons.smart_toy, size: 10, color: isHuman ? AppColors.humanMode : AppColors.botMode),
                     const SizedBox(width: 3),
                     Text(isHuman ? 'Human' : 'Bot', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: isHuman ? AppColors.humanMode : AppColors.botMode)),
                   ])),
                   if (isLead) ...[
                     const SizedBox(width: 4),
-                    Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: AppColors.gold.withOpacity(0.2), borderRadius: BorderRadius.circular(6)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.star, size: 10, color: AppColors.gold), SizedBox(width: 3), Text('Lead', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.gold))])),
+                    Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: AppColors.gold.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(6)), child: const Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.star, size: 10, color: AppColors.gold), SizedBox(width: 3), Text('Lead', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.gold))])),
                   ],
                   if (stateLabel != null) ...[
                     const SizedBox(width: 4),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                       decoration: BoxDecoration(
-                        color: theme.disabledColor.withOpacity(0.18),
+                        color: theme.disabledColor.withValues(alpha: 0.18),
                         borderRadius: BorderRadius.circular(6),
                       ),
                       child: Row(mainAxisSize: MainAxisSize.min, children: [

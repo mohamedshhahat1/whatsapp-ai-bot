@@ -43,7 +43,7 @@ class _ChatComposerState extends State<ChatComposer> {
               decoration: InputDecoration(
                 hintText: 'Type a message...', isDense: true, contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(24), borderSide: BorderSide.none),
-                filled: true, fillColor: isDark ? AppColors.darkBg.withOpacity(0.5) : AppColors.lightBg,
+                filled: true, fillColor: isDark ? AppColors.darkBg.withValues(alpha: 0.5) : AppColors.lightBg,
                 suffixIcon: IconButton(icon: const Icon(Icons.emoji_emotions_outlined, size: 22), onPressed: () {}),
               ),
             ),

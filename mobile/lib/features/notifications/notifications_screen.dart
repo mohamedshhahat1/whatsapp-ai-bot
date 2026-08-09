@@ -21,7 +21,7 @@ class NotificationsScreen extends ConsumerWidget {
       ),
       body: notifications.isEmpty
           ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(Icons.notifications_none, size: 64, color: theme.colorScheme.onSurfaceVariant.withOpacity(0.3)).animate().scale(duration: 600.ms),
+              Icon(Icons.notifications_none, size: 64, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
               const SizedBox(height: 16),
               Text('No notifications', style: theme.textTheme.titleMedium),
               const SizedBox(height: 8),
