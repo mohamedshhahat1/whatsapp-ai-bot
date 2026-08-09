@@ -38,6 +38,18 @@ COMMENTER = "6789012345678901"
 COMMENT_ID = "17900000000000001"
 MEDIA_ID = "17800000000000002"
 
+#: Written as literal characters rather than \\uXXXX escapes: an escape costs
+#: six characters, which pushes these assertions past the line limit for no
+#: reason. One Arabic letter is one character here and two bytes on the wire,
+#: and that difference is what the clamping tests below are about.
+ARABIC_LETTER = "ا"
+COMMENT_TEXT = "كم سعر التشطيب؟"
+REEL_COMMENT_TEXT = "عايز عرض سعر"
+PUBLIC_REPLY = "شكراً لتواصلك"
+GREETING = "أهلاً"
+INVITE = "رسالة خاصة"
+OVERRIDE = "نص بديل"
+
 
 def _settings(**overrides: Any) -> ChannelSettings:
     """Channel settings with the Instagram credentials and the linked page.
@@ -82,7 +94,7 @@ def _delivery(**value_overrides: Any) -> dict[str, Any]:
     value: dict[str, Any] = {
         "from": {"id": COMMENTER, "username": "customer"},
         "comment_id": COMMENT_ID,
-        "text": "\u0643\u0645 \u0633\u0639\u0631 \u0627\u0644\u062a\u0634\u0637\u064a\u0628\u061f",
+        "text": COMMENT_TEXT,
         "media": {"id": MEDIA_ID, "media_product_type": "FEED"},
     }
     value.update(value_overrides)
@@ -103,7 +115,7 @@ def _instagram_login_delivery(**value_overrides: Any) -> dict[str, Any]:
     value: dict[str, Any] = {
         "from": {"id": COMMENTER, "username": "customer"},
         "id": COMMENT_ID,
-        "text": "\u0639\u0627\u064a\u0632 \u0639\u0631\u0636 \u0633\u0639\u0631",
+        "text": REEL_COMMENT_TEXT,
         "media": {"id": MEDIA_ID, "media_product_type": "REELS"},
     }
     value.update(value_overrides)
@@ -126,7 +138,7 @@ def test_a_customer_comment_becomes_one_text_event() -> None:
     assert event.kind == EVENT_TEXT
     assert event.sender_id == COMMENTER
     assert event.sender_name == "customer"
-    assert event.text == "\u0643\u0645 \u0633\u0639\u0631 \u0627\u0644\u062a\u0634\u0637\u064a\u0628\u061f"
+    assert event.text == COMMENT_TEXT
 
 
 def test_the_comment_id_is_the_provider_message_id() -> None:
@@ -155,7 +167,7 @@ def test_the_instagram_login_shape_is_accepted_too() -> None:
 
     assert event.provider_message_id == COMMENT_ID
     assert event.kind == EVENT_TEXT
-    assert event.text == "\u0639\u0627\u064a\u0632 \u0639\u0631\u0636 \u0633\u0639\u0631"
+    assert event.text == REEL_COMMENT_TEXT
 
 
 def test_the_facebook_login_key_wins_when_a_payload_carries_both() -> None:
@@ -296,7 +308,7 @@ def test_a_malformed_delivery_yields_nothing_and_does_not_raise(
 def test_several_comments_in_one_delivery_all_arrive() -> None:
     adapter, _ = _adapter()
     first = _delivery()
-    second = _delivery(comment_id=COMMENT_ID + "2", text="\u0634\u0643\u0631\u0627\u064b")
+    second = _delivery(comment_id=COMMENT_ID + "2", text=PUBLIC_REPLY)
     first["entry"].append(second["entry"][0])
 
     events = list(adapter.parse(first))
@@ -329,11 +341,11 @@ async def test_a_public_reply_posts_to_the_replies_edge() -> None:
     """``message`` is documented as a query string parameter on this edge."""
     adapter, seen = _adapter()
 
-    await adapter.reply_to_comment(COMMENT_ID, "\u0634\u0643\u0631\u0627\u064b")
+    await adapter.reply_to_comment(COMMENT_ID, PUBLIC_REPLY)
 
     assert len(seen) == 1
     assert seen[0].url.path.endswith("/" + COMMENT_ID + "/replies")
-    assert seen[0].url.params["message"] == "\u0634\u0643\u0631\u0627\u064b"
+    assert seen[0].url.params["message"] == PUBLIC_REPLY
     # Sent as documented: a parameter, not a JSON body.
     assert seen[0].content == b""
 
@@ -342,7 +354,7 @@ async def test_send_text_is_a_public_reply_addressed_to_the_comment() -> None:
     """send_text is ChatService's sender contract; recipient is a comment id."""
     adapter, seen = _adapter()
 
-    await adapter.send_text(COMMENT_ID, "\u0623\u0647\u0644\u0627\u064b")
+    await adapter.send_text(COMMENT_ID, GREETING)
 
     assert len(seen) == 1
     assert seen[0].url.path.endswith("/" + COMMENT_ID + "/replies")
@@ -357,14 +369,14 @@ async def test_a_private_reply_goes_to_the_linked_page_not_the_account() -> None
     """
     adapter, seen = _adapter(body={"recipient_id": COMMENTER, "message_id": "m1"})
 
-    result = await adapter.invite_to_private_thread(COMMENT_ID, "\u0631\u0633\u0627\u0644\u0629")
+    result = await adapter.invite_to_private_thread(COMMENT_ID, INVITE)
 
     assert len(seen) == 1
     assert seen[0].url.path.endswith("/" + PAGE_ID + "/messages")
     assert IG_ACCOUNT not in str(seen[0].url)
     body = json.loads(seen[0].content)
     assert body["recipient"] == {"comment_id": COMMENT_ID}
-    assert body["message"] == {"text": "\u0631\u0633\u0627\u0644\u0629"}
+    assert body["message"] == {"text": INVITE}
     # Not part of the private reply contract.
     assert "messaging_type" not in body
     # The returned IGSID is the comment-to-DM link every conversion metric needs.
@@ -381,7 +393,7 @@ async def test_a_private_reply_without_a_page_id_fails_loudly() -> None:
     adapter, seen = _adapter(facebook_page_id="")
 
     with pytest.raises(ExternalServiceError):
-        await adapter.invite_to_private_thread(COMMENT_ID, "\u0631\u0633\u0627\u0644\u0629")
+        await adapter.invite_to_private_thread(COMMENT_ID, INVITE)
 
     assert seen == []
 
@@ -391,14 +403,14 @@ async def test_a_refused_private_reply_becomes_an_external_service_error() -> No
     adapter, _ = _adapter(status=400)
 
     with pytest.raises(ExternalServiceError):
-        await adapter.invite_to_private_thread(COMMENT_ID, "\u0631\u0633\u0627\u0644\u0629")
+        await adapter.invite_to_private_thread(COMMENT_ID, INVITE)
 
 
 async def test_a_refused_public_reply_becomes_an_external_service_error() -> None:
     adapter, _ = _adapter(status=400)
 
     with pytest.raises(ExternalServiceError):
-        await adapter.reply_to_comment(COMMENT_ID, "\u0645\u0631\u062d\u0628\u0627\u064b")
+        await adapter.reply_to_comment(COMMENT_ID, GREETING)
 
 
 async def test_a_long_private_reply_is_clamped_in_bytes_not_characters() -> None:
@@ -409,7 +421,7 @@ async def test_a_long_private_reply_is_clamped_in_bytes_not_characters() -> None
     """
     adapter, seen = _adapter()
 
-    await adapter.invite_to_private_thread(COMMENT_ID, "\u0627" * 5000)
+    await adapter.invite_to_private_thread(COMMENT_ID, ARABIC_LETTER * 5000)
 
     text = json.loads(seen[0].content)["message"]["text"]
     assert len(text.encode("utf-8")) == 1000
@@ -419,10 +431,20 @@ async def test_a_long_private_reply_is_clamped_in_bytes_not_characters() -> None
 async def test_a_long_public_reply_is_clamped_rather_than_rejected() -> None:
     adapter, seen = _adapter()
 
-    await adapter.reply_to_comment(COMMENT_ID, "\u0627" * 5000)
+    await adapter.reply_to_comment(COMMENT_ID, ARABIC_LETTER * 5000)
 
     message = seen[0].url.params["message"]
     assert len(message.encode("utf-8")) == 2000
+
+
+def test_the_arabic_fixture_really_is_two_bytes() -> None:
+    """Guards the two clamping tests above against a silent fixture change.
+
+    If this letter were ever replaced with an ASCII one, both byte assertions
+    would still pass while testing nothing about multi-byte text.
+    """
+    assert len(ARABIC_LETTER) == 1
+    assert len(ARABIC_LETTER.encode("utf-8")) == 2
 
 
 # --- Wiring -----------------------------------------------------------------
@@ -452,8 +474,8 @@ def test_the_invitation_copy_comes_from_settings_not_the_adapter() -> None:
         DEFAULT_INSTAGRAM_COMMENT_DM_INVITE
     )
 
-    overridden = _settings(instagram_comment_dm_invite_message="\u0646\u0635")
-    assert overridden.dm_invite_message(INSTAGRAM_COMMENT) == "\u0646\u0635"
+    overridden = _settings(instagram_comment_dm_invite_message=OVERRIDE)
+    assert overridden.dm_invite_message(INSTAGRAM_COMMENT) == OVERRIDE
 
 
 def test_a_blank_override_falls_back_instead_of_sending_nothing() -> None:
@@ -472,9 +494,9 @@ def test_the_two_comment_surfaces_keep_separate_copy() -> None:
     audiences. Sharing one string now would make separating them later a code
     change instead of a settings change.
     """
-    settings = _settings(instagram_comment_dm_invite_message="\u0625\u0646\u0633\u062a\u0627")
+    settings = _settings(instagram_comment_dm_invite_message=OVERRIDE)
 
-    assert settings.dm_invite_message(INSTAGRAM_COMMENT) == "\u0625\u0646\u0633\u062a\u0627"
+    assert settings.dm_invite_message(INSTAGRAM_COMMENT) == OVERRIDE
     assert settings.dm_invite_message(FACEBOOK_COMMENT) == (
         DEFAULT_FACEBOOK_COMMENT_DM_INVITE
     )
