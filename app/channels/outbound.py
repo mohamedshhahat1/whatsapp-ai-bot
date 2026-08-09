@@ -61,9 +61,16 @@ def _register_adapters() -> None:
     ruff matches a noqa to the line its diagnostic starts on. One import per
     line keeps every suppression next to the thing it suppresses, and leaves
     room for the channels still to come.
+
+    Every channel id in ``constants.ALL_CHANNELS`` now has a line here. A
+    shipped adapter that is missing from this function is invisible in
+    production while looking finished in the tests, because the test fixtures
+    pin the registry directly; tests/test_outbound_routing.py therefore reads
+    this function's source and asserts each module appears.
     """
     import app.channels.facebook_comments  # noqa: F401
     import app.channels.instagram  # noqa: F401
+    import app.channels.instagram_comments  # noqa: F401
     import app.channels.messenger  # noqa: F401
     import app.channels.whatsapp  # noqa: F401
 
