@@ -30,6 +30,33 @@ from app.channels.constants import (
     WHATSAPP,
 )
 
+# --- Comment-to-DM invitation copy -----------------------------------------
+#
+# TEMPORARY AND UNREVIEWED. Replace before either invitation is switched on
+# for real customers.
+#
+# Placeholder wording so the comment-to-DM flow could be built and tested
+# without waiting on a copy review. Deliberately generic: it promises nothing,
+# quotes no price, names no product and commits to no timescale, so the worst
+# case if it does reach a customer is that it reads as bland.
+#
+# These are DEFAULTS, not the value. Override either one from the environment
+# with FACEBOOK_COMMENT_DM_INVITE_MESSAGE / INSTAGRAM_COMMENT_DM_INVITE_MESSAGE
+# -- replacing the wording is a configuration change, not a code change, which
+# is the whole reason the adapters never hold a literal.
+#
+# Two constants rather than one shared string even though the text is
+# currently identical: a comment under a Facebook post and a comment under a
+# Reel are different audiences, and they will not stay identical once somebody
+# reviews them. Sharing them now would make separating them later a code
+# change instead of a settings change.
+DEFAULT_FACEBOOK_COMMENT_DM_INVITE = (
+    "أهلاً بك! يسعدنا مساعدتك بشكل خاص. أرسلنا لك رسالة خاصة لمتابعة طلبك."
+)
+DEFAULT_INSTAGRAM_COMMENT_DM_INVITE = (
+    "أهلاً بك! يسعدنا مساعدتك بشكل خاص. أرسلنا لك رسالة خاصة لمتابعة طلبك."
+)
+
 
 class ChannelSettings(BaseSettings):
     """Per-channel switches and the Meta app credentials they need."""
@@ -83,6 +110,19 @@ class ChannelSettings(BaseSettings):
     #: than a good public answer on its own.
     facebook_comment_dm_invite: bool = False
     instagram_comment_dm_invite: bool = False
+    #: The wording of that invitation, per surface.
+    #:
+    #: Empty means "use the temporary default above", NOT "send nothing".
+    #: Blank falls back rather than winning, the same way
+    #: ``Settings.conversation_closing_message`` defers to
+    #: ``persona.CLOSING``: a deployer who copies .env.example and leaves the
+    #: key empty must not end up sending an empty direct message to a
+    #: customer, which is what a naive ``or``-less read would do.
+    #:
+    #: Resolve them through ``dm_invite_message`` rather than reading these
+    #: fields directly, so the fallback lives in exactly one place.
+    facebook_comment_dm_invite_message: str = ""
+    instagram_comment_dm_invite_message: str = ""
     #: Never answer the page's own comments. Without this the bot replies to
     #: itself, and every reply is another webhook.
     ignore_own_comments: bool = True
@@ -118,6 +158,30 @@ class ChannelSettings(BaseSettings):
             FACEBOOK_COMMENT: self.facebook_comment_dm_invite,
             INSTAGRAM_COMMENT: self.instagram_comment_dm_invite,
         }.get(channel, False)
+
+    def dm_invite_message(self, channel: str) -> str:
+        """The invitation copy for ``channel``: its override, else the default.
+
+        Resolved here rather than in the adapters so the copy is a setting all
+        the way down. ``CommentChannelAdapter.invite_to_private_thread`` takes
+        the text as a parameter and never learns what it says, which is what
+        lets the wording be replaced without touching a channel.
+
+        Returns "" for a channel that has no invitation concept, so a caller
+        that reaches here by mistake sends nothing rather than sending another
+        surface's copy.
+        """
+        override, default = {
+            FACEBOOK_COMMENT: (
+                self.facebook_comment_dm_invite_message,
+                DEFAULT_FACEBOOK_COMMENT_DM_INVITE,
+            ),
+            INSTAGRAM_COMMENT: (
+                self.instagram_comment_dm_invite_message,
+                DEFAULT_INSTAGRAM_COMMENT_DM_INVITE,
+            ),
+        }.get(channel, ("", ""))
+        return override.strip() or default
 
 
 @lru_cache
