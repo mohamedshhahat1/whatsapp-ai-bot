@@ -10,6 +10,7 @@ The payloads are the shapes recorded in docs/CHANNELS.md, taken from Meta's
 Page webhook reference rather than from the Messenger adapter.
 """
 
+import json
 from typing import Any
 
 import httpx
@@ -222,9 +223,7 @@ def test_an_anonymous_comment_is_dropped_rather_than_half_routed() -> None:
         },
         {
             "object": "page",
-            "entry": [
-                {"id": PAGE_ID, "changes": [{"field": "feed", "value": "text"}]}
-            ],
+            "entry": [{"id": PAGE_ID, "changes": [{"field": "feed", "value": "text"}]}],
         },
         {
             "object": "page",
@@ -265,7 +264,8 @@ async def test_a_public_reply_posts_to_the_comments_edge() -> None:
 
     assert len(seen) == 1
     assert seen[0].url.path.endswith("/" + COMMENT_ID + "/comments")
-    assert httpx._content.json.loads(seen[0].content)["message"] == "شكراً لتواصلك"
+    body = json.loads(seen[0].content)
+    assert body["message"] == "شكراً لتواصلك"
 
 
 async def test_send_text_is_a_public_reply_addressed_to_the_comment() -> None:
@@ -280,8 +280,6 @@ async def test_send_text_is_a_public_reply_addressed_to_the_comment() -> None:
 
 async def test_a_private_reply_uses_the_comment_id_as_the_recipient() -> None:
     """Meta resolves the comment to its author; no PSID is known up front."""
-    import json
-
     adapter, seen = _adapter(body={"recipient_id": COMMENTER, "message_id": "m1"})
 
     result = await adapter.invite_to_private_thread(COMMENT_ID, "رسالة خاصة")
@@ -322,8 +320,6 @@ async def test_a_refused_public_reply_becomes_an_external_service_error() -> Non
 
 
 async def test_long_text_is_clamped_rather_than_rejected_by_the_api() -> None:
-    import json
-
     adapter, seen = _adapter()
 
     await adapter.reply_to_comment(COMMENT_ID, "ا" * 5000)
