@@ -137,8 +137,18 @@ async def invite_after_comment(
         channel, event.sender_id, event.sender_name
     )
 
+    # Read the primary key out once, while the instance is known to be
+    # loaded. The duplicate branch below rolls back, and Session.rollback()
+    # expires every object in the session -- expire_on_commit=False does not
+    # cover it. Touching the ORM instance after that point emits a lazy
+    # SELECT from a synchronous attribute access, which under asyncio raises
+    # MissingGreenlet rather than returning a row. That branch is the
+    # redelivery path, which is precisely where this must not raise: Meta
+    # duplicates comment notifications by design.
+    conversation_id = conversation.id
+
     reserved_id = await conversations.reserve_reply(
-        conversation.id,
+        conversation_id,
         reservation_key(comment_id),
         text,
         type=INVITE_TYPE,
@@ -149,7 +159,7 @@ async def invite_after_comment(
         logger.info(
             "dm_invite_already_sent",
             channel=channel,
-            conversation_id=conversation.id,
+            conversation_id=conversation_id,
             comment_id=comment_id,
         )
         return False
@@ -173,7 +183,7 @@ async def invite_after_comment(
         logger.warning(
             "dm_invite_failed",
             channel=channel,
-            conversation_id=conversation.id,
+            conversation_id=conversation_id,
             comment_id=comment_id,
             error=str(exc),
         )
@@ -192,7 +202,7 @@ async def invite_after_comment(
     logger.info(
         "dm_invite_sent",
         channel=channel,
-        conversation_id=conversation.id,
+        conversation_id=conversation_id,
         comment_id=comment_id,
         recipient_id=str(result.get("recipient_id") or ""),
     )
