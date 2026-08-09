@@ -41,26 +41,28 @@ class _CustomerDetailScreenState extends ConsumerState<CustomerDetailScreen> {
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.all(16),
-                child: Column(children: [
-                  _InfoCard(icon: Icons.phone, label: 'WhatsApp Number', value: Formatters.formatPhone(customer.waId)).animate().fadeIn().slideY(begin: 0.1),
-                  const SizedBox(height: 8),
-                  _InfoCard(icon: Icons.chat, label: 'Conversations', value: customer.conversations.toString()).animate().fadeIn(delay: 100.ms).slideY(begin: 0.1),
-                  const SizedBox(height: 8),
-                  _InfoCard(icon: Icons.message, label: 'Total Messages', value: customer.messages.toString()).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1),
-                  if (customer.lastActive != null) ...[
+                child: Column(
+                  children: [
+                    _InfoCard(icon: Icons.phone, label: 'WhatsApp Number', value: Formatters.formatPhone(customer.waId)).animate().fadeIn().slideY(begin: 0.1),
                     const SizedBox(height: 8),
-                    _InfoCard(icon: Icons.access_time, label: 'Last Active', value: Formatters.fullDate(customer.lastActive!)).animate().fadeIn(delay: 300.ms).slideY(begin: 0.1),
+                    _InfoCard(icon: Icons.chat, label: 'Conversations', value: customer.conversations.toString()).animate().fadeIn(delay: 100.ms).slideY(begin: 0.1),
+                    const SizedBox(height: 8),
+                    _InfoCard(icon: Icons.message, label: 'Total Messages', value: customer.messages.toString()).animate().fadeIn(delay: 200.ms).slideY(begin: 0.1),
+                    if (customer.lastActive != null) ...[
+                      const SizedBox(height: 8),
+                      _InfoCard(icon: Icons.access_time, label: 'Last Active', value: Formatters.fullDate(customer.lastActive!)).animate().fadeIn(delay: 300.ms).slideY(begin: 0.1),
+                    ],
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: () async {
+                        final ok = await ref.read(customerListProvider.notifier).unblock(widget.waId);
+                        if (context.mounted) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? 'Customer unblocked' : 'Failed to unblock'))); }
+                      },
+                      icon: const Icon(Icons.lock_open), label: const Text('Unblock Customer'),
+                      style: FilledButton.styleFrom(backgroundColor: AppColors.warning, minimumSize: const Size.fromHeight(48)),
+                    ).animate().fadeIn(delay: 400.ms),
                   ],
-                  const SizedBox(height: 16),
-                  FilledButton.icon(
-                    onPressed: () async {
-                      final ok = await ref.read(customerListProvider.notifier).unblock(widget.waId);
-                      if (context.mounted) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(ok ? 'Customer unblocked' : 'Failed to unblock'))); }
-                    },
-                    icon: const Icon(Icons.lock_open), label: const Text('Unblock Customer'),
-                    style: FilledButton.styleFrom(backgroundColor: AppColors.warning, minimumSize: const Size.fromHeight(48)),
-                  ).animate().fadeIn(delay: 400.ms),
-                ]),
+                ),
               ),
             )
           else
@@ -80,11 +82,13 @@ class _InfoCard extends StatelessWidget {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Row(children: [
-          Icon(icon, color: theme.colorScheme.primary),
-          const SizedBox(width: 12),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: theme.textTheme.bodySmall), Text(value, style: theme.textTheme.titleMedium)])),
-        ]),
+        child: Row(
+          children: [
+            Icon(icon, color: theme.colorScheme.primary),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text(label, style: theme.textTheme.bodySmall), Text(value, style: theme.textTheme.titleMedium)])),
+          ],
+        ),
       ),
     );
   }

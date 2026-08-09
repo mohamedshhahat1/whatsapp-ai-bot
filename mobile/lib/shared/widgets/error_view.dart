@@ -12,15 +12,18 @@ class ErrorView extends StatelessWidget {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.all(48),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(Icons.cloud_off, size: 64, color: AppColors.error.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
-        const SizedBox(height: 16),
-        Text('Something went wrong', style: theme.textTheme.titleMedium),
-        const SizedBox(height: 8),
-        Text(message, textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
-        const SizedBox(height: 24),
-        FilledButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('Retry')).animate().fadeIn(delay: 300.ms).slideY(begin: 0.2),
-      ]),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.cloud_off, size: 64, color: AppColors.error.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
+          const SizedBox(height: 16),
+          Text('Something went wrong', style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text(message, textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
+          const SizedBox(height: 24),
+          FilledButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('Retry')).animate().fadeIn(delay: 300.ms).slideY(begin: 0.2),
+        ],
+      ),
     );
   }
 }

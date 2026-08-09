@@ -49,10 +49,13 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
             pinned: true,
             title: Text('Customers', style: Theme.of(context).textTheme.titleLarge),
             actions: [
-              IconButton(icon: Icon(_showSearch ? Icons.close : Icons.search), onPressed: () => setState(() {
-                _showSearch = !_showSearch;
-                if (!_showSearch) { _searchController.clear(); notifier.setSearch(null); }
-              })),
+              IconButton(
+                icon: Icon(_showSearch ? Icons.close : Icons.search),
+                onPressed: () => setState(() {
+                  _showSearch = !_showSearch;
+                  if (!_showSearch) { _searchController.clear(); notifier.setSearch(null); }
+                }),
+              ),
             ],
           ),
           if (_showSearch)
@@ -71,7 +74,7 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
           else if (state.errorMessage != null && state.customers.isEmpty)
             SliverToBoxAdapter(child: ErrorView(message: state.errorMessage!, onRetry: () => notifier.refresh()))
           else if (filtered.isEmpty)
-            SliverToBoxAdapter(child: const _EmptyState(icon: Icons.people_outline, title: 'No customers yet', subtitle: 'Customers will appear here when they message your bot.'))
+            const SliverToBoxAdapter(child: _EmptyState(icon: Icons.people_outline, title: 'No customers yet', subtitle: 'Customers will appear here when they message your bot.'))
           else
             SliverList.builder(
               itemCount: filtered.length + (state.hasMore ? 1 : 0),
@@ -83,10 +86,14 @@ class _CustomersScreenState extends ConsumerState<CustomersScreen> {
                   leading: CircleAvatar(backgroundColor: AppColors.primary, child: Text(Formatters.initials(c.name, '#'), style: const TextStyle(color: Colors.white))),
                   title: Text(c.name ?? 'Unknown'),
                   subtitle: Text(Formatters.formatPhone(c.waId)),
-                  trailing: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.end, children: [
-                    Text('${c.conversations} conv', style: Theme.of(context).textTheme.bodySmall),
-                    Text('${c.messages} msg', style: Theme.of(context).textTheme.bodySmall),
-                  ]),
+                  trailing: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text('${c.conversations} conv', style: Theme.of(context).textTheme.bodySmall),
+                      Text('${c.messages} msg', style: Theme.of(context).textTheme.bodySmall),
+                    ],
+                  ),
                 ).animate().fadeIn(duration: 300.ms).slideY(begin: 0.05);
               },
             ),
@@ -104,13 +111,16 @@ class _EmptyState extends StatelessWidget {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.all(48),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
-        const SizedBox(height: 16),
-        Text(title, style: theme.textTheme.titleMedium),
-        const SizedBox(height: 8),
-        Text(subtitle, textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
-      ]),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
+          const SizedBox(height: 16),
+          Text(title, style: theme.textTheme.titleMedium),
+          const SizedBox(height: 8),
+          Text(subtitle, textAlign: TextAlign.center, style: theme.textTheme.bodySmall),
+        ],
+      ),
     );
   }
 }

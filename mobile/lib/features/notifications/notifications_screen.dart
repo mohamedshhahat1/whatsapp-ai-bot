@@ -20,13 +20,18 @@ class NotificationsScreen extends ConsumerWidget {
         actions: [if (notifications.isNotEmpty) TextButton(onPressed: () => notifier.markAllRead(), child: const Text('Mark all read'))],
       ),
       body: notifications.isEmpty
-          ? Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(Icons.notifications_none, size: 64, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
-              const SizedBox(height: 16),
-              Text('No notifications', style: theme.textTheme.titleMedium),
-              const SizedBox(height: 8),
-              Text('You will be notified when new events arrive', style: theme.textTheme.bodySmall),
-            ]))
+          ? Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.notifications_none, size: 64, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
+                  const SizedBox(height: 16),
+                  Text('No notifications', style: theme.textTheme.titleMedium),
+                  const SizedBox(height: 8),
+                  Text('You will be notified when new events arrive', style: theme.textTheme.bodySmall),
+                ],
+              ),
+            )
           : ListView.builder(
               itemCount: notifications.length,
               itemBuilder: (context, index) {
@@ -40,10 +45,12 @@ class NotificationsScreen extends ConsumerWidget {
                   child: ListTile(
                     onTap: () { notifier.markRead(n.id); if (n.conversationId != null) context.push('/chats/${n.conversationId}'); },
                     leading: CircleAvatar(backgroundColor: isLead ? AppColors.gold : AppColors.primary, child: Icon(isLead ? Icons.star : Icons.notifications, color: Colors.white, size: 18)),
-                    title: Row(children: [
-                      if (!n.isRead) Container(width: 8, height: 8, margin: const EdgeInsets.only(right: 6), decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle)),
-                      Expanded(child: Text(n.title, style: TextStyle(fontWeight: n.isRead ? FontWeight.w400 : FontWeight.w700))),
-                    ]),
+                    title: Row(
+                      children: [
+                        if (!n.isRead) Container(width: 8, height: 8, margin: const EdgeInsets.only(right: 6), decoration: const BoxDecoration(color: AppColors.primary, shape: BoxShape.circle)),
+                        Expanded(child: Text(n.title, style: TextStyle(fontWeight: n.isRead ? FontWeight.w400 : FontWeight.w700))),
+                      ],
+                    ),
                     subtitle: Text(n.body, maxLines: 2, overflow: TextOverflow.ellipsis),
                     trailing: Text(Formatters.chatTime(n.timestamp.toIso8601String()), style: theme.textTheme.bodySmall),
                   ).animate().fadeIn(duration: 300.ms).slideX(begin: -0.05),

@@ -72,13 +72,15 @@ class AnalyticsShimmer extends StatelessWidget {
       highlightColor: isDark ? AppColors.darkBg : Colors.white,
       child: Padding(
         padding: const EdgeInsets.all(16),
-        child: Column(children: [
-          GridView.count(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), crossAxisCount: 2, childAspectRatio: 1.5, mainAxisSpacing: 8, crossAxisSpacing: 8, children: List.generate(4, (i) => Card(child: Container()))),
-          const SizedBox(height: 16),
-          Card(child: Container(height: 120)),
-          const SizedBox(height: 16),
-          Card(child: Container(height: 80)),
-        ]),
+        child: Column(
+          children: [
+            GridView.count(shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), crossAxisCount: 2, childAspectRatio: 1.5, mainAxisSpacing: 8, crossAxisSpacing: 8, children: List.generate(4, (i) => Card(child: Container()))),
+            const SizedBox(height: 16),
+            Card(child: Container(height: 120)),
+            const SizedBox(height: 16),
+            Card(child: Container(height: 80)),
+          ],
+        ),
       ),
     );
   }
