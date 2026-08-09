@@ -43,53 +43,32 @@ Analyzing mobile...
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/chat_list_screen.dart:153:18 • require_trailing_commas
    info • Use 'const' with the constructor to improve performance. Try adding the 'const' keyword to the constructor invocation • lib/features/chat/chat_list_screen.dart:157:13 • prefer_const_constructors
    info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/chat_list_screen.dart:225:74 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/chat_composer.dart:46:68 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/chat_composer.dart:55:108 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/chat_composer.dart:58:10 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/chat_composer.dart:71:10 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/chat_composer.dart:71:11 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/conversation_tile.dart:54:79 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:61:16 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:67:18 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/conversation_tile.dart:78:157 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/conversation_tile.dart:78:195 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:82:20 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:82:21 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/conversation_tile.dart:85:144 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/conversation_tile.dart:92:52 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:97:65 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:100:24 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:104:18 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:105:16 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/conversation_tile.dart:105:17 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/handoff_banner.dart:23:31 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/handoff_banner.dart:23:69 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/handoff_banner.dart:25:40 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/handoff_banner.dart:25:79 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/handoff_banner.dart:26:38 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/handoff_banner.dart:26:75 • deprecated_member_use
-   info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/handoff_banner.dart:26:93 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/handoff_banner.dart:36:136 • deprecated_member_use
+   info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/handoff_banner.dart:26:105 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/handoff_banner.dart:40:10 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/handoff_banner.dart:54:12 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/handoff_banner.dart:56:8 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/message_bubble.dart:32:53 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/message_bubble.dart:51:109 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/message_bubble.dart:54:68 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/message_bubble.dart:56:12 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/message_bubble.dart:57:10 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/message_bubble.dart:69:31 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/chat/widgets/message_bubble.dart:71:49 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/chat/widgets/message_bubble.dart:72:6 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/customers/customer_detail_screen.dart:35:152 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/customers/customer_detail_screen.dart:63:18 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/customers/customer_detail_screen.dart:87:10 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/customers/customers_screen.dart:55:17 • require_trailing_commas
    info • Use 'const' with the constructor to improve performance. Try adding the 'const' keyword to the constructor invocation • lib/features/customers/customers_screen.dart:74:13 • prefer_const_constructors
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/customers/customers_screen.dart:89:20 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/customers/customers_screen.dart:108:72 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/customers/customers_screen.dart:113:8 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/notifications/notifications_screen.dart:24:98 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/notifications/notifications_screen.dart:29:14 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/notifications/notifications_screen.dart:29:15 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/notifications/notifications_screen.dart:46:22 • require_trailing_commas
@@ -111,47 +90,41 @@ Analyzing mobile...
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/settings/settings_screen.dart:90:6 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/settings/settings_screen.dart:98:6 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/settings/settings_screen.dart:109:6 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/splash/splash_screen.dart:30:151 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/features/splash/splash_screen.dart:36:115 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/splash/splash_screen.dart:37:8 • require_trailing_commas
    info • Missing a required trailing comma. Try adding a trailing comma • lib/features/splash/splash_screen.dart:37:9 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/shared/widgets/error_view.dart:16:64 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/shared/widgets/error_view.dart:23:8 • require_trailing_commas
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/shared/widgets/glass_card.dart:26:76 • deprecated_member_use
-   info • 'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss. Try replacing the use of the deprecated member with the replacement • lib/shared/widgets/glass_card.dart:28:80 • deprecated_member_use
    info • Missing a required trailing comma. Try adding a trailing comma • lib/shared/widgets/loading_shimmer.dart:81:10 • require_trailing_commas
 
-120 issues found. (ran in 11.0s)
+94 issues found. (ran in 10.9s)
 
 --- diagnostic footer ---------------------------------------
-commit:          c1b9b290631d4bd781132ab61b2a0c0838f47d23
+commit:          b2096f0509ef64a9ae0042560dd827203828c817
 flutter analyze: exit 1
 dart analyze:    exit 0
 errors:          0
 warnings:        0
-infos:           120
-total:           120
+infos:           94
+total:           94
 
 by rule:
      80 INFO REQUIRE_TRAILING_COMMAS
-     32 INFO DEPRECATED_MEMBER_USE
       8 INFO PREFER_CONST_CONSTRUCTORS
+      6 INFO DEPRECATED_MEMBER_USE
 
 by file:
      30 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart
      18 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart
-     14 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart
-     11 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart
-      8 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart
+      9 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart
       6 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_screen.dart
-      5 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customers_screen.dart
-      5 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/chat_composer.dart
-      4 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/splash/splash_screen.dart
-      4 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notifications_screen.dart
+      4 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customers_screen.dart
+      4 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart
+      4 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/chat_composer.dart
       4 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/auth/login_screen.dart
-      3 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customer_detail_screen.dart
+      3 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notifications_screen.dart
+      3 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart
       3 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_list_screen.dart
-      2 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/glass_card.dart
-      2 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/error_view.dart
+      2 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/splash/splash_screen.dart
+      2 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customer_detail_screen.dart
       1 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/loading_shimmer.dart
+      1 /home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/error_view.dart
 -------------------------------------------------------------
