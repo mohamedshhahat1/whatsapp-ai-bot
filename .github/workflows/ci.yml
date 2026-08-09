@@ -405,12 +405,6 @@ jobs:
   mobile:
     name: Flutter (codegen, analyze, test)
     runs-on: ubuntu-latest
-    # TEMPORARY, and only for the analyzer cleanup. The diagnostic step below
-    # commits the analyzer report back to chore/flutter-analyzer-cleanup so
-    # the full issue list can be read out of the repository rather than out of
-    # a downloaded artifact. This block goes away with that step.
-    permissions:
-      contents: write
     defaults:
       run:
         working-directory: mobile
@@ -425,6 +419,12 @@ jobs:
       # which one, and pinning a version nobody has resolved against would
       # trade a floating dependency for a red job. Pin it once a green run has
       # named a version.
+      #
+      # This carries more weight now than it used to. The analyze step below
+      # is zero-tolerance, so a new stable that adds a lint or deprecates a
+      # member can turn this job red without a line of this repository
+      # changing. That is a real risk of the clean gate and it is recorded
+      # here rather than pre-emptively absorbed by loosening the gate.
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -453,116 +453,31 @@ jobs:
         id: codegen
         run: dart run build_runner build --delete-conflicting-outputs
 
-      # ----------------------------------------------------------------------
-      # TEMPORARY DIAGNOSTIC -- comes out once the analyzer is clean.
+      # No suppression flags, and none are coming back.
       #
-      # flutter analyze runs with NO suppression flags. --no-fatal-infos and
-      # --no-fatal-warnings are gone, so an info is as fatal as an error again,
-      # which is the end state this cleanup is working towards.
+      # This step used to run with --no-fatal-infos and --no-fatal-warnings,
+      # under a comment recording that the app reported 171 issues -- 154
+      # infos and 17 warnings, no errors -- and that the gate was deliberately
+      # narrowed to errors because that backlog was not going to be cleared
+      # in passing. It has since been cleared: the analyzer reports zero
+      # issues against mobile/analysis_options.yaml, which is unchanged and
+      # still enables prefer_const_constructors, require_trailing_commas,
+      # avoid_print, strict-casts and strict-raw-types on top of
+      # flutter_lints.
       #
-      # What this step adds is capture, not leniency. The analyzer is allowed
-      # to finish and its output is written to a file as well as the log, and
-      # the real exit code is recorded rather than thrown away -- the last step
-      # of this job re-raises it, so the job is red for exactly as long as the
-      # analyzer is dirty. Nothing here converts a failing analyzer into a
-      # passing check.
-      #
-      # dart analyze --format=machine is the same analyzer over the same
-      # analysis_options.yaml, emitting one issue per line as
-      # SEVERITY|TYPE|CODE|FILE|LINE|COL|LENGTH|MESSAGE. It is informational:
-      # it never decides the outcome, flutter analyze above does. It exists so
-      # the findings are addressable individually instead of as a count.
-      # ----------------------------------------------------------------------
+      # So an info is fatal again, which is the entire point. If this step
+      # goes red, fix the finding. Adding a flag back, an exclusion, or an
+      # ignore_for_file would restore the situation this replaced: a green
+      # check that means nothing.
       - name: Analyze
-        id: analyze
-        run: |
-          mkdir -p "$GITHUB_WORKSPACE/ci"
-          human="$GITHUB_WORKSPACE/ci/flutter-analyzer-report.txt"
-          machine="$GITHUB_WORKSPACE/ci/flutter-analyzer-machine.txt"
+        run: flutter analyze
 
-          set +e
-          flutter analyze 2>&1 | tee "$human"
-          status=${PIPESTATUS[0]}
-          dart analyze --format=machine . > "$machine" 2>&1
-          machine_status=$?
-          set -e
-
-          errors=$(grep -c '^ERROR|' "$machine" || true)
-          warnings=$(grep -c '^WARNING|' "$machine" || true)
-          infos=$(grep -c '^INFO|' "$machine" || true)
-          total=$((errors + warnings + infos))
-
-          {
-            echo
-            echo "--- diagnostic footer ---------------------------------------"
-            echo "commit:          $GITHUB_SHA"
-            echo "flutter analyze: exit $status"
-            echo "dart analyze:    exit $machine_status"
-            echo "errors:          $errors"
-            echo "warnings:        $warnings"
-            echo "infos:           $infos"
-            echo "total:           $total"
-            echo
-            echo "by rule:"
-            awk -F'|' 'NF>3 {print $1" "$3}' "$machine" | sort | uniq -c | sort -rn
-            echo
-            echo "by file:"
-            awk -F'|' 'NF>4 {print $4}' "$machine" | sort | uniq -c | sort -rn
-            echo "-------------------------------------------------------------"
-          } >> "$human"
-
-          {
-            echo "## Flutter analyzer"
-            echo
-            echo "flutter analyze exit code: $status"
-            echo
-            echo "| severity | count |"
-            echo "| --- | --- |"
-            echo "| error | $errors |"
-            echo "| warning | $warnings |"
-            echo "| info | $infos |"
-            echo "| total | $total |"
-          } >> "$GITHUB_STEP_SUMMARY"
-
-          echo "status=$status" >> "$GITHUB_OUTPUT"
-          echo "total=$total" >> "$GITHUB_OUTPUT"
-
-      - name: Upload analyzer report
-        if: always() && steps.codegen.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: flutter-analyzer-${{ github.sha }}
-          path: |
-            ci/flutter-analyzer-report.txt
-            ci/flutter-analyzer-machine.txt
-          if-no-files-found: warn
-          retention-days: 30
-
-      # TEMPORARY, paired with the diagnostic above. Commits the report back to
-      # the cleanup branch so the issue list is readable from the repository.
-      # A push made with GITHUB_TOKEN does not start another workflow run, so
-      # this cannot loop.
-      - name: Publish analyzer report to the branch
-        if: always() && steps.codegen.outcome == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/chore/flutter-analyzer-cleanup'
-        working-directory: ${{ github.workspace }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add ci/flutter-analyzer-report.txt ci/flutter-analyzer-machine.txt
-          if git diff --cached --quiet; then
-            echo "analyzer report unchanged"
-            exit 0
-          fi
-          git commit -m "ci(flutter): publish analyzer report for ${GITHUB_SHA:0:12} [skip ci]"
-          git push origin "HEAD:$GITHUB_REF_NAME" || {
-            echo "::warning::analyzer report not pushed; the branch moved since checkout"
-            exit 0
-          }
-
-      # Gated on codegen rather than on Analyze, so the analyzer backlog above
-      # cannot hide a genuine test failure behind a trailing-comma count. The
-      # Python lint job runs ruff, black and mypy independently for exactly
-      # this reason. The job still fails if either step fails.
+      # Gated on codegen rather than on Analyze, so an analyzer finding cannot
+      # hide a genuine test failure behind it -- which has happened here: an
+      # analyzer failure once masked a real widget-test failure, and the two
+      # were only separated by running them independently. The Python lint job
+      # runs ruff, black and mypy the same way. The job still fails if either
+      # step fails.
       #
       # The guard that used to live here skipped the suite whenever
       # mobile/test/ was empty, and its own comment said to delete it with the
@@ -579,16 +494,6 @@ jobs:
           path: mobile/coverage/lcov.info
           if-no-files-found: warn
           retention-days: 30
-
-      # The analyzer verdict, kept last so that the report is captured and the
-      # test suite has run before it lands. The exit code recorded above is
-      # re-raised here unchanged: any analyzer issue at all, info included,
-      # fails this job.
-      - name: Analyzer verdict
-        if: always() && steps.analyze.outcome == 'success'
-        run: |
-          echo "flutter analyze reported ${{ steps.analyze.outputs.total }} issue(s)"
-          exit ${{ steps.analyze.outputs.status }}
 
   # ==========================================================================
   # Docker
