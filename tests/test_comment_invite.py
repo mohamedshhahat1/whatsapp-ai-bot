@@ -41,7 +41,7 @@ from app.channels.facebook_comments import FacebookCommentAdapter
 from app.channels.instagram_comments import InstagramCommentAdapter
 from app.config import Settings
 from app.models.message import STATUS_SENT, STATUS_UNCONFIRMED, Message
-from app.services import webhook_processor
+from app.services import comment_invite, webhook_processor
 from app.services.comment_invite import (
     INVITE_TYPE,
     invite_after_comment,
@@ -58,6 +58,8 @@ POST_ID = "100000000000001_300000000000003"
 #: Two bytes a letter in UTF-8, which is what the byte-measured clamps care
 #: about. Pinned so a future edit cannot quietly make it single byte.
 ARABIC_LETTER = "ا"
+
+CommentAdapter = FacebookCommentAdapter | InstagramCommentAdapter
 
 
 def _app_settings() -> Settings:
@@ -102,7 +104,7 @@ def _instagram_settings(**overrides: Any) -> ChannelSettings:
 
 
 def _recording(
-    adapter: FacebookCommentAdapter | InstagramCommentAdapter,
+    adapter: CommentAdapter,
     status: int = 200,
     body: dict[str, Any] | None = None,
 ) -> list[httpx.Request]:
@@ -119,6 +121,48 @@ def _recording(
         transport=httpx.MockTransport(handler),
     )
     return seen
+
+
+def _facebook_adapter(
+    status: int = 200,
+    body: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> tuple[FacebookCommentAdapter, ChannelSettings, list[httpx.Request]]:
+    """A real Facebook comment adapter and the settings it was built from."""
+    channels = _facebook_settings(**overrides)
+    adapter = FacebookCommentAdapter(channels)
+    return adapter, channels, _recording(adapter, status, body)
+
+
+def _instagram_adapter(
+    status: int = 200,
+    body: dict[str, Any] | None = None,
+    **overrides: Any,
+) -> tuple[InstagramCommentAdapter, ChannelSettings, list[httpx.Request]]:
+    """A real Instagram comment adapter and the settings it was built from."""
+    channels = _instagram_settings(**overrides)
+    adapter = InstagramCommentAdapter(channels)
+    return adapter, channels, _recording(adapter, status, body)
+
+
+async def _invite(
+    session: AsyncSession,
+    adapter: CommentAdapter,
+    channels: ChannelSettings,
+    event: InboundEvent,
+) -> bool:
+    """Invite, with the same settings the adapter was built from.
+
+    ``channels`` is passed explicitly rather than left to default, and that is
+    the whole point of this helper. The default is ``get_channel_settings()``,
+    which is lru_cached and read from the ENVIRONMENT -- and CI sets neither
+    invitation variable, so the default has both switched off. Configuring the
+    adapter and letting the invitation fall back to the environment is a test
+    that asserts nothing while looking thorough.
+    """
+    return await invite_after_comment(
+        session, adapter, _app_settings(), event, channels
+    )
 
 
 def _comment_event(
@@ -174,11 +218,10 @@ async def test_an_invitation_is_sent_and_recorded(
     db: AsyncSession, commenter: str
 ) -> None:
     """The private reply goes out and leaves a confirmed row behind."""
-    adapter = FacebookCommentAdapter(_facebook_settings())
-    seen = _recording(adapter)
+    adapter, channels, seen = _facebook_adapter()
     event = _comment_event(FACEBOOK_COMMENT, commenter, FB_COMMENT_ID)
 
-    sent = await invite_after_comment(db, adapter, _app_settings(), event)
+    sent = await _invite(db, adapter, channels, event)
 
     assert sent is True
     assert len(seen) == 1
@@ -199,13 +242,10 @@ async def test_a_switched_off_surface_sends_nothing(
     db: AsyncSession, commenter: str
 ) -> None:
     """Off is the default, and off means no request and no row."""
-    adapter = FacebookCommentAdapter(
-        _facebook_settings(facebook_comment_dm_invite=False)
-    )
-    seen = _recording(adapter)
+    adapter, channels, seen = _facebook_adapter(facebook_comment_dm_invite=False)
     event = _comment_event(FACEBOOK_COMMENT, commenter, FB_COMMENT_ID)
 
-    sent = await invite_after_comment(db, adapter, _app_settings(), event)
+    sent = await _invite(db, adapter, channels, event)
 
     assert sent is False
     assert seen == []
@@ -221,13 +261,11 @@ async def test_the_same_comment_is_only_ever_invited_once(
     unique index on reply_to_wa_message_id, which is why this test needs a
     real database to mean anything.
     """
-    adapter = FacebookCommentAdapter(_facebook_settings())
-    seen = _recording(adapter)
+    adapter, channels, seen = _facebook_adapter()
     event = _comment_event(FACEBOOK_COMMENT, commenter, FB_COMMENT_ID)
-    settings = _app_settings()
 
-    first = await invite_after_comment(db, adapter, settings, event)
-    second = await invite_after_comment(db, adapter, settings, event)
+    first = await _invite(db, adapter, channels, event)
+    second = await _invite(db, adapter, channels, event)
 
     assert first is True
     assert second is False
@@ -240,13 +278,12 @@ async def test_the_copy_comes_from_settings_not_from_the_code(
 ) -> None:
     """Replacing the temporary wording must stay a configuration change."""
     wording = "مرحباً، " + ARABIC_LETTER * 3
-    adapter = FacebookCommentAdapter(
-        _facebook_settings(facebook_comment_dm_invite_message=wording)
+    adapter, channels, seen = _facebook_adapter(
+        facebook_comment_dm_invite_message=wording
     )
-    seen = _recording(adapter)
     event = _comment_event(FACEBOOK_COMMENT, commenter, FB_COMMENT_ID)
 
-    await invite_after_comment(db, adapter, _app_settings(), event)
+    await _invite(db, adapter, channels, event)
 
     assert json.loads(seen[0].content)["message"]["text"] == wording
     (row,) = await _invitations(db, FB_COMMENT_ID)
@@ -262,12 +299,10 @@ async def test_a_refused_invitation_is_kept_unconfirmed_and_never_retried(
     that reach here are largely ambiguous -- a timeout may well have delivered
     the invitation -- and a second unsolicited DM is worse than none.
     """
-    adapter = FacebookCommentAdapter(_facebook_settings())
-    seen = _recording(adapter, status=400)
+    adapter, channels, seen = _facebook_adapter(status=400)
     event = _comment_event(FACEBOOK_COMMENT, commenter, FB_COMMENT_ID)
-    settings = _app_settings()
 
-    sent = await invite_after_comment(db, adapter, settings, event)
+    sent = await _invite(db, adapter, channels, event)
 
     assert sent is False
     (row,) = await _invitations(db, FB_COMMENT_ID)
@@ -275,7 +310,7 @@ async def test_a_refused_invitation_is_kept_unconfirmed_and_never_retried(
     assert row.wa_message_id is None
 
     # The redelivery finds the reservation and declines to send again.
-    assert await invite_after_comment(db, adapter, settings, event) is False
+    assert await _invite(db, adapter, channels, event) is False
     assert len(seen) == 1
 
 
@@ -283,11 +318,10 @@ async def test_an_unroutable_comment_is_not_invited(
     db: AsyncSession, commenter: str
 ) -> None:
     """No comment id means nothing to address and nothing to dedupe on."""
-    adapter = FacebookCommentAdapter(_facebook_settings())
-    seen = _recording(adapter)
+    adapter, channels, seen = _facebook_adapter()
     event = _comment_event(FACEBOOK_COMMENT, commenter, "", provider_message_id="")
 
-    assert await invite_after_comment(db, adapter, _app_settings(), event) is False
+    assert await _invite(db, adapter, channels, event) is False
     assert seen == []
 
 
@@ -298,11 +332,10 @@ async def test_an_instagram_invitation_is_addressed_to_the_linked_page(
     db: AsyncSession, commenter: str
 ) -> None:
     """Not the Instagram account, and not /me -- Meta documents the Page."""
-    adapter = InstagramCommentAdapter(_instagram_settings())
-    seen = _recording(adapter)
+    adapter, channels, seen = _instagram_adapter()
     event = _comment_event(INSTAGRAM_COMMENT, commenter, IG_COMMENT_ID)
 
-    sent = await invite_after_comment(db, adapter, _app_settings(), event)
+    sent = await _invite(db, adapter, channels, event)
 
     assert sent is True
     assert len(seen) == 1
@@ -322,11 +355,10 @@ async def test_an_instagram_invitation_without_a_page_id_fails_safely(
     The adapter refuses before reaching the network, and the caller records
     that refusal instead of letting it fail the whole delivery.
     """
-    adapter = InstagramCommentAdapter(_instagram_settings(facebook_page_id=""))
-    seen = _recording(adapter)
+    adapter, channels, seen = _instagram_adapter(facebook_page_id="")
     event = _comment_event(INSTAGRAM_COMMENT, commenter, IG_COMMENT_ID)
 
-    sent = await invite_after_comment(db, adapter, _app_settings(), event)
+    sent = await _invite(db, adapter, channels, event)
 
     assert sent is False
     assert seen == []
@@ -338,13 +370,10 @@ async def test_the_two_surfaces_are_switched_independently(
     db: AsyncSession, commenter: str
 ) -> None:
     """Facebook on does not turn Instagram on."""
-    adapter = InstagramCommentAdapter(
-        _instagram_settings(instagram_comment_dm_invite=False)
-    )
-    seen = _recording(adapter)
+    adapter, channels, seen = _instagram_adapter(instagram_comment_dm_invite=False)
     event = _comment_event(INSTAGRAM_COMMENT, commenter, IG_COMMENT_ID)
 
-    assert await invite_after_comment(db, adapter, _app_settings(), event) is False
+    assert await _invite(db, adapter, channels, event) is False
     assert seen == []
 
 
@@ -367,13 +396,12 @@ async def test_a_blank_override_falls_back_rather_than_sending_nothing(
     db: AsyncSession, commenter: str
 ) -> None:
     """An empty key in .env must not become an empty direct message."""
-    adapter = InstagramCommentAdapter(
-        _instagram_settings(instagram_comment_dm_invite_message="   ")
+    adapter, channels, seen = _instagram_adapter(
+        instagram_comment_dm_invite_message="   "
     )
-    seen = _recording(adapter)
     event = _comment_event(INSTAGRAM_COMMENT, commenter, IG_COMMENT_ID)
 
-    await invite_after_comment(db, adapter, _app_settings(), event)
+    await _invite(db, adapter, channels, event)
 
     body = json.loads(seen[0].content)
     assert body["message"]["text"] == DEFAULT_INSTAGRAM_COMMENT_DM_INVITE
@@ -386,7 +414,8 @@ class _SilentChatService:
     """Stands in for the orchestration, which has its own tests.
 
     Constructing the real one would pull OpenAI and Redis into a test whose
-    subject is which branch process_meta_payload takes.
+    subject is which branch process_meta_payload takes. Every handler is
+    called positionally by _dispatch_event, so *args is the whole contract.
     """
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -459,10 +488,15 @@ async def test_a_comment_delivery_invites_through_the_real_router(
 
     The adapter parses for real, the router takes its comment branch for real,
     and the invitation reserves against the real unique index.
+
+    get_channel_settings is patched rather than passed, because
+    process_meta_payload deliberately does not thread a ChannelSettings
+    through -- production resolves the same cached object for the adapter and
+    for the invitation, and this makes the test resolve one object too.
     """
+    adapter, channels, seen = _facebook_adapter()
     monkeypatch.setattr(webhook_processor, "ChatService", _SilentChatService)
-    adapter = FacebookCommentAdapter(_facebook_settings())
-    seen = _recording(adapter)
+    monkeypatch.setattr(comment_invite, "get_channel_settings", lambda: channels)
 
     await webhook_processor.process_meta_payload(
         db,
