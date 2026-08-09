@@ -15,6 +15,9 @@ are the ones that fail SILENTLY rather than loudly:
 
 None of those raise. Each is a test here. No database is needed, so these run
 everywhere instead of skipping on a machine without Postgres.
+
+The Arabic below is written as Arabic rather than as \\uXXXX escapes, for the
+reason app/services/persona.py gives: escaped codepoints cannot be proofread.
 """
 
 from datetime import UTC, datetime
@@ -48,7 +51,7 @@ IG_ACCOUNT = "17841400000000001"
 CUSTOMER = "6789012345678901"
 
 # One Arabic letter, two bytes in UTF-8. The whole point of the byte clamp.
-ARABIC_LETTER = "\\u0623"
+ARABIC_LETTER = "أ"
 
 
 def _settings(**overrides: Any) -> ChannelSettings:
@@ -216,7 +219,7 @@ def test_unsupported_message_is_reported_as_unsupported() -> None:
 def test_quick_reply_routes_on_payload_not_on_the_visible_label() -> None:
     """The label is copy and will be translated; the payload is the id."""
     adapter = _adapter()
-    label = "\\u0637\\u0644\\u0628 \\u0639\\u0631\\u0636 \\u0633\\u0639\\u0631"
+    label = "طلب عرض سعر"
     item = _text_item(label, mid="m_qr")
     item["message"]["quick_reply"] = {"payload": "request_quote"}
     (event,) = list(adapter.parse(_delivery(item)))
@@ -276,7 +279,7 @@ def test_attachment_keeps_the_caption() -> None:
 
 def test_plain_text_becomes_a_text_event_on_the_instagram_channel() -> None:
     adapter = _adapter()
-    body = "\\u0639\\u0627\\u064a\\u0632"
+    body = "عايز"
     (event,) = list(adapter.parse(_delivery(_text_item(body))))
     assert event.kind == EVENT_TEXT
     assert event.channel == INSTAGRAM_DM
@@ -317,6 +320,17 @@ def test_unreadable_timestamp_fails_open() -> None:
 
 def test_clip_utf8_leaves_short_text_alone() -> None:
     assert clip_utf8("hello") == "hello"
+
+
+def test_the_arabic_fixture_really_is_two_bytes() -> None:
+    """Guards the guard.
+
+    Every byte-versus-character assertion below is meaningless if this letter
+    is one ASCII byte, and an escaping accident in this file once made exactly
+    that true. One line here keeps the rest honest.
+    """
+    assert len(ARABIC_LETTER) == 1
+    assert len(ARABIC_LETTER.encode("utf-8")) == 2
 
 
 def test_clip_utf8_measures_bytes_not_characters() -> None:
