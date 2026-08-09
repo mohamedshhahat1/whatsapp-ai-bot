@@ -13,6 +13,7 @@ from app.models.document import Document, DocumentChunk
 from app.models.message import Message
 from app.models.model_pricing import ModelPricing
 from app.models.operator import Operator, OperatorSession
+from app.models.tenant import Tenant, TenantMembership
 from app.models.user import User
 
 __all__ = [
@@ -27,5 +28,7 @@ __all__ = [
     "ModelPricing",
     "Operator",
     "OperatorSession",
+    "Tenant",
+    "TenantMembership",
     "User",
 ]
