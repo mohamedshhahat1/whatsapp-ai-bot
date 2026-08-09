@@ -156,7 +156,7 @@ class AppTheme {
   static InputDecorationTheme _inputDecoration(ColorScheme scheme) {
     return InputDecorationTheme(
       filled: true,
-      fillColor: scheme.surfaceContainerHighest.withOpacity(0.5),
+      fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.5),
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(12),
@@ -179,7 +179,7 @@ class AppTheme {
         borderSide: BorderSide(color: scheme.error, width: 2),
       ),
       labelStyle: AppTextStyles.bodyMedium.copyWith(color: scheme.onSurfaceVariant),
-      hintStyle: AppTextStyles.bodyMedium.copyWith(color: scheme.onSurfaceVariant.withOpacity(0.6)),
+      hintStyle: AppTextStyles.bodyMedium.copyWith(color: scheme.onSurfaceVariant.withValues(alpha: 0.6)),
     );
   }
 }

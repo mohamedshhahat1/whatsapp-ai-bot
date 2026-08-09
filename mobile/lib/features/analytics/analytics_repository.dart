@@ -14,7 +14,7 @@ class AnalyticsRepository {
     try {
       final res = await _dio.get(ApiEndpoints.overview(days: days));
       return AnalyticsOverview.fromJson(res.data as Map<String, dynamic>);
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 
   Future<List<DailyUsage>> daily({int days = 30}) async {
@@ -22,7 +22,7 @@ class AnalyticsRepository {
       final res = await _dio.get(ApiEndpoints.daily(days: days));
       final list = res.data as List;
       return list.map((e) => DailyUsage.fromJson(e as Map<String, dynamic>)).toList();
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 
   Future<List<ModelCost>> modelCosts({int days = 30}) async {
@@ -30,7 +30,7 @@ class AnalyticsRepository {
       final res = await _dio.get(ApiEndpoints.models(days: days));
       final list = res.data as List;
       return list.map((e) => ModelCost.fromJson(e as Map<String, dynamic>)).toList();
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 
   Future<List<TopQuestion>> topQuestions({int days = 30, int limit = 10}) async {
@@ -38,14 +38,14 @@ class AnalyticsRepository {
       final res = await _dio.get(ApiEndpoints.questions(days: days, limit: limit));
       final list = res.data as List;
       return list.map((e) => TopQuestion.fromJson(e as Map<String, dynamic>)).toList();
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 
   Future<QuotaStats> quota() async {
     try {
       final res = await _dio.get(ApiEndpoints.quota());
       return QuotaStats.fromJson(res.data as Map<String, dynamic>);
-    } on DioException catch (e) { throw e.error ?? UnknownFailure(); }
+    } on DioException catch (e) { throw e.error ?? const UnknownFailure(); }
   }
 }
 

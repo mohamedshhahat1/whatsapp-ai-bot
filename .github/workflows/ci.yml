@@ -419,6 +419,12 @@ jobs:
       # which one, and pinning a version nobody has resolved against would
       # trade a floating dependency for a red job. Pin it once a green run has
       # named a version.
+      #
+      # This carries more weight now than it used to. The analyze step below
+      # is zero-tolerance, so a new stable that adds a lint or deprecates a
+      # member can turn this job red without a line of this repository
+      # changing. That is a real risk of the clean gate and it is recorded
+      # here rather than pre-emptively absorbed by loosening the gate.
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -447,37 +453,31 @@ jobs:
         id: codegen
         run: dart run build_runner build --delete-conflicting-outputs
 
-      # flutter analyze exits non-zero on ANY issue, infos included, unless it
-      # is given --no-fatal-infos --no-fatal-warnings. The app reports 171
-      # issues and ZERO errors: 154 infos (missing trailing commas, deprecated
-      # withOpacity calls, const-constructor hints) and 17 warnings (unused
-      # imports and locals, raw generic types, a protected-member misuse).
-      # Most of that is a direct consequence of analysis_options.yaml opting
-      # into require_trailing_commas, prefer_const_constructors and
-      # strict-raw-types on top of flutter_lints, which the code then never
-      # satisfied.
+      # No suppression flags, and none are coming back.
       #
-      # This step used to block on all of it, on the argument that the debt is
-      # real and that flags would hide it. What that produced was a job which
-      # had never once been green, so an actual failure could not be told
-      # apart from the backlog and the output stopped being read -- which is
-      # exactly how a genuinely failing widget test sat in here unnoticed.
+      # This step used to run with --no-fatal-infos and --no-fatal-warnings,
+      # under a comment recording that the app reported 171 issues -- 154
+      # infos and 17 warnings, no errors -- and that the gate was deliberately
+      # narrowed to errors because that backlog was not going to be cleared
+      # in passing. It has since been cleared: the analyzer reports zero
+      # issues against mobile/analysis_options.yaml, which is unchanged and
+      # still enables prefer_const_constructors, require_trailing_commas,
+      # avoid_print, strict-casts and strict-raw-types on top of
+      # flutter_lints.
       #
-      # The flags do not suppress anything. All 171 issues are still printed
-      # in full; they no longer fail the build. Read the narrow meaning of
-      # --no-fatal-warnings carefully: an error-severity issue, meaning
-      # anything that does not analyze or compile, still fails this step. The
-      # style backlog is tracked as its own piece of work on
-      # chore/flutter-lint-debt, and this comment is the record that the
-      # analyzer here is NOT clean -- the gate is deliberately narrowed to
-      # errors, not satisfied.
+      # So an info is fatal again, which is the entire point. If this step
+      # goes red, fix the finding. Adding a flag back, an exclusion, or an
+      # ignore_for_file would restore the situation this replaced: a green
+      # check that means nothing.
       - name: Analyze
-        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+        run: flutter analyze
 
-      # Gated on codegen rather than on Analyze, so the analyzer backlog above
-      # cannot hide a genuine test failure behind a trailing-comma count. The
-      # Python lint job runs ruff, black and mypy independently for exactly
-      # this reason. The job still fails if either step fails.
+      # Gated on codegen rather than on Analyze, so an analyzer finding cannot
+      # hide a genuine test failure behind it -- which has happened here: an
+      # analyzer failure once masked a real widget-test failure, and the two
+      # were only separated by running them independently. The Python lint job
+      # runs ruff, black and mypy the same way. The job still fails if either
+      # step fails.
       #
       # The guard that used to live here skipped the suite whenever
       # mobile/test/ was empty, and its own comment said to delete it with the

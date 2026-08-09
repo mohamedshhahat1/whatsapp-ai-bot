@@ -89,7 +89,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       borderRadius: BorderRadius.circular(24),
                       boxShadow: [
                         BoxShadow(
-                          color: AppColors.primary.withOpacity(0.3),
+                          color: AppColors.primary.withValues(alpha: 0.3),
                           blurRadius: 20,
                           offset: const Offset(0, 8),
                         ),
@@ -140,12 +140,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                     const SizedBox(height: 16),
                     Container(
                       padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: AppColors.error.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
-                      child: Row(children: [
-                        const Icon(Icons.error_outline, color: AppColors.error, size: 20),
-                        const SizedBox(width: 8),
-                        Expanded(child: Text(_error!, style: TextStyle(color: AppColors.error, fontSize: 13))),
-                      ]),
+                      decoration: BoxDecoration(color: AppColors.error.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(12)),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.error_outline, color: AppColors.error, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(_error!, style: const TextStyle(color: AppColors.error, fontSize: 13))),
+                        ],
+                      ),
                     ).animate().shake(),
                   ],
                   const SizedBox(height: 32),
