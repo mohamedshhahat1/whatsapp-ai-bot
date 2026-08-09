@@ -13,15 +13,25 @@ convert platform-level access into tenant-level access without anybody
 deciding to. It is excluded twice over, by username and by password hash, and
 a deployment whose only administrative identity is that key is refused.
 
-Refusing is only right when there is something to own. On an empty database
-no customer, conversation, message or document exists, so no ownership
-question arises and proceeding cannot produce an ambiguous owner. CI migrates
-exactly such a database from nothing on every run, and so does a restore from
-backup; refusing there would make the chain unrunnable while protecting no
-data. The refusal is therefore conditioned on tenant-ownable rows actually
-being present. Empty database: create the tenant, attach nobody. Populated
-database with no eligible operator: abort with instructions, having written
+An owner is never invented. Only an account the deployment already flagged
+``is_admin`` may hold ``owner``: that flag is the sole existing record of "this
+person administers this installation". Where no such account exists, no owner
+is created rather than promoting whichever operator happens to have the lowest
+id. Seniority is not authority.
+
+Refusing is only right when there is something to own. On an empty database no
+customer, conversation, message or document exists, so no ownership question
+arises and proceeding cannot produce an ambiguous owner. CI migrates exactly
+such a database from nothing on every run, and so does a restore from backup;
+refusing there would make the chain unrunnable while protecting no data. The
+refusal is therefore conditioned on tenant-ownable rows actually being
+present. Empty database: create the tenant, attach nobody. Populated database
+with no eligible administrator: abort with instructions, having written
 nothing.
+
+Both inserts are ``ON CONFLICT DO NOTHING`` on the constraint that defines the
+row's identity, so repeating this step cannot duplicate the tenant or a
+membership.
 
 Deliberately out of scope, each for its own reason:
 
@@ -78,9 +88,9 @@ TENANT_OWNABLE_DATA_EXISTS = "SELECT " + " OR ".join(
 # somebody set a real password on that account, and the exclusion is meant to
 # be unconditional.
 #
-# The ordering is the owner decision. Administrators first, then by id, which
-# is creation order: the longest-standing administrator if there is one, the
-# longest-standing operator otherwise.
+# Administrators first, then by id, which is creation order. The first row is
+# therefore the longest-standing administrator whenever the deployment has
+# one, and no other row is allowed to become owner.
 ELIGIBLE_OPERATORS = """
 SELECT id, is_admin
 FROM operators
@@ -116,10 +126,13 @@ NO_ELIGIBLE_OWNER = f"""\
 Cannot establish an owner for the default tenant.
 
 This database already contains customer data, so the tenant this migration
-creates would own it -- but no operator account exists that may hold a tenant
-role. The only administrative identity present is the shared ADMIN_API_KEY
-operator ({LEGACY_OPERATOR_USERNAME!r}), which is a platform-level credential
-and must never be given tenant membership.
+creates would own it -- but no account exists that may hold the owner role.
+An owner is never invented here: it has to be an active administrator account
+that somebody created deliberately.
+
+The only administrative identity present is the shared ADMIN_API_KEY operator
+({LEGACY_OPERATOR_USERNAME!r}), which is a platform-level credential belonging
+to no person and must never be given tenant membership.
 
 Create a real administrator account first, then run this migration again:
 
@@ -129,12 +142,27 @@ or, where the application runs in Docker:
 
     docker compose exec api python -m app.cli create-admin
 
-An account is eligible to own a tenant when it is active, carries a real
-password hash rather than the {UNUSABLE_PASSWORD_HASH!r} sentinel, and is not
-{LEGACY_OPERATOR_USERNAME!r}.
+An account may own a tenant when it is active, is flagged as an administrator,
+carries a real password hash rather than the {UNUSABLE_PASSWORD_HASH!r}
+sentinel, and is not {LEGACY_OPERATOR_USERNAME!r}.
 
 Nothing has been written. This migration has rolled back.\
 """
+
+
+def owner_of(eligible: Sequence[tuple[int, bool]]) -> int | None:
+    """The one account that may own the tenant, or ``None`` if there is none.
+
+    Ownership is not inferred from seniority. The account has to already carry
+    the ``is_admin`` flag, because that flag is the only existing record of an
+    administrative decision about this installation. Since
+    :data:`ELIGIBLE_OPERATORS` sorts administrators first, the candidate is the
+    first row -- and if that row is not an administrator, no eligible
+    administrator exists at all.
+    """
+    if eligible and eligible[0][1]:
+        return eligible[0][0]
+    return None
 
 
 def plan_memberships(
@@ -142,21 +170,17 @@ def plan_memberships(
 ) -> list[tuple[int, str]]:
     """Map eligible operators onto the roles they start with.
 
-    ``eligible`` arrives ordered by :data:`ELIGIBLE_OPERATORS`, so the first
-    row is already the account that should own the tenant. Taking the owner by
-    position rather than by re-inspecting ``is_admin`` is what makes this
-    total: a deployment that has operators but has never flagged one as an
-    administrator still gets exactly one owner instead of none.
+    Empty when no eligible administrator exists, rather than promoting
+    somebody to fill the gap. A tenant with no owner is a state an explicit,
+    audited grant can resolve later; a wrongly assigned owner is a privilege
+    escalation nobody asked for.
     """
-    plan: list[tuple[int, str]] = []
-    for index, (operator_id, is_admin) in enumerate(eligible):
-        if index == 0:
-            role = ROLE_OWNER
-        elif is_admin:
-            role = ROLE_ADMIN
-        else:
-            role = ROLE_OPERATOR
-        plan.append((operator_id, role))
+    if owner_of(eligible) is None:
+        return []
+    owner_id, _ = eligible[0]
+    plan = [(owner_id, ROLE_OWNER)]
+    for operator_id, is_admin in eligible[1:]:
+        plan.append((operator_id, ROLE_ADMIN if is_admin else ROLE_OPERATOR))
     return plan
 
 
@@ -169,7 +193,7 @@ def require_owner(
     Kept separate from :func:`upgrade` so that the refusal is testable without
     an Alembic context, and so the condition is written down exactly once.
     """
-    if data_exists and not eligible:
+    if data_exists and owner_of(eligible) is None:
         raise RuntimeError(NO_ELIGIBLE_OWNER)
 
 

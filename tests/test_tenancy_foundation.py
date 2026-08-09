@@ -1,16 +1,17 @@
 """Migration 0015: the tenancy foundation, and the owner it refuses to invent.
 
 The interesting part of 0015 is not its two tables, it is the decision it
-makes about who owns the tenant that existing data becomes attached to. Three
+makes about who owns the tenant that existing data becomes attached to. Four
 things are pinned here:
 
 * the reserved shared-key operator is never eligible to own a tenant,
-* a populated database with no real operator aborts the migration,
+* only an account already flagged ``is_admin`` may become owner,
+* a populated database with no such account aborts the migration,
 * an empty database does not, because there is nothing to own yet.
 
-The third looks like a loophole and is not. CI migrates an empty database
-from nothing on every run and so does a restore from backup; refusing there
-would make the migration chain unrunnable while protecting no data.
+The last looks like a loophole and is not. CI migrates an empty database from
+nothing on every run and so does a restore from backup; refusing there would
+make the migration chain unrunnable while protecting no data.
 
 The database tests run the migration's own SQL, taken from the module, rather
 than restating it -- a test that restated the query would keep passing after
@@ -163,7 +164,19 @@ def test_the_revision_identifier_fits_the_version_column() -> None:
     assert len(_foundation().revision) <= 32
 
 
-# --- The refusal ------------------------------------------------------------
+# --- Who may own a tenant ---------------------------------------------------
+
+
+def test_the_owner_candidate_must_be_an_administrator() -> None:
+    """``is_admin`` is the only existing record of an administrative decision.
+
+    Without it there is no evidence that anybody chose this account, and
+    picking one anyway would be inventing an owner.
+    """
+    module = _foundation()
+    assert module.owner_of([(7, True), (3, True)]) == 7
+    assert module.owner_of([(4, False), (6, False)]) is None
+    assert module.owner_of([]) is None
 
 
 def test_a_populated_database_with_no_eligible_operator_is_refused() -> None:
@@ -171,6 +184,13 @@ def test_a_populated_database_with_no_eligible_operator_is_refused() -> None:
     with pytest.raises(RuntimeError) as raised:
         module.require_owner([], data_exists=True)
     assert module.NO_ELIGIBLE_OWNER in str(raised.value)
+
+
+def test_operators_without_the_admin_flag_are_refused_when_data_exists() -> None:
+    """Having accounts is not the same as having an owner."""
+    module = _foundation()
+    with pytest.raises(RuntimeError):
+        module.require_owner([(4, False), (6, False)], data_exists=True)
 
 
 def test_the_refusal_tells_the_deployment_operator_what_to_do() -> None:
@@ -187,27 +207,31 @@ def test_an_empty_database_is_not_refused() -> None:
     Nothing exists to be owned, so no ambiguous ownership can be created. This
     is the path CI and a disaster-recovery restore both take.
     """
-    _foundation().require_owner([], data_exists=False)
+    module = _foundation()
+    module.require_owner([], data_exists=False)
+    module.require_owner([(4, False)], data_exists=False)
 
 
-def test_an_eligible_operator_satisfies_the_guard() -> None:
+def test_an_eligible_administrator_satisfies_the_guard() -> None:
     _foundation().require_owner([(1, True)], data_exists=True)
 
 
 # --- Who gets which role ----------------------------------------------------
 
 
-def test_the_first_eligible_operator_becomes_the_owner() -> None:
+def test_the_first_eligible_administrator_becomes_the_owner() -> None:
     plan = _foundation().plan_memberships([(7, True), (3, True), (9, False)])
     assert plan == [(7, ROLE_OWNER), (3, ROLE_ADMIN), (9, ROLE_OPERATOR)]
 
 
-def test_a_deployment_with_no_administrator_still_gets_exactly_one_owner() -> None:
-    """Otherwise a tenant full of operators would have nobody who can admit
-    anyone else, which is an ownerless tenant by another name.
+def test_a_deployment_with_no_administrator_gets_no_owner() -> None:
+    """No owner is better than the wrong owner.
+
+    A tenant with no owner is recoverable by an explicit, audited grant. An
+    owner promoted from whoever happened to have the lowest id is a privilege
+    escalation nobody asked for, and one nobody would notice.
     """
-    plan = _foundation().plan_memberships([(4, False), (6, False)])
-    assert plan == [(4, ROLE_OWNER), (6, ROLE_OPERATOR)]
+    assert _foundation().plan_memberships([(4, False), (6, False)]) == []
 
 
 def test_no_eligible_operators_produces_no_memberships() -> None:
@@ -243,7 +267,8 @@ async def test_one_membership_per_person_per_tenant_is_enforced(
 async def test_the_shared_key_operator_holds_no_membership(db: AsyncSession) -> None:
     """The decision itself, asserted against the database CI migrated."""
     count = await db.scalar(
-        text(_MEMBERSHIPS_FOR_USERNAME), {"username": LEGACY_OPERATOR_USERNAME}
+        text(_MEMBERSHIPS_FOR_USERNAME),
+        {"username": LEGACY_OPERATOR_USERNAME},
     )
     assert count == 0
 
@@ -253,12 +278,14 @@ async def test_the_eligibility_query_never_returns_the_shared_key_operator(
 ) -> None:
     module = _foundation()
     legacy_id = await db.scalar(
-        text(_OPERATOR_ID), {"username": LEGACY_OPERATOR_USERNAME}
+        text(_OPERATOR_ID),
+        {"username": LEGACY_OPERATOR_USERNAME},
     )
     assert legacy_id is not None, "migration 0010 seeds this row"
 
     result = await db.execute(
-        text(module.ELIGIBLE_OPERATORS), module.ELIGIBILITY_PARAMS
+        text(module.ELIGIBLE_OPERATORS),
+        module.ELIGIBILITY_PARAMS,
     )
     assert legacy_id not in [row[0] for row in result.fetchall()]
 
@@ -289,17 +316,20 @@ async def test_an_existing_real_operator_becomes_the_default_tenant_owner(
         await db.execute(text(_DEACTIVATE_EVERYONE_ELSE), {"username": username})
         await db.execute(text(_DELETE_MEMBERSHIPS))
         await db.execute(
-            text(_DELETE_DEFAULT_TENANT), {"slug": DEFAULT_TENANT_SLUG}
+            text(_DELETE_DEFAULT_TENANT),
+            {"slug": DEFAULT_TENANT_SLUG},
         )
         await db.execute(
-            text(_INSERT_CUSTOMER), {"external_id": "tenancy-" + uuid4().hex[:12]}
+            text(_INSERT_CUSTOMER),
+            {"external_id": "tenancy-" + uuid4().hex[:12]},
         )
 
         data_exists = bool(await db.scalar(text(module.TENANT_OWNABLE_DATA_EXISTS)))
         assert data_exists
 
         result = await db.execute(
-            text(module.ELIGIBLE_OPERATORS), module.ELIGIBILITY_PARAMS
+            text(module.ELIGIBLE_OPERATORS),
+            module.ELIGIBILITY_PARAMS,
         )
         eligible = [(int(row[0]), bool(row[1])) for row in result.fetchall()]
         assert eligible == [(operator_id, True)]
@@ -311,7 +341,8 @@ async def test_an_existing_real_operator_becomes_the_default_tenant_owner(
             {"name": module.DEFAULT_TENANT_NAME, "slug": DEFAULT_TENANT_SLUG},
         )
         tenant_id = await db.scalar(
-            text(module.SELECT_TENANT_BY_SLUG), {"slug": DEFAULT_TENANT_SLUG}
+            text(module.SELECT_TENANT_BY_SLUG),
+            {"slug": DEFAULT_TENANT_SLUG},
         )
         for member_id, role in module.plan_memberships(eligible):
             await db.execute(
@@ -352,14 +383,16 @@ async def test_a_deployment_with_only_the_shared_key_is_refused_for_real(
             {"username": LEGACY_OPERATOR_USERNAME},
         )
         await db.execute(
-            text(_INSERT_CUSTOMER), {"external_id": "tenancy-" + uuid4().hex[:12]}
+            text(_INSERT_CUSTOMER),
+            {"external_id": "tenancy-" + uuid4().hex[:12]},
         )
 
         data_exists = bool(await db.scalar(text(module.TENANT_OWNABLE_DATA_EXISTS)))
         assert data_exists, "the customer row above makes ownership a real question"
 
         result = await db.execute(
-            text(module.ELIGIBLE_OPERATORS), module.ELIGIBILITY_PARAMS
+            text(module.ELIGIBLE_OPERATORS),
+            module.ELIGIBILITY_PARAMS,
         )
         assert result.fetchall() == []
 
