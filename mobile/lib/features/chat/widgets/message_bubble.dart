@@ -83,4 +83,19 @@ class _MediaPlaceholder extends StatelessWidget {
 }
 
 class _StatusIcon extends StatelessWidget {
-  final String? status
+  final String? status; final Color color;
+  const _StatusIcon({required this.status, required this.color});
+  @override
+  Widget build(BuildContext context) {
+    final icon = switch (status) {
+      'pending' => Icons.access_time,
+      'sent' => Icons.check,
+      'delivered' => Icons.done_all,
+      'read' => Icons.done_all,
+      'failed' => Icons.error_outline,
+      _ => Icons.access_time,
+    };
+    final colorOverride = status == 'read' ? Colors.lightBlue : status == 'failed' ? AppColors.error : null;
+    return Icon(icon, size: 14, color: colorOverride ?? color);
+  }
+}
