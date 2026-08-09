@@ -123,38 +123,41 @@ class _ChatListScreenState extends ConsumerState<ChatListScreen> {
             SliverToBoxAdapter(
               child: Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Wrap(spacing: 8, children: [
-                  if (state.modeFilter != null)
-                    FilterChip(
-                      label: Text(state.modeFilter == 'bot' ? 'Bot Mode' : 'Human Mode'),
-                      onSelected: (_) => notifier.setModeFilter(null),
-                      onDeleted: () => notifier.setModeFilter(null),
-                      selected: true,
-                    ),
-                  if (state.statusFilter != null)
-                    FilterChip(
-                      label: Text(state.statusFilter == statusClosed ? 'Closed only' : 'Active only'),
-                      onSelected: (_) => notifier.setStatusFilter(null),
-                      onDeleted: () => notifier.setStatusFilter(null),
-                      selected: true,
-                    ),
-                  if (state.channelFilter != null)
-                    FilterChip(
-                      avatar: Icon(
-                        ChannelDisplay.of(state.channelFilter!).icon,
-                        size: 14,
-                        color: ChannelDisplay.of(state.channelFilter!).color,
+                child: Wrap(
+                  spacing: 8,
+                  children: [
+                    if (state.modeFilter != null)
+                      FilterChip(
+                        label: Text(state.modeFilter == 'bot' ? 'Bot Mode' : 'Human Mode'),
+                        onSelected: (_) => notifier.setModeFilter(null),
+                        onDeleted: () => notifier.setModeFilter(null),
+                        selected: true,
                       ),
-                      label: Text(ChannelDisplay.of(state.channelFilter!).label),
-                      onSelected: (_) => notifier.setChannelFilter(null),
-                      onDeleted: () => notifier.setChannelFilter(null),
-                      selected: true,
-                    ),
-                ]),
+                    if (state.statusFilter != null)
+                      FilterChip(
+                        label: Text(state.statusFilter == statusClosed ? 'Closed only' : 'Active only'),
+                        onSelected: (_) => notifier.setStatusFilter(null),
+                        onDeleted: () => notifier.setStatusFilter(null),
+                        selected: true,
+                      ),
+                    if (state.channelFilter != null)
+                      FilterChip(
+                        avatar: Icon(
+                          ChannelDisplay.of(state.channelFilter!).icon,
+                          size: 14,
+                          color: ChannelDisplay.of(state.channelFilter!).color,
+                        ),
+                        label: Text(ChannelDisplay.of(state.channelFilter!).label),
+                        onSelected: (_) => notifier.setChannelFilter(null),
+                        onDeleted: () => notifier.setChannelFilter(null),
+                        selected: true,
+                      ),
+                  ],
+                ),
               ),
             ),
           if (state.status == ChatListStatus.refreshing && state.conversations.isEmpty)
-            SliverToBoxAdapter(child: const ChatListShimmer())
+            const SliverToBoxAdapter(child: ChatListShimmer())
           else if (state.status == ChatListStatus.error && state.conversations.isEmpty)
             SliverToBoxAdapter(child: ErrorView(message: state.errorMessage ?? 'Failed to load', onRetry: () => notifier.refresh()))
           else if (filtered.isEmpty)
@@ -222,7 +225,7 @@ class _EmptyState extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant.withOpacity(0.3)).animate().scale(duration: 600.ms),
+          Icon(icon, size: 64, color: theme.colorScheme.onSurfaceVariant.withValues(alpha: 0.3)).animate().scale(duration: 600.ms),
           const SizedBox(height: 16),
           Text(title, style: theme.textTheme.titleMedium),
           const SizedBox(height: 8),
