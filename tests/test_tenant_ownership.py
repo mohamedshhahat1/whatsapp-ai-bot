@@ -102,8 +102,12 @@ SELECT a.attname
  ORDER BY array_position(con.conkey, a.attnum)
 """
 
+# confdeltype is Postgres's internal one-byte "char", which asyncpg hands back
+# as bytes rather than str -- b'c' == 'c' is False, so an uncast column would
+# fail this test against a schema that is perfectly correct. Cast in SQL so the
+# assertion compares what it appears to compare.
 _DELETE_BEHAVIOUR = """
-SELECT con.confdeltype
+SELECT con.confdeltype::text
   FROM pg_constraint AS con
   JOIN pg_class AS rel ON rel.oid = con.conrelid
  WHERE con.conname = :name AND rel.relname = :table
@@ -271,7 +275,10 @@ async def test_the_reservation_anchors_stayed_global(db: AsyncSession) -> None:
         "messages",
         "uq_messages_reply_to_wa_message_id",
     )
-    assert "tenant_id" not in columns
+    # Equality rather than "tenant_id is absent": an empty list satisfies that
+    # too, so a constraint dropped outright would read as one that had merely
+    # stayed global. 0006 created it over this single column.
+    assert columns == ["reply_to_wa_message_id"]
 
     assert await db.scalar(text(_RESERVATION_INDEX)), "inbound anchor is gone"
 
