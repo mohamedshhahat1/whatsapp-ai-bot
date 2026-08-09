@@ -52,8 +52,19 @@ def _register_adapters() -> None:
     registry.py sets out: a top-level import here would drag every channel's
     HTTP client into the import graph of everything that resolves an adapter,
     including the WhatsApp worker.
+
+    One plain import per module rather than a single ``from`` list. Adding a
+    fourth name to that list pushes it past 88 characters, and the
+    parenthesised form black then produces puts each name on its own line --
+    where the shared ``# noqa: F401`` no longer covers any of them, because
+    ruff matches a noqa to the line its diagnostic starts on. One import per
+    line keeps every suppression next to the thing it suppresses, and leaves
+    room for the channels still to come.
     """
-    from app.channels import instagram, messenger, whatsapp  # noqa: F401
+    import app.channels.facebook_comments  # noqa: F401
+    import app.channels.instagram  # noqa: F401
+    import app.channels.messenger  # noqa: F401
+    import app.channels.whatsapp  # noqa: F401
 
 
 def recipient_id(user: User) -> str | None:
