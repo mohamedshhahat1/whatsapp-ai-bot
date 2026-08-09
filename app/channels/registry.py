@@ -60,6 +60,24 @@ META_DM_CHANNELS: dict[str, str] = {
     "instagram": INSTAGRAM_DM,
 }
 
+#: Which comment channel each Meta webhook ``object`` carries.
+#:
+#: The same two objects as ``META_DM_CHANNELS``, and that is the whole
+#: difficulty: a ``page`` delivery is Messenger when an entry carries
+#: ``messaging`` and Facebook comments when it carries ``changes``, and one
+#: delivery can carry both. So an object does not identify a channel here --
+#: it identifies a pair of them, and which one a given entry belongs to is
+#: settled by the array it actually contains.
+#:
+#: Kept as a second mapping rather than a tuple value in META_DM_CHANNELS
+#: because every caller wants one surface or the other, never both unpacked
+#: together: the DM adapter reads ``messaging`` and ignores ``changes``, and
+#: the comment adapter does the reverse.
+META_COMMENT_CHANNELS: dict[str, str] = {
+    "page": FACEBOOK_COMMENT,
+    "instagram": INSTAGRAM_COMMENT,
+}
+
 _ADAPTERS: dict[str, type[BaseChannelAdapter]] = {}
 
 
@@ -94,6 +112,37 @@ def meta_dm_channel(object_type: str) -> str | None:
     serves one at all.
     """
     return META_DM_CHANNELS.get(object_type)
+
+
+def meta_comment_channel(object_type: str) -> str | None:
+    """The comment channel a Meta ``object`` delivers, if this app serves one.
+
+    A truthy answer does not mean the delivery contains a comment. It means
+    that if this delivery carries ``changes``, that is the channel they belong
+    to.
+    """
+    return META_COMMENT_CHANNELS.get(object_type)
+
+
+def meta_channels_for_object(object_type: str) -> tuple[str, ...]:
+    """Every channel a Meta ``object`` can deliver, private surface first.
+
+    A single ``page`` delivery may carry a Messenger message and a comment on
+    a post, in separate entries or in the same one. Handing it to one channel
+    would file half of it under the wrong surface, and comment-to-DM
+    conversion is measured by telling those two halves apart -- so the caller
+    is given both, and each adapter takes the array it understands.
+
+    Order is fixed rather than incidental: dispatch follows it, so two
+    surfaces in one delivery are always processed in the same sequence and a
+    test can assert what happened without depending on dict iteration.
+
+    Says nothing about whether either channel is switched on, configured, or
+    has an adapter. ``is_enabled``, ``missing_credentials`` and
+    ``adapter_class`` answer those, and the caller must still ask.
+    """
+    resolved = (meta_dm_channel(object_type), meta_comment_channel(object_type))
+    return tuple(channel for channel in resolved if channel is not None)
 
 
 def any_meta_channel_enabled(settings: ChannelSettings | None = None) -> bool:
