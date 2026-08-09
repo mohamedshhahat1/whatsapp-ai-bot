@@ -28,6 +28,13 @@ They are kept separate deliberately. Folding WhatsApp into the event model
 would mean rewriting a parser that is in production and correct, to satisfy a
 shape it never receives -- and the whole point of the channel work is that the
 live WhatsApp path does not move.
+
+Comments
+--------
+One surface type gets a step the others do not: a comment can be answered in
+public and then continued in private. That second step lives in
+app/services/comment_invite.py and is reached from here, after the public
+answer, and only for adapters that actually have comments.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -35,7 +42,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.channels.base import BaseChannelAdapter
+from app.channels.base import BaseChannelAdapter, CommentChannelAdapter
 from app.channels.events import (
     EVENT_MEDIA,
     EVENT_SELECTION,
@@ -49,6 +56,7 @@ from app.core.metrics import ERRORS_TOTAL
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.services.chat_service import ChatService
+from app.services.comment_invite import invite_after_comment
 from app.services.stale_inbound import record_without_answering
 
 logger = get_logger(__name__)
@@ -98,12 +106,36 @@ async def process_meta_payload(
     The service is constructed with the adapter as its sender and told which
     channel it is on, which is what makes replies leave through the same
     channel they arrived on.
+
+    A comment surface gets one extra step. Once the comment has been routed --
+    and, where the channel is configured to, answered in public --
+    ``invite_after_comment`` may follow it with a private reply inviting the
+    customer to continue in DM. At most one per comment, enforced by a unique
+    index rather than by anything here.
+
+    That call is placed after the dispatch rather than before it because the
+    invitation announces a private message: sending it first would promise
+    something the public thread had not yet delivered. Nothing is lost by
+    waiting -- Meta's private reply window is keyed to the comment and lasts
+    seven days -- and the invitation deliberately does not care whether the
+    public answer succeeded, since a Graph API failure on one edge says
+    nothing about whether the page may message the commenter on the other.
+
+    The ``isinstance`` test is what keeps every private channel out of this.
+    Messenger and Instagram DM are not ``CommentChannelAdapter``s, so the
+    branch is unreachable for them rather than merely false, and unlike a
+    comparison against ``adapter.channel`` it narrows the type for the call
+    below. ``event.routable`` repeats the guard ``_dispatch_event`` applies
+    internally: an event the router dropped must not reach the invitation
+    either.
     """
     service = ChatService(session, adapter, ai, settings, channel=adapter.channel)
     for event in adapter.parse(payload):
         if _event_is_stale(event):
             continue
         await _dispatch_event(service, event)
+        if isinstance(adapter, CommentChannelAdapter) and event.routable:
+            await invite_after_comment(session, adapter, settings, event)
 
 
 def _message_age(message: dict[str, Any]) -> timedelta | None:

@@ -1,4 +1,4 @@
-"""Meta webhook for Messenger, and later Instagram and comment surfaces.
+"""Meta webhook for Messenger, Instagram, and the comment surfaces.
 
 A separate route from ``/webhook`` on purpose. Meta subscribes a URL per
 product, the two payload shapes share nothing but the envelope, and the
@@ -10,6 +10,17 @@ What is NOT duplicated is the security. Both helpers come from
 resolved through ``ChannelSettings``, which falls back to the WhatsApp app
 secret and verify token so that the usual single-Meta-app setup needs no
 second copy of either value.
+
+One URL serves every Meta surface, and the envelope's ``object`` field is the
+only thing that says which. That lookup lives in the registry rather than here,
+so the route holds no channel knowledge of its own -- and one object names two
+channels rather than one: ``page`` carries Messenger messages under
+``messaging`` and Facebook comments under ``changes``, while ``instagram``
+carries Instagram DMs and Instagram comments the same way. A delivery is worth
+queueing when any of its object's surfaces is switched on. Which entries belong
+to which surface is the adapters' business, not the route's -- deciding it here
+would mean parsing the body before the ACK. See docs/CHANNELS.md for the
+verified contract behind each.
 
 Like ``/webhook``, this ACKs immediately and does the work elsewhere:
 
@@ -28,8 +39,11 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from app.channels.config import get_channel_settings
-from app.channels.constants import MESSENGER
-from app.channels.messenger import MessengerAdapter
+from app.channels.outbound import meta_inbound_adapters
+from app.channels.registry import (
+    any_meta_channel_enabled,
+    meta_channels_for_object,
+)
 from app.config import get_settings
 from app.core.logging import get_logger
 from app.core.ratelimit import WEBHOOK_LIMIT, limiter, webhook_key
@@ -72,23 +86,36 @@ async def receive_meta_webhook(
 ) -> dict[str, str]:
     """Validate the Meta signature, ACK fast, and enqueue processing.
 
-    Four refusals, in this order:
+    Six refusals, and the order of them is the design:
 
     1. A bad signature is a 403 and nothing else happens. The body is not
        parsed, because parsing unverified input is the thing the signature
        exists to avoid.
-    2. Messenger switched off ACKs and drops. Meta keeps delivering to a
-       subscribed webhook regardless of what this application thinks, so the
-       switch has to be enforced here rather than assumed.
+    2. No Meta surface enabled at all ACKs and drops, still without parsing.
+       Meta keeps delivering to a subscribed webhook regardless of what this
+       application thinks, so the switch has to be enforced here rather than
+       assumed -- and a deployment with every Meta channel off should not
+       spend CPU decoding bodies it will discard.
     3. A body that is valid JSON but not an object ACKs and drops. There is
        no envelope to read, and reaching for one anyway is how this route
        used to answer 500.
-    4. Anything whose ``object`` is not ``page`` ACKs and drops -- Instagram
-       and the comment surfaces arrive on this same URL and are not wired
-       yet, and apologising to a commenter would be worse than silence.
+    4. An ``object`` this application does not serve ACKs and drops. Meta adds
+       products to an existing subscription, so an unfamiliar one is a normal
+       event rather than an error.
+    5. A known object with every one of its surfaces switched off ACKs and
+       drops. This is the per-channel check, and it can only happen after the
+       parse, because which switches apply is not knowable until the object
+       has been read. An object names two channels -- one private, one public
+       -- and either being on is reason enough to queue, because both arrive
+       under the same ``object``. That is the one behavioural consequence of
+       this ordering: a malformed body now answers 400 whenever any Meta
+       surface is enabled, where previously it did so only when Messenger
+       specifically was.
+    6. Invalid JSON is the only 400 (checked between 2 and 3).
 
-    The last three answer 200 deliberately. A non-200 tells Meta the delivery
-    failed and it will retry the same payload for hours.
+    Everything except the signature and the malformed body answers 200
+    deliberately. A non-200 tells Meta the delivery failed and it will retry
+    the same payload for hours.
     """
     settings = get_settings()
     channels = get_channel_settings()
@@ -102,8 +129,9 @@ async def receive_meta_webhook(
     ):
         raise HTTPException(status_code=403, detail="Invalid signature")
 
-    if not channels.switches.get(MESSENGER, False):
-        logger.info("meta_webhook_ignored", reason="messenger_disabled")
+    # Ahead of the parse on purpose -- see refusal 2 in the docstring.
+    if not any_meta_channel_enabled(channels):
+        logger.info("meta_webhook_ignored", reason="no_meta_channel_enabled")
         return {"status": "ignored"}
 
     try:
@@ -124,12 +152,22 @@ async def receive_meta_webhook(
         )
         return {"status": "ignored"}
 
-    object_type = payload.get("object")
-    if object_type != "page":
+    object_type = str(payload.get("object") or "")
+    surfaces = meta_channels_for_object(object_type)
+    if not surfaces:
         logger.info(
             "meta_webhook_ignored",
             reason="unsupported_object",
-            object_type=str(object_type),
+            object_type=object_type,
+        )
+        return {"status": "ignored"}
+
+    if not any(channels.switches.get(channel, False) for channel in surfaces):
+        logger.info(
+            "meta_webhook_ignored",
+            reason="channel_disabled",
+            channels=list(surfaces),
+            object_type=object_type,
         )
         return {"status": "ignored"}
 
@@ -143,22 +181,49 @@ async def receive_meta_webhook(
 async def _process_inline(payload: dict[str, Any]) -> None:
     """In-process fallback used when the task queue is disabled (dev only).
 
-    The adapter is built per delivery and closed here. Unlike the WhatsApp
-    client it is not a cached singleton, because it is only reachable on this
+    Every surface the delivery carries is processed, one adapter at a time. A
+    ``page`` envelope can hold a Messenger message and a comment at once, and
+    each adapter reads only the array it understands, so the same payload goes
+    to each of them rather than being filed under whichever surface resolved
+    first. Using one adapter for two surfaces would file every comment under
+    Messenger, and ``conversations.channel`` is what every analytics figure
+    groups by.
+
+    Adapters are built per delivery and closed here. Unlike the WhatsApp client
+    they are not cached singletons, because they are only reachable on this
     path and a process-wide client would hold a connection pool open for a
     channel that may never be switched on.
+
+    One surface failing must not silence the other, so each gets its own
+    session and its own error boundary: a rollback on one cannot discard work
+    already committed for the other, and every adapter is closed even when a
+    sibling raises.
+
+    No adapters at all is a normal outcome, not an error: the route's checks
+    and this one are separated by a queue hop, and configuration can change in
+    between.
     """
-    adapter = MessengerAdapter(get_channel_settings())
-    try:
-        async with SessionLocal() as session:
-            await process_meta_payload(
-                session,
-                adapter,
-                get_openai_client(),
-                get_settings(),
-                payload,
+    object_type = str(payload.get("object") or "")
+    adapters = meta_inbound_adapters(object_type)
+    if not adapters:
+        logger.info("inline_processing_skipped", object_type=object_type)
+        return
+
+    for adapter in adapters:
+        try:
+            async with SessionLocal() as session:
+                await process_meta_payload(
+                    session,
+                    adapter,
+                    get_openai_client(),
+                    get_settings(),
+                    payload,
+                )
+        except Exception:
+            logger.error(
+                "inline_processing_failed",
+                channel=adapter.channel,
+                exc_info=True,
             )
-    except Exception:
-        logger.error("inline_processing_failed", exc_info=True)
-    finally:
-        await adapter.aclose()
+        finally:
+            await adapter.aclose()
