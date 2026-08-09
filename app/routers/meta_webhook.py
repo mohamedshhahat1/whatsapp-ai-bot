@@ -1,4 +1,4 @@
-"""Meta webhook for Messenger and Instagram, and later the comment surfaces.
+"""Meta webhook for Messenger, Instagram, and the comment surfaces.
 
 A separate route from ``/webhook`` on purpose. Meta subscribes a URL per
 product, the two payload shapes share nothing but the envelope, and the
@@ -12,11 +12,15 @@ secret and verify token so that the usual single-Meta-app setup needs no
 second copy of either value.
 
 One URL serves every Meta surface, and the envelope's ``object`` field is the
-only thing that says which. That lookup lives in the registry rather than here
-so the route holds no channel knowledge of its own: ``page`` is Messenger,
-``instagram`` is Instagram DM, and the comment surfaces arrive on those same
-two objects under ``changes`` rather than ``messaging``. See docs/CHANNELS.md
-for the verified contract behind each.
+only thing that says which. That lookup lives in the registry rather than here,
+so the route holds no channel knowledge of its own -- and one object names two
+channels rather than one: ``page`` carries Messenger messages under
+``messaging`` and Facebook comments under ``changes``, while ``instagram``
+carries Instagram DMs and Instagram comments the same way. A delivery is worth
+queueing when any of its object's surfaces is switched on. Which entries belong
+to which surface is the adapters' business, not the route's -- deciding it here
+would mean parsing the body before the ACK. See docs/CHANNELS.md for the
+verified contract behind each.
 
 Like ``/webhook``, this ACKs immediately and does the work elsewhere:
 
@@ -35,8 +39,11 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 
 from app.channels.config import get_channel_settings
-from app.channels.outbound import meta_inbound_adapter
-from app.channels.registry import any_meta_channel_enabled, meta_dm_channel
+from app.channels.outbound import meta_inbound_adapters
+from app.channels.registry import (
+    any_meta_channel_enabled,
+    meta_channels_for_object,
+)
 from app.config import get_settings
 from app.core.logging import get_logger
 from app.core.ratelimit import WEBHOOK_LIMIT, limiter, webhook_key
@@ -95,12 +102,15 @@ async def receive_meta_webhook(
     4. An ``object`` this application does not serve ACKs and drops. Meta adds
        products to an existing subscription, so an unfamiliar one is a normal
        event rather than an error.
-    5. A known object whose channel is switched off ACKs and drops. This is
-       the per-channel check, and it can only happen after the parse, because
-       which switch applies is not knowable until the object has been read.
-       That is the one behavioural consequence of this ordering: a malformed
-       body now answers 400 whenever any Meta surface is enabled, where
-       previously it did so only when Messenger specifically was.
+    5. A known object with every one of its surfaces switched off ACKs and
+       drops. This is the per-channel check, and it can only happen after the
+       parse, because which switches apply is not knowable until the object
+       has been read. An object names two channels -- one private, one public
+       -- and either being on is reason enough to queue, because both arrive
+       under the same ``object``. That is the one behavioural consequence of
+       this ordering: a malformed body now answers 400 whenever any Meta
+       surface is enabled, where previously it did so only when Messenger
+       specifically was.
     6. Invalid JSON is the only 400 (checked between 2 and 3).
 
     Everything except the signature and the malformed body answers 200
@@ -143,8 +153,8 @@ async def receive_meta_webhook(
         return {"status": "ignored"}
 
     object_type = str(payload.get("object") or "")
-    channel = meta_dm_channel(object_type)
-    if channel is None:
+    surfaces = meta_channels_for_object(object_type)
+    if not surfaces:
         logger.info(
             "meta_webhook_ignored",
             reason="unsupported_object",
@@ -152,11 +162,11 @@ async def receive_meta_webhook(
         )
         return {"status": "ignored"}
 
-    if not channels.switches.get(channel, False):
+    if not any(channels.switches.get(channel, False) for channel in surfaces):
         logger.info(
             "meta_webhook_ignored",
             reason="channel_disabled",
-            channel=channel,
+            channels=list(surfaces),
             object_type=object_type,
         )
         return {"status": "ignored"}
@@ -171,38 +181,49 @@ async def receive_meta_webhook(
 async def _process_inline(payload: dict[str, Any]) -> None:
     """In-process fallback used when the task queue is disabled (dev only).
 
-    The adapter is chosen from the delivery's own ``object`` rather than fixed,
-    so an Instagram payload is parsed by the Instagram adapter and attributed
-    to the Instagram channel. Using one adapter for both surfaces would file
-    every Instagram conversation under Messenger, and
-    ``conversations.channel`` is what every analytics figure groups by.
+    Every surface the delivery carries is processed, one adapter at a time. A
+    ``page`` envelope can hold a Messenger message and a comment at once, and
+    each adapter reads only the array it understands, so the same payload goes
+    to each of them rather than being filed under whichever surface resolved
+    first. Using one adapter for two surfaces would file every comment under
+    Messenger, and ``conversations.channel`` is what every analytics figure
+    groups by.
 
-    Built per delivery and closed here. Unlike the WhatsApp client it is not a
-    cached singleton, because it is only reachable on this path and a
-    process-wide client would hold a connection pool open for a channel that
-    may never be switched on.
+    Adapters are built per delivery and closed here. Unlike the WhatsApp client
+    they are not cached singletons, because they are only reachable on this
+    path and a process-wide client would hold a connection pool open for a
+    channel that may never be switched on.
 
-    A None adapter is a normal outcome, not an error: the route's checks and
-    this one are separated by a queue hop, and configuration can change in
+    One surface failing must not silence the other, so each gets its own
+    session and its own error boundary: a rollback on one cannot discard work
+    already committed for the other, and every adapter is closed even when a
+    sibling raises.
+
+    No adapters at all is a normal outcome, not an error: the route's checks
+    and this one are separated by a queue hop, and configuration can change in
     between.
     """
-    adapter = meta_inbound_adapter(str(payload.get("object") or ""))
-    if adapter is None:
-        logger.info(
-            "inline_processing_skipped",
-            object_type=str(payload.get("object") or ""),
-        )
+    object_type = str(payload.get("object") or "")
+    adapters = meta_inbound_adapters(object_type)
+    if not adapters:
+        logger.info("inline_processing_skipped", object_type=object_type)
         return
-    try:
-        async with SessionLocal() as session:
-            await process_meta_payload(
-                session,
-                adapter,
-                get_openai_client(),
-                get_settings(),
-                payload,
+
+    for adapter in adapters:
+        try:
+            async with SessionLocal() as session:
+                await process_meta_payload(
+                    session,
+                    adapter,
+                    get_openai_client(),
+                    get_settings(),
+                    payload,
+                )
+        except Exception:
+            logger.error(
+                "inline_processing_failed",
+                channel=adapter.channel,
+                exc_info=True,
             )
-    except Exception:
-        logger.error("inline_processing_failed", exc_info=True)
-    finally:
-        await adapter.aclose()
+        finally:
+            await adapter.aclose()

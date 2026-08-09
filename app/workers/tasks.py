@@ -21,7 +21,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.channels.outbound import meta_inbound_adapter
+from app.channels.outbound import meta_inbound_adapters
 from app.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import ERRORS_TOTAL, WEBHOOK_DEAD_LETTERS_TOTAL
@@ -93,34 +93,44 @@ async def _run(payload: dict[str, Any]) -> None:
 
 
 async def _run_meta(payload: dict[str, Any]) -> None:
-    """The Meta equivalent of :func:`_run`, for Messenger and Instagram DM.
+    """The Meta equivalent of :func:`_run`, for every surface but WhatsApp.
 
     Deliberately a sibling rather than a branch inside ``_run``: the two build
     different clients, and adding a channel argument to the task that carries
     live WhatsApp traffic would change its signature for no benefit.
 
-    The adapter is chosen from the delivery's own ``object`` rather than fixed.
-    Fixing it was safe only while this route served one surface; with two, a
-    Messenger adapter would happily parse an Instagram envelope -- they share
-    the ``messaging`` array -- and write the conversation under the wrong
-    channel. Nothing downstream could detect that afterwards.
+    The adapters are chosen from the delivery's own ``object`` rather than
+    fixed, and there can be more than one of them. A ``page`` envelope carries
+    Messenger messages under ``messaging`` and Facebook comments under
+    ``changes``, and a single delivery can hold both; ``instagram`` splits the
+    same way. Each adapter parses only the array it understands, so the payload
+    is handed to each in turn. Fixing the adapter was safe only while this
+    route served one surface; with several, a Messenger adapter would happily
+    parse an Instagram envelope -- they share the ``messaging`` array -- and
+    write the conversation under the wrong channel. Nothing downstream could
+    detect that afterwards.
+
+    The private surface is processed before the public one, and that ordering
+    is load-bearing rather than tidy: this task retries on failure, so
+    answering DMs first means a persistently failing comment surface cannot
+    keep a customer's private message from being answered.
 
     Resolution happens before the engine and the OpenAI client exist, so a
     delivery this deployment cannot serve returns with nothing to close. That
     ordering is asserted in tests/test_meta_task_routing.py rather than left to
     a reader's care.
 
-    A None adapter is an ordinary outcome: the route checked the same switches,
+    No adapters is an ordinary outcome: the route checked the same switches,
     but a queue hop separates the two and configuration can change in between.
     Returning is right where raising would be wrong -- this task retries five
     times with backoff, and none of those attempts could succeed.
 
-    The adapter is created inside the task's own event loop, for the reason in
-    the module docstring, and closed alongside the others.
+    The adapters are created inside the task's own event loop, for the reason in
+    the module docstring, and every one of them is closed alongside the others.
     """
     object_type = str(payload.get("object") or "")
-    adapter = meta_inbound_adapter(object_type)
-    if adapter is None:
+    adapters = meta_inbound_adapters(object_type)
+    if not adapters:
         logger.info("meta_task_skipped", object_type=object_type)
         return
 
@@ -129,17 +139,16 @@ async def _run_meta(payload: dict[str, Any]) -> None:
     ai = OpenAIClient(settings)
     try:
         async with session_factory() as session:
-            await process_meta_payload(session, adapter, ai, settings, payload)
+            for adapter in adapters:
+                await process_meta_payload(session, adapter, ai, settings, payload)
     finally:
-        await _close_all(
-            (
-                ("openai", ai.aclose),
-                # Labelled with the actual channel, so a close failure names
-                # the surface it came from instead of always saying messenger.
-                (adapter.channel, adapter.aclose),
-                ("engine", engine.dispose),
-            )
-        )
+        closers: list[tuple[str, Callable[[], Awaitable[Any]]]] = []
+        closers.append(("openai", ai.aclose))
+        # Labelled with the actual channel, so a close failure names the
+        # surface it came from instead of always saying messenger.
+        closers.extend((adapter.channel, adapter.aclose) for adapter in adapters)
+        closers.append(("engine", engine.dispose))
+        await _close_all(tuple(closers))
 
 
 async def _sweep_idle_sessions() -> int:
@@ -322,13 +331,17 @@ def process_webhook_event(self: Task, payload: dict[str, Any]) -> None:
     retry_kwargs={"max_retries": MAX_RETRIES},
 )
 def process_meta_webhook_event(self: Task, payload: dict[str, Any]) -> None:
-    """Durably process one Meta delivery, Messenger or Instagram DM.
+    """Durably process one Meta delivery, on every surface it carries.
 
     Idempotent for the same three reasons as the WhatsApp task -- the inbound
     claim, the generation cache and the outbound reservation all key off the
-    provider message id -- plus one specific to these channels: the adapter
-    discards the account's own echoes before parsing, so a replayed delivery
-    can never be mistaken for a customer turn.
+    provider message id -- plus one specific to these channels: each adapter
+    discards the account's own echoes and its own comments before parsing, so a
+    replayed delivery can never be mistaken for a customer turn.
+
+    Retrying re-processes every surface in the delivery, not just the one that
+    failed. That is safe for the same reasons, and simpler than tracking
+    partial progress through a payload that is itself the unit of delivery.
     """
     try:
         asyncio.run(_run_meta(payload))
