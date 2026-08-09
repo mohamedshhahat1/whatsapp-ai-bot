@@ -1,0 +1,128 @@
+WARNING|STATIC_WARNING|STRICT_RAW_TYPE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_provider.dart|73|3|19|The generic type 'StreamSubscription<dynamic>?' should have explicit type arguments but doesn't.
+WARNING|STATIC_WARNING|UNUSED_IMPORT|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_screen.dart|9|8|43|Unused import: '../../shared/widgets/loading_shimmer.dart'.
+WARNING|STATIC_WARNING|UNUSED_IMPORT|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_list_screen.dart|9|8|34|Unused import: '../../core/utils/formatters.dart'.
+WARNING|STATIC_WARNING|UNUSED_LOCAL_VARIABLE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customer_detail_screen.dart|27|11|5|The value of the local variable 'theme' isn't used.
+WARNING|STATIC_WARNING|STRICT_RAW_TYPE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notification_provider.dart|25|3|19|The generic type 'StreamSubscription<dynamic>?' should have explicit type arguments but doesn't.
+WARNING|STATIC_WARNING|INVALID_USE_OF_VISIBLE_FOR_TESTING_MEMBER|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notifications_screen.dart|39|78|5|The member 'state' can only be used within 'package:state_notifier/state_notifier.dart' or a test.
+WARNING|STATIC_WARNING|INVALID_USE_OF_PROTECTED_MEMBER|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notifications_screen.dart|39|78|5|The member 'state' can only be used within instance members of subclasses of 'StateNotifier'.
+WARNING|STATIC_WARNING|UNUSED_IMPORT|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/splash/splash_screen.dart|7|8|40|Unused import: '../../core/storage/secure_storage.dart'.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|61|16|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|72|14|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|73|12|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|89|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|89|7|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|89|8|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|108|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|108|7|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|108|8|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|121|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|121|7|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|138|102|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|145|10|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|150|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|150|7|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|150|8|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|166|278|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|167|18|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|167|19|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|168|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|168|7|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|168|8|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|182|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|182|7|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|182|8|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|197|140|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|PREFER_CONST_CONSTRUCTORS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|197|189|78|Use 'const' with the constructor to improve performance.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|199|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|199|7|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/analytics/analytics_screen.dart|199|8|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/auth/login_screen.dart|92|52|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/auth/login_screen.dart|143|72|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|PREFER_CONST_CONSTRUCTORS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/auth/login_screen.dart|147|62|47|Use 'const' with the constructor to improve performance.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/auth/login_screen.dart|148|24|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_screen.dart|97|18|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_screen.dart|98|16|1|Missing a required trailing comma.
+INFO|LINT|PREFER_CONST_CONSTRUCTORS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_screen.dart|162|25|365|Use 'const' with the constructor to improve performance.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_screen.dart|202|22|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_screen.dart|276|59|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_detail_screen.dart|350|8|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_list_screen.dart|154|18|1|Missing a required trailing comma.
+INFO|LINT|PREFER_CONST_CONSTRUCTORS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_list_screen.dart|158|13|50|Use 'const' with the constructor to improve performance.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/chat_list_screen.dart|226|74|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/chat_composer.dart|46|68|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/chat_composer.dart|55|108|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/chat_composer.dart|58|10|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/chat_composer.dart|71|10|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/chat_composer.dart|71|11|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|54|79|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|61|16|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|67|18|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|78|157|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|78|195|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|82|20|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|82|21|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|85|144|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|92|52|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|97|65|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|100|24|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|104|18|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|105|16|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/conversation_tile.dart|105|17|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|23|31|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|23|69|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|25|40|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|25|79|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|26|38|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|26|75|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|26|93|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|36|136|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|40|10|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|54|12|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/handoff_banner.dart|56|8|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart|32|53|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart|51|109|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart|54|68|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart|56|12|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart|57|10|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart|69|31|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart|71|49|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/chat/widgets/message_bubble.dart|72|6|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customer_detail_screen.dart|36|152|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customer_detail_screen.dart|64|18|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customer_detail_screen.dart|88|10|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customers_screen.dart|55|17|1|Missing a required trailing comma.
+INFO|LINT|PREFER_CONST_CONSTRUCTORS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customers_screen.dart|74|13|167|Use 'const' with the constructor to improve performance.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customers_screen.dart|89|20|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customers_screen.dart|108|72|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/customers/customers_screen.dart|113|8|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notifications_screen.dart|24|98|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notifications_screen.dart|29|14|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notifications_screen.dart|29|15|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/notifications/notifications_screen.dart|46|22|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|37|18|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|37|19|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|37|20|1|Missing a required trailing comma.
+INFO|LINT|PREFER_CONST_CONSTRUCTORS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|41|13|35|Use 'const' with the constructor to improve performance.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|49|16|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|50|14|1|Missing a required trailing comma.
+INFO|LINT|PREFER_CONST_CONSTRUCTORS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|52|13|33|Use 'const' with the constructor to improve performance.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|59|16|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|60|14|1|Missing a required trailing comma.
+INFO|LINT|PREFER_CONST_CONSTRUCTORS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|62|13|30|Use 'const' with the constructor to improve performance.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|67|14|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|67|15|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|79|12|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|79|13|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|81|8|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|90|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|98|6|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/settings/settings_screen.dart|109|6|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/splash/splash_screen.dart|31|151|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/splash/splash_screen.dart|37|115|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/splash/splash_screen.dart|38|8|1|Missing a required trailing comma.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/features/splash/splash_screen.dart|38|9|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/error_view.dart|16|64|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/error_view.dart|23|8|1|Missing a required trailing comma.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/glass_card.dart|26|76|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|HINT|DEPRECATED_MEMBER_USE|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/glass_card.dart|28|80|11|'withOpacity' is deprecated and shouldn't be used. Use .withValues() to avoid precision loss.
+INFO|LINT|REQUIRE_TRAILING_COMMAS|/home/runner/work/whatsapp-ai-bot/whatsapp-ai-bot/mobile/lib/shared/widgets/loading_shimmer.dart|81|10|1|Missing a required trailing comma.
