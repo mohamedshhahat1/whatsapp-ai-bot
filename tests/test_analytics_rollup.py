@@ -227,18 +227,13 @@ async def test_rerunning_the_same_night_does_not_duplicate(
     await db.commit()
 
     db.expire_all()
-    rows = (
-        (
-            await db.execute(
-                select(AnalyticsDaily).where(
-                    AnalyticsDaily.day == DAY,
-                    AnalyticsDaily.tenant_id == default_tenant,
-                )
-            )
+    result = await db.execute(
+        select(AnalyticsDaily).where(
+            AnalyticsDaily.day == DAY,
+            AnalyticsDaily.tenant_id == default_tenant,
         )
-        .scalars()
-        .all()
     )
+    rows = list(result.scalars())
     assert len(rows) == 1
     assert rows[0].requests == 1
 
@@ -280,7 +275,9 @@ async def test_midnight_belongs_to_exactly_one_day(
         tenant_id=default_tenant,
     )
     _add_log(
-        db, when=datetime(2001, 3, 5, 0, 0, 0, tzinfo=UTC), tenant_id=default_tenant
+        db,
+        when=datetime(2001, 3, 5, 0, 0, 0, tzinfo=UTC),
+        tenant_id=default_tenant,
     )
     await db.commit()
 

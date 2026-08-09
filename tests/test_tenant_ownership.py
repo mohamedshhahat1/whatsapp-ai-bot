@@ -62,8 +62,8 @@ OWNED_TABLES = (
     "analytics_daily",
 )
 
-#: The three keys that gained the tenant, with the delete behaviour each one
-#: had before 1b. 'c' is CASCADE in pg_constraint.confdeltype.
+#: The three keys that gained the tenant. Each was ON DELETE CASCADE before 1b
+#: and must still be: 'c' in pg_constraint.confdeltype.
 WIDENED_KEYS = (
     ("conversations", "fk_conversations_user"),
     ("messages", "fk_messages_conversation"),
@@ -168,12 +168,18 @@ _TENANT_OF_CHUNKS = """
 SELECT DISTINCT tenant_id FROM document_chunks WHERE document_id = :row_id
 """
 
+_SURVIVING_MESSAGE = "SELECT count(*) FROM messages WHERE id = :row_id"
+
 _ORPHANED_MESSAGES = """
 SELECT count(*)
   FROM messages AS m
   LEFT JOIN conversations AS c
     ON c.id = m.conversation_id AND c.tenant_id = m.tenant_id
  WHERE c.id IS NULL
+"""
+
+_RESERVATION_INDEX = """
+SELECT to_regclass('ix_messages_wa_message_id') IS NOT NULL
 """
 
 
@@ -267,10 +273,7 @@ async def test_the_reservation_anchors_stayed_global(db: AsyncSession) -> None:
     )
     assert "tenant_id" not in columns
 
-    unique_on_wa_id = await db.scalar(
-        text("SELECT to_regclass('ix_messages_wa_message_id') IS NOT NULL")
-    )
-    assert unique_on_wa_id, "the inbound reservation index is gone"
+    assert await db.scalar(text(_RESERVATION_INDEX)), "inbound anchor is gone"
 
 
 # --- The backfill, run as written -------------------------------------------
@@ -463,9 +466,8 @@ async def test_one_document_path_twice_in_one_tenant_is_refused(
                 )
     finally:
         await db.rollback()
-        await db.execute(
-            delete(Document).where(Document.source.in_([mine, theirs]))
-        )
+        stale = delete(Document).where(Document.source.in_([mine, theirs]))
+        await db.execute(stale)
         await db.commit()
 
 
@@ -487,17 +489,13 @@ async def test_a_chunk_cannot_move_away_from_its_document(
             "hash-c",
             tenant_id=default_tenant,
         )
-        await documents.replace_chunks(
-            document,
-            [
-                ChunkInput(
-                    chunk_index=0,
-                    content="probe",
-                    token_count=1,
-                    embedding=EMBEDDING,
-                )
-            ],
+        chunk = ChunkInput(
+            chunk_index=0,
+            content="probe",
+            token_count=1,
+            embedding=EMBEDDING,
         )
+        await documents.replace_chunks(document, [chunk])
         await db.commit()
 
         # replace_chunks takes the tenant from the document rather than an
@@ -566,7 +564,7 @@ async def test_two_tenants_may_share_a_phone_number(
         second = await users.get_or_create(wa_id, tenant_id=other_tenant)
         await db.commit()
 
-        assert first.id != second.id, "the second tenant was handed the first's row"
+        assert first.id != second.id, "the second tenant got the first's row"
         assert first.tenant_id == default_tenant
         assert second.tenant_id == other_tenant
     finally:
@@ -633,7 +631,7 @@ async def test_two_tenants_may_upload_the_same_document(
         found = await documents.get_by_source(source, tenant_id=default_tenant)
         assert found is not None
         assert found.id == mine.id
-        assert found.title == "Mine", "the other tenant's upload overwrote this one"
+        assert found.title == "Mine", "the other tenant's upload overwrote it"
     finally:
         await db.execute(delete(Document).where(Document.source == source))
         await db.commit()
@@ -736,15 +734,14 @@ async def test_the_rollup_writes_one_row_per_tenant(
         assert quiet is not None
         assert busy.requests == 2
         assert busy.total_tokens == 300
-        assert quiet.requests == 0, "another tenant's traffic leaked into this row"
+        assert quiet.requests == 0, "another tenant's traffic leaked in"
         assert quiet.total_tokens == 0
     finally:
         # analytics_daily references tenants ON DELETE RESTRICT, so the row
         # written for the temporary tenant has to go before its fixture tears
         # that tenant down.
-        await db.execute(
-            delete(AnalyticsDaily).where(AnalyticsDaily.day == ROLLUP_DAY)
-        )
+        rolled = delete(AnalyticsDaily).where(AnalyticsDaily.day == ROLLUP_DAY)
+        await db.execute(rolled)
         await db.execute(delete(AILog).where(AILog.model == ROLLUP_MODEL))
         await db.commit()
 
@@ -765,10 +762,7 @@ async def test_deleting_a_customer_still_takes_their_messages(
 
     await purge(db, wa_id)
 
-    survivors = await db.scalar(
-        text("SELECT count(*) FROM messages WHERE id = :row_id"),
-        {"row_id": claimed},
-    )
+    survivors = await db.scalar(text(_SURVIVING_MESSAGE), {"row_id": claimed})
     assert survivors == 0
 
 
