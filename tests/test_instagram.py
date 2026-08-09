@@ -48,17 +48,23 @@ IG_ACCOUNT = "17841400000000001"
 CUSTOMER = "6789012345678901"
 
 # One Arabic letter, two bytes in UTF-8. The whole point of the byte clamp.
-ARABIC_LETTER = "\u0623"
+ARABIC_LETTER = "\\u0623"
 
 
 def _settings(**overrides: Any) -> ChannelSettings:
-    """Channel settings that ignore whatever .env happens to exist."""
-    return ChannelSettings(
-        _env_file=None,
-        instagram_account_id=IG_ACCOUNT,
-        instagram_access_token="unit-test-placeholder",
-        **overrides,
-    )
+    """Channel settings that ignore whatever .env happens to exist.
+
+    The defaults are merged into a dict rather than passed beside
+    ``**overrides``: a test that pins one of them -- an empty account id, an
+    empty Instagram token -- would otherwise supply the same keyword twice and
+    raise TypeError before reaching its first assertion.
+    """
+    values: dict[str, Any] = {
+        "instagram_account_id": IG_ACCOUNT,
+        "instagram_access_token": "unit-test-placeholder",
+    }
+    values.update(overrides)
+    return ChannelSettings(_env_file=None, **values)
 
 
 def _adapter(**overrides: Any) -> InstagramDMAdapter:
@@ -210,7 +216,7 @@ def test_unsupported_message_is_reported_as_unsupported() -> None:
 def test_quick_reply_routes_on_payload_not_on_the_visible_label() -> None:
     """The label is copy and will be translated; the payload is the id."""
     adapter = _adapter()
-    label = "\u0637\u0644\u0628 \u0639\u0631\u0636 \u0633\u0639\u0631"
+    label = "\\u0637\\u0644\\u0628 \\u0639\\u0631\\u0636 \\u0633\\u0639\\u0631"
     item = _text_item(label, mid="m_qr")
     item["message"]["quick_reply"] = {"payload": "request_quote"}
     (event,) = list(adapter.parse(_delivery(item)))
@@ -270,7 +276,7 @@ def test_attachment_keeps_the_caption() -> None:
 
 def test_plain_text_becomes_a_text_event_on_the_instagram_channel() -> None:
     adapter = _adapter()
-    body = "\u0639\u0627\u064a\u0632"
+    body = "\\u0639\\u0627\\u064a\\u0632"
     (event,) = list(adapter.parse(_delivery(_text_item(body))))
     assert event.kind == EVENT_TEXT
     assert event.channel == INSTAGRAM_DM
