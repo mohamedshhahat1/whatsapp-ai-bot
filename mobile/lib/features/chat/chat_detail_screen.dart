@@ -81,20 +81,26 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
       backgroundColor: isDark ? AppColors.darkChatBg : AppColors.lightChatBg,
       appBar: AppBar(
         title: detail != null
-            ? Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(detail.assignedOperator ?? 'Customer #${detail.userId}', style: theme.textTheme.titleMedium),
-                // The channel appears only when it is not the default. On a
-                // WhatsApp-only deployment -- which is every deployment until
-                // ENABLE_MESSENGER is turned on -- a badge here would sit on
-                // screen permanently and say nothing.
-                Row(mainAxisSize: MainAxisSize.min, children: [
-                  if (detail.channel != channelWhatsapp) ...[
-                    ChannelBadge(channel: detail.channel),
-                    const SizedBox(width: 6),
-                  ],
-                  Text(detail.mode == modeHuman ? 'Human Mode' : 'Bot Mode', style: theme.textTheme.bodySmall?.copyWith(color: detail.mode == modeHuman ? AppColors.humanMode : AppColors.botMode)),
-                ]),
-              ])
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(detail.assignedOperator ?? 'Customer #${detail.userId}', style: theme.textTheme.titleMedium),
+                  // The channel appears only when it is not the default. On a
+                  // WhatsApp-only deployment -- which is every deployment until
+                  // ENABLE_MESSENGER is turned on -- a badge here would sit on
+                  // screen permanently and say nothing.
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (detail.channel != channelWhatsapp) ...[
+                        ChannelBadge(channel: detail.channel),
+                        const SizedBox(width: 6),
+                      ],
+                      Text(detail.mode == modeHuman ? 'Human Mode' : 'Bot Mode', style: theme.textTheme.bodySmall?.copyWith(color: detail.mode == modeHuman ? AppColors.humanMode : AppColors.botMode)),
+                    ],
+                  ),
+                ],
+              )
             : const Text('Loading...'),
         actions: [
           if (detail != null && closed)
@@ -154,51 +160,53 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
               ? ErrorView(message: state.errorMessage ?? 'Failed to load', onRetry: () => notifier.load(widget.conversationId))
               : detail == null
                   ? const SizedBox()
-                  : Column(children: [
-                      if (detail.mode == modeHuman || detail.tag == tagSalesLead)
-                        HandoffBanner(conversation: detail, onTakeOver: detail.mode == modeBot ? notifier.takeOver : null, onResumeAi: detail.mode == modeHuman ? notifier.resumeAi : null),
-                      if (state.superseded)
-                        _Banner(
-                          color: AppColors.error,
-                          icon: Icons.block,
-                          text: 'This customer has already started a newer '
-                              'conversation. This one can no longer be replied '
-                              'to. Open their current conversation instead.',
-                        )
-                      else if (closed)
-                        _Banner(
-                          color: theme.disabledColor,
-                          icon: Icons.lock_clock,
-                          text: 'This session has ended. Replying reopens it, '
-                              'so the transcript stays together and the '
-                              'customer is not greeted again.',
-                        )
-                      else if (_stateLabel(detail) != null)
-                        _Banner(
-                          color: theme.disabledColor,
-                          icon: Icons.schedule,
-                          text: _stateLabel(detail)!,
+                  : Column(
+                      children: [
+                        if (detail.mode == modeHuman || detail.tag == tagSalesLead)
+                          HandoffBanner(conversation: detail, onTakeOver: detail.mode == modeBot ? notifier.takeOver : null, onResumeAi: detail.mode == modeHuman ? notifier.resumeAi : null),
+                        if (state.superseded)
+                          const _Banner(
+                            color: AppColors.error,
+                            icon: Icons.block,
+                            text: 'This customer has already started a newer '
+                                'conversation. This one can no longer be replied '
+                                'to. Open their current conversation instead.',
+                          )
+                        else if (closed)
+                          _Banner(
+                            color: theme.disabledColor,
+                            icon: Icons.lock_clock,
+                            text: 'This session has ended. Replying reopens it, '
+                                'so the transcript stays together and the '
+                                'customer is not greeted again.',
+                          )
+                        else if (_stateLabel(detail) != null)
+                          _Banner(
+                            color: theme.disabledColor,
+                            icon: Icons.schedule,
+                            text: _stateLabel(detail)!,
+                          ),
+                        Expanded(
+                          child: ListView.builder(
+                            controller: _scrollController,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            itemCount: detail.messages.length,
+                            itemBuilder: (context, index) {
+                              final msg = detail.messages[index];
+                              return MessageBubble(message: msg).animate().fadeIn(duration: 200.ms).slideY(begin: 0.1, duration: 200.ms);
+                            },
+                          ),
                         ),
-                      Expanded(
-                        child: ListView.builder(
-                          controller: _scrollController,
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                          itemCount: detail.messages.length,
-                          itemBuilder: (context, index) {
-                            final msg = detail.messages[index];
-                            return MessageBubble(message: msg).animate().fadeIn(duration: 200.ms).slideY(begin: 0.1, duration: 200.ms);
-                          },
-                        ),
-                      ),
-                      // Swapped out rather than disabled, so ChatComposer
-                      // keeps its existing signature. Note this applies only
-                      // when SUPERSEDED -- a merely closed session keeps a
-                      // working composer, because sending there reopens it.
-                      if (state.superseded)
-                        const _ComposerDisabled()
-                      else
-                        ChatComposer(onSend: (text) async { final ok = await notifier.sendReply(text); return ok; }, isSending: state.status == ChatDetailStatus.sending),
-                    ]),
+                        // Swapped out rather than disabled, so ChatComposer
+                        // keeps its existing signature. Note this applies only
+                        // when SUPERSEDED -- a merely closed session keeps a
+                        // working composer, because sending there reopens it.
+                        if (state.superseded)
+                          const _ComposerDisabled()
+                        else
+                          ChatComposer(onSend: (text) async { final ok = await notifier.sendReply(text); return ok; }, isSending: state.status == ChatDetailStatus.sending),
+                      ],
+                    ),
     );
   }
 
@@ -271,8 +279,10 @@ class _ChatDetailScreenState extends ConsumerState<ChatDetailScreen> {
                   if (history.previous.isEmpty)
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 12),
-                      child: Text('This is their first conversation.',
-                          style: theme.textTheme.bodySmall),
+                      child: Text(
+                        'This is their first conversation.',
+                        style: theme.textTheme.bodySmall,
+                      ),
                     )
                   else
                     Flexible(
@@ -342,11 +352,13 @@ class _Banner extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       color: color.withValues(alpha: 0.12),
-      child: Row(children: [
-        Icon(icon, size: 16, color: color),
-        const SizedBox(width: 8),
-        Expanded(child: Text(text, style: theme.textTheme.bodySmall)),
-      ]),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 8),
+          Expanded(child: Text(text, style: theme.textTheme.bodySmall)),
+        ],
+      ),
     );
   }
 }
