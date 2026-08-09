@@ -23,6 +23,19 @@ from app.models.conversation import (
 from app.models.user import User
 from app.repositories.base import BaseRepository
 
+
+def _tenant_of(user_id: int):
+    """The owning tenant, as a subquery to embed in an INSERT.
+
+    A conversation belongs to whoever owns its customer, so the value is read
+    from the parent row inside the same statement rather than passed in. That
+    keeps the insert single -- ``get_or_create_active`` depends on Postgres
+    serialising two concurrent callers on one partial unique index -- and
+    leaves no argument a caller could get wrong.
+    """
+    return select(User.tenant_id).where(User.id == user_id).scalar_subquery()
+
+
 # A sales lead nobody has claimed yet sorts above everything else. All four
 # conditions matter:
 #
@@ -130,7 +143,10 @@ class ConversationRepository(BaseRepository):
 
         Not filtered by channel either, and it does not need to be: identity
         is ``(channel, external_id)``, so the same human on two channels is
-        two users and ``user_id`` already scopes this to one of them.
+        two users and ``user_id`` already scopes this to one of them. The same
+        argument now covers the tenant, since a user row belongs to exactly
+        one -- which is why this method needs no tenant predicate to be
+        correct, only the wider read-path work in Phase 1c to be complete.
         """
         return await self.session.scalar(
             select(Conversation)
@@ -270,6 +286,14 @@ class ConversationRepository(BaseRepository):
         is ``(channel, external_id)``, so ``user_id`` has already narrowed
         this to a single channel.
 
+        ``tenant_id`` is read from the customer row by a subquery in the same
+        INSERT rather than taken as an argument, so a conversation cannot be
+        opened under a tenant its customer does not belong to. The conflict
+        target is deliberately unchanged: the partial index it infers is
+        already tenant-correct, because ``user_id`` is itself scoped to one
+        tenant now. Adding the tenant to that target would be a change in
+        behaviour dressed up as consistency.
+
         ``mode`` is not listed in the insert, so it comes from the column's
         server default rather than the ORM default. The same is true of
         ``last_activity_at``, which is why that column carries a server
@@ -288,7 +312,12 @@ class ConversationRepository(BaseRepository):
 
         created_id = await self.session.scalar(
             pg_insert(Conversation)
-            .values(user_id=user_id, status=STATUS_ACTIVE, channel=channel)
+            .values(
+                tenant_id=_tenant_of(user_id),
+                user_id=user_id,
+                status=STATUS_ACTIVE,
+                channel=channel,
+            )
             .on_conflict_do_nothing(
                 index_elements=[Conversation.user_id],
                 index_where=Conversation.status == STATUS_ACTIVE,
