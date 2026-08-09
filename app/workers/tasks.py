@@ -21,8 +21,7 @@ from celery.exceptions import SoftTimeLimitExceeded
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.channels.config import get_channel_settings
-from app.channels.messenger import MessengerAdapter
+from app.channels.outbound import meta_inbound_adapter
 from app.config import get_settings
 from app.core.logging import configure_logging, get_logger
 from app.core.metrics import ERRORS_TOTAL, WEBHOOK_DEAD_LETTERS_TOTAL
@@ -94,19 +93,39 @@ async def _run(payload: dict[str, Any]) -> None:
 
 
 async def _run_meta(payload: dict[str, Any]) -> None:
-    """The Messenger equivalent of :func:`_run`.
+    """The Meta equivalent of :func:`_run`, for Messenger and Instagram DM.
 
     Deliberately a sibling rather than a branch inside ``_run``: the two build
     different clients, and adding a channel argument to the task that carries
     live WhatsApp traffic would change its signature for no benefit.
 
-    The adapter is created here, inside the task's own event loop, for the
-    reason in the module docstring -- an httpx client belongs to the loop that
-    opened it -- and is closed alongside the others.
+    The adapter is chosen from the delivery's own ``object`` rather than fixed.
+    Fixing it was safe only while this route served one surface; with two, a
+    Messenger adapter would happily parse an Instagram envelope -- they share
+    the ``messaging`` array -- and write the conversation under the wrong
+    channel. Nothing downstream could detect that afterwards.
+
+    Resolution happens before the engine and the OpenAI client exist, so a
+    delivery this deployment cannot serve returns with nothing to close. That
+    ordering is asserted in tests/test_meta_task_routing.py rather than left to
+    a reader's care.
+
+    A None adapter is an ordinary outcome: the route checked the same switches,
+    but a queue hop separates the two and configuration can change in between.
+    Returning is right where raising would be wrong -- this task retries five
+    times with backoff, and none of those attempts could succeed.
+
+    The adapter is created inside the task's own event loop, for the reason in
+    the module docstring, and closed alongside the others.
     """
+    object_type = str(payload.get("object") or "")
+    adapter = meta_inbound_adapter(object_type)
+    if adapter is None:
+        logger.info("meta_task_skipped", object_type=object_type)
+        return
+
     engine = create_async_engine(settings.database_url, poolclass=NullPool)
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
-    adapter = MessengerAdapter(get_channel_settings())
     ai = OpenAIClient(settings)
     try:
         async with session_factory() as session:
@@ -115,7 +134,9 @@ async def _run_meta(payload: dict[str, Any]) -> None:
         await _close_all(
             (
                 ("openai", ai.aclose),
-                ("messenger", adapter.aclose),
+                # Labelled with the actual channel, so a close failure names
+                # the surface it came from instead of always saying messenger.
+                (adapter.channel, adapter.aclose),
                 ("engine", engine.dispose),
             )
         )
@@ -301,13 +322,13 @@ def process_webhook_event(self: Task, payload: dict[str, Any]) -> None:
     retry_kwargs={"max_retries": MAX_RETRIES},
 )
 def process_meta_webhook_event(self: Task, payload: dict[str, Any]) -> None:
-    """Durably process one Messenger delivery.
+    """Durably process one Meta delivery, Messenger or Instagram DM.
 
     Idempotent for the same three reasons as the WhatsApp task -- the inbound
     claim, the generation cache and the outbound reservation all key off the
-    provider message id -- plus one specific to this channel: the adapter
-    discards the page's own echoes before parsing, so a replayed delivery can
-    never be mistaken for a customer turn.
+    provider message id -- plus one specific to these channels: the adapter
+    discards the account's own echoes before parsing, so a replayed delivery
+    can never be mistaken for a customer turn.
     """
     try:
         asyncio.run(_run_meta(payload))
