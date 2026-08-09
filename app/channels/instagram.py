@@ -201,7 +201,9 @@ class InstagramDMAdapter(BaseChannelAdapter):
         return events
 
     def _parse_item(
-        self, item: dict[str, Any], account_id: str
+        self,
+        item: dict[str, Any],
+        account_id: str,
     ) -> InboundEvent | None:
         sender_id = str((item.get("sender") or {}).get("id") or "")
         message = item.get("message") or {}
