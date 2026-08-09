@@ -17,8 +17,18 @@ from typing import Any
 import pytest
 
 from app.channels import registry
+from app.channels.base import CommentChannelAdapter
 from app.channels.config import ChannelSettings
-from app.channels.constants import ALL_CHANNELS, INSTAGRAM_DM, MESSENGER, WHATSAPP
+from app.channels.constants import (
+    ALL_CHANNELS,
+    FACEBOOK_COMMENT,
+    INSTAGRAM_COMMENT,
+    INSTAGRAM_DM,
+    MESSENGER,
+    WHATSAPP,
+)
+from app.channels.facebook_comments import FacebookCommentAdapter
+from app.channels.instagram import InstagramDMAdapter
 from app.channels.messenger import MessengerAdapter
 from app.channels.outbound import (
     ChannelUnavailableError,
@@ -36,7 +46,17 @@ from app.services.reply_service import ReplyService, UnsupportedChannelError
 #: Channels this repository can actually send on today. The rest are real ids
 #: with real profiles and no adapter yet, and they must refuse rather than
 #: quietly fall back to WhatsApp.
-IMPLEMENTED = (WHATSAPP, MESSENGER)
+#:
+#: Keeping this list true is the whole job. A channel that ships an adapter
+#: without being added here is asserted to refuse while production routes to
+#: it, and the fixture below is good enough at pinning the registry to keep
+#: that contradiction green.
+IMPLEMENTED = (WHATSAPP, MESSENGER, INSTAGRAM_DM, FACEBOOK_COMMENT)
+
+#: Shaped like Meta's own: a Page comment id is "<post-or-page>_<comment>".
+#: Only the shape matters here -- these never reach the network.
+COMMENT_ID = "100000000000001_200000000000002"
+COMMENT_REPLY_ID = "100000000000001_400000000000004"
 
 
 def _settings(**overrides: Any) -> ChannelSettings:
@@ -89,11 +109,21 @@ def only_real_adapters(monkeypatch: pytest.MonkeyPatch) -> None:
     ``__init__`` takes no arguments, so a polluted registry would surface here
     as a TypeError from the wrong construction path rather than as an honest
     assertion failure.
+
+    That collision stopped being hypothetical once facebook_comment grew a
+    real adapter: ``register_adapter`` is last-write-wins, so without this pin
+    the result of this file depends on collection order between
+    test_channels.py and test_facebook_comments.py.
     """
     monkeypatch.setattr(
         registry,
         "_ADAPTERS",
-        {WHATSAPP: WhatsAppAdapter, MESSENGER: MessengerAdapter},
+        {
+            WHATSAPP: WhatsAppAdapter,
+            MESSENGER: MessengerAdapter,
+            INSTAGRAM_DM: InstagramDMAdapter,
+            FACEBOOK_COMMENT: FacebookCommentAdapter,
+        },
     )
 
 
@@ -249,6 +279,57 @@ async def test_messenger_is_not_built_out_of_the_whatsapp_client(
         await adapter.aclose()
 
 
+async def test_instagram_dm_routes_to_its_own_adapter(
+    whatsapp_client: WhatsAppClient,
+    only_real_adapters: None,
+) -> None:
+    """Shipped in step 1, and asserted to be missing until now.
+
+    The adapter has been registered in ``_register_adapters`` since it landed,
+    so an operator reply to an Instagram customer has been routing correctly
+    while the suite claimed the channel refuses. Nothing failed, because the
+    fixture pins the registry: the contradiction lived entirely inside the
+    tests.
+    """
+    adapter = outbound_adapter(
+        INSTAGRAM_DM,
+        whatsapp_client=whatsapp_client,
+        settings=_everything_on(),
+    )
+    try:
+        assert isinstance(adapter, InstagramDMAdapter)
+        assert adapter.channel == INSTAGRAM_DM
+    finally:
+        await adapter.aclose()
+
+
+async def test_facebook_comments_route_to_the_comment_adapter(
+    whatsapp_client: WhatsAppClient,
+    only_real_adapters: None,
+) -> None:
+    """A public channel resolves through the same one function as a private one.
+
+    Worth asserting because it is a claim about what did *not* have to change:
+    ``outbound_adapter`` grew no comment branch. The switch check, the
+    credential check and the settings-based construction were already
+    channel-agnostic, so registering the adapter was the entire wiring.
+    """
+    settings = _everything_on()
+    adapter = outbound_adapter(
+        FACEBOOK_COMMENT,
+        whatsapp_client=whatsapp_client,
+        settings=settings,
+    )
+    try:
+        assert isinstance(adapter, FacebookCommentAdapter)
+        assert isinstance(adapter, CommentChannelAdapter)
+        assert adapter.channel == FACEBOOK_COMMENT
+        assert adapter._settings is settings
+        assert adapter._client is not whatsapp_client._client
+    finally:
+        await adapter.aclose()
+
+
 @pytest.mark.parametrize("channel", sorted(ALL_CHANNELS))
 async def test_every_supported_channel_either_routes_or_refuses(
     channel: str,
@@ -331,12 +412,12 @@ def test_a_known_channel_with_no_adapter_yet_is_refused(
     whatsapp_client: WhatsAppClient,
     only_real_adapters: None,
 ) -> None:
-    """instagram_dm has an id, a profile, a switch and credentials -- and no
-    adapter. Falling back to WhatsApp here would answer an Instagram customer
-    on a phone number they never gave us."""
+    """instagram_comment has an id, a profile, a switch and credentials -- and
+    no adapter yet. Falling back to another channel here would answer a
+    commenter somewhere they never wrote."""
     with pytest.raises(ChannelUnavailableError) as refusal:
         outbound_adapter(
-            INSTAGRAM_DM,
+            INSTAGRAM_COMMENT,
             whatsapp_client=whatsapp_client,
             settings=_everything_on(),
         )
@@ -427,6 +508,51 @@ async def test_a_messenger_send_reaches_its_own_client_and_yields_its_id(
     assert sent[0]["message"]["text"] == "Hello"
     assert sent[0]["messaging_type"] == "RESPONSE"
     assert provider_message_id(response) == "mid.SENT"
+
+
+async def test_a_comment_reply_is_addressed_to_the_comment_not_its_author(
+    whatsapp_client: WhatsAppClient,
+    only_real_adapters: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The one thing a public channel does differently, through the real path.
+
+    Every private channel addresses a person. A public reply belongs
+    underneath the question, so the comment id is what travels as the
+    recipient and the Graph path is that comment's ``/comments`` edge.
+    Addressing the author instead would post the answer as a new top-level
+    comment on the page, detached from what it answers -- a mistake that
+    reads as working code and looks wrong only on the page itself.
+
+    Routed through ``outbound_adapter`` rather than by constructing the
+    adapter directly, so the registration from the previous commit is part of
+    what is under test.
+    """
+    seen: list[tuple[str, dict[str, Any], str]] = []
+
+    async def fake_post(
+        path: str, payload: dict[str, Any], *, operation: str
+    ) -> dict[str, Any]:
+        seen.append((path, payload, operation))
+        return {"id": COMMENT_REPLY_ID}
+
+    adapter = outbound_adapter(
+        FACEBOOK_COMMENT,
+        whatsapp_client=whatsapp_client,
+        settings=_everything_on(),
+    )
+    try:
+        monkeypatch.setattr(adapter, "_post", fake_post)
+        response = await adapter.send_text(COMMENT_ID, "Thanks for reaching out")
+    finally:
+        await adapter.aclose()
+
+    path, payload, operation = seen[0]
+    assert path == "/" + COMMENT_ID + "/comments"
+    assert payload == {"message": "Thanks for reaching out"}
+    assert operation == "public_reply"
+    # The reply's own id, which is a different comment from the one answered.
+    assert response["id"] == COMMENT_REPLY_ID
 
 
 def test_the_reply_path_asks_for_an_adapter_rather_than_a_client() -> None:
