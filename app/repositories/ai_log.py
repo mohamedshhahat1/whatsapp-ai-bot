@@ -37,9 +37,7 @@ class AILogRepository(BaseRepository):
         owner = tenant_id
         if owner is None and conversation_id is not None:
             owner = await self.session.scalar(
-                select(Conversation.tenant_id).where(
-                    Conversation.id == conversation_id
-                )
+                select(Conversation.tenant_id).where(Conversation.id == conversation_id)
             )
         log = AILog(
             tenant_id=await resolve_tenant_id(self.session, owner),

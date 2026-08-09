@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
@@ -24,9 +23,6 @@ from app.db.base import Base
 # Dimensions of text-embedding-3-small. Changing the embedding model means
 # changing this value AND running a migration that rebuilds the column.
 EMBEDDING_DIMENSIONS = 1536
-
-if TYPE_CHECKING:
-    pass
 
 
 class Document(Base):
