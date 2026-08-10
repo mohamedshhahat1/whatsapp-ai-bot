@@ -29,6 +29,20 @@ would mean rewriting a parser that is in production and correct, to satisfy a
 shape it never receives -- and the whole point of the channel work is that the
 live WhatsApp path does not move.
 
+Which tenant a delivery belongs to
+----------------------------------
+Both entry points resolve the deployment's original tenant and hand it to
+``ChatService``. That is the whole of the Phase 1c answer (D-5), and it is a
+placeholder with a deliberate shape rather than a decision about routing.
+
+Meta's payloads do carry the identifiers that will eventually name a tenant --
+``phone_number_id`` on the Cloud API surface, the page or account id on the
+others -- but turning one of those into a tenant requires the per-tenant
+credential records that belong to Phase 3. Inferring the mapping now would
+mean guessing at provider behaviour, which this project does not do. So the
+lookup is written once, in one place per entry point, and Phase 3 replaces
+two lines rather than threading a new argument through every caller.
+
 Comments
 --------
 One surface type gets a step the others do not: a comment can be answered in
@@ -53,8 +67,10 @@ from app.config import Settings
 from app.core.inbound_config import get_inbound_settings
 from app.core.logging import get_logger
 from app.core.metrics import ERRORS_TOTAL
+from app.core.tenant_context import system_tenant_context
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
+from app.repositories.tenant import default_tenant_id
 from app.services.chat_service import ChatService
 from app.services.comment_invite import invite_after_comment
 from app.services.stale_inbound import record_without_answering
@@ -69,8 +85,14 @@ async def process_webhook_payload(
     settings: Settings,
     payload: dict[str, Any],
 ) -> None:
-    """Process all messages and status updates in one webhook delivery."""
-    service = ChatService(session, whatsapp, ai, settings)
+    """Process all messages and status updates in one webhook delivery.
+
+    The tenant is resolved here rather than accepted as an argument, so no
+    caller had to change and the Phase 3 replacement has exactly one site to
+    edit. See the module docstring for why it is the default tenant today.
+    """
+    tenant = system_tenant_context(await default_tenant_id(session))
+    service = ChatService(session, whatsapp, ai, settings, tenant)
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
@@ -105,7 +127,8 @@ async def process_meta_payload(
 
     The service is constructed with the adapter as its sender and told which
     channel it is on, which is what makes replies leave through the same
-    channel they arrived on.
+    channel they arrived on. It is also told which tenant, resolved exactly as
+    on the WhatsApp path and for the same reason.
 
     A comment surface gets one extra step. Once the comment has been routed --
     and, where the channel is configured to, answered in public --
@@ -129,7 +152,10 @@ async def process_meta_payload(
     internally: an event the router dropped must not reach the invitation
     either.
     """
-    service = ChatService(session, adapter, ai, settings, channel=adapter.channel)
+    tenant = system_tenant_context(await default_tenant_id(session))
+    service = ChatService(
+        session, adapter, ai, settings, tenant, channel=adapter.channel
+    )
     for event in adapter.parse(payload):
         if _event_is_stale(event):
             continue

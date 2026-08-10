@@ -30,13 +30,13 @@ class AdminService:
     tenant having been established first.
 
     Not every method is scoped yet. The reads that were true enumerations or
-    aggregates -- the document list and the token total -- are; the
-    conversation, user and message paths still call repository methods that
-    have not been scoped, and are scoped in the following commits of this
-    step. Route-level ownership checks for identifiers supplied by the caller
-    are step 4, and are what stops one tenant naming another's conversation
-    id. Holding the tenant here from the start is what makes both possible
-    without changing this signature again.
+    aggregates -- the document list, the token total and the knowledge search
+    -- are; the conversation, user and message paths still call repository
+    methods that have not been scoped, and are scoped in the following commits
+    of this step. Route-level ownership checks for identifiers supplied by the
+    caller are step 4, and are what stops one tenant naming another's
+    conversation id. Holding the tenant here from the start is what makes both
+    possible without changing this signature again.
     """
 
     def __init__(self, session: AsyncSession, tenant: TenantContext) -> None:
@@ -229,12 +229,17 @@ class AdminService:
     ) -> list[RetrievedDocument]:
         """Preview what RAG would feed the model for a given question.
 
-        Still builds its own retriever, and that retriever still searches
-        every tenant's chunks. Both halves are fixed in the next commit, where
-        the tenant predicate reaches ``DocumentRepository.search`` and the
-        retriever is constructed with a context instead of without one.
+        Built with this request's tenant, so the preview an operator sees is
+        the corpus their own customers are answered from -- and cannot be
+        turned into a reader for somebody else's knowledge base by asking a
+        question shaped like their documents. The response shape is unchanged.
+
+        It still builds its own retriever rather than sharing the chat
+        service's: this is a preview issued by a person, on a request that
+        already resolved its tenant, and wiring it through the inbound path
+        would couple an operator tool to the customer pipeline for nothing.
         """
-        retriever = build_retriever(self._session, get_settings())
+        retriever = build_retriever(self._session, get_settings(), self._tenant)
         return await retriever.retrieve(query, limit=limit)
 
     async def stats(self) -> StatsRead:

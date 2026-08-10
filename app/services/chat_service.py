@@ -46,6 +46,19 @@ phone number on WhatsApp, a page-scoped id on Messenger. It is still named
 -- renaming it would touch every line of this file and bury the actual change
 in a diff nobody could review.
 
+Tenancy
+-------
+The service is built for exactly one tenant and told which at construction
+time. Nothing in the orchestration below reads that context directly; it
+exists to reach the vector search, where an unscoped query would quote one
+company's private knowledge base into another company's conversation.
+
+In this phase inbound deliveries resolve to the deployment's original tenant
+-- see ``app/services/webhook_processor.py`` -- because deciding which tenant
+a Meta payload belongs to needs the per-tenant credential records that are
+Phase 3's subject. So what the argument buys today is the seam and the
+guarantee, not yet a second tenant.
+
 The welcome
 -----------
 A session's opening message is one of three things, and each takes a different
@@ -134,6 +147,7 @@ from app.core.idempotency import (
 )
 from app.core.logging import get_logger
 from app.core.metrics import DUPLICATE_DELIVERIES_TOTAL
+from app.core.tenant_context import TenantContext
 from app.integrations.openai import OpenAIClient
 from app.integrations.whatsapp import WhatsAppClient
 from app.models.conversation import MODE_HUMAN, TAG_SALES_LEAD, Conversation
@@ -217,6 +231,7 @@ class ChatService:
         whatsapp: MessageSender,
         ai: OpenAIClient,
         settings: Settings,
+        tenant: TenantContext,
         retriever: DocumentRetriever | None = None,
         channel: str = WHATSAPP,
     ) -> None:
@@ -224,12 +239,17 @@ class ChatService:
         self._whatsapp = whatsapp
         self._ai = ai
         self._settings = settings
+        self._tenant = tenant
         self._channel = channel
         self._conversations = ConversationService(session, settings)
         self._sessions = SessionService(session, settings)
         self._ai_logs = AILogRepository(session)
         self._prompts = PromptBuilder(settings)
-        self._retriever = retriever or build_retriever(session, settings)
+        # Bound once, here. The retriever never learns a second tenant, so
+        # nothing further down can widen the search by asking differently.
+        # An injected one brings its own scope: a NullRetriever reads nothing
+        # and a test double answers from memory.
+        self._retriever = retriever or build_retriever(session, settings, tenant)
 
     async def _context(
         self, external_id: str, name: str | None

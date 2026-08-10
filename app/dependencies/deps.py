@@ -14,6 +14,7 @@ from app.core.tenant_context import (
     SOURCE_SELECTOR,
     SOURCE_SOLE_TENANT,
     TenantContext,
+    system_tenant_context,
 )
 from app.db.session import get_db
 from app.integrations.fcm import FcmClient
@@ -22,6 +23,7 @@ from app.integrations.whatsapp import WhatsAppClient
 from app.models.operator import LEGACY_OPERATOR_USERNAME
 from app.repositories.tenant import (
     count_tenants,
+    default_tenant_id,
     sole_tenant_id,
     tenant_exists,
     tenant_ids_for_operator,
@@ -87,9 +89,24 @@ def get_fcm_client() -> FcmClient:
     return FcmClient()
 
 
-def get_chat_service(db: AsyncSession = Depends(get_db)) -> ChatService:
-    """Chat service bound to the request-scoped database session."""
-    return ChatService(db, get_whatsapp_client(), get_openai_client(), get_settings())
+async def get_chat_service(db: AsyncSession = Depends(get_db)) -> ChatService:
+    """Chat service bound to the request-scoped database session.
+
+    No route depends on this today: inbound deliveries reach ``ChatService``
+    through ``app/services/webhook_processor.py``, which resolves its own
+    context. It is kept because it is the wiring a request-scoped inbound
+    route would use, and it resolves the tenant the same way that path does
+    and under the same decision (D-5). That lookup is a row rather than a
+    constant, which is why this is now async.
+
+    Deliberately NOT ``require_tenant_context``. That dependency answers "who
+    is this caller, and which tenant may they act inside", and an inbound
+    customer message carries no operator credential to answer it with.
+    """
+    tenant = system_tenant_context(await default_tenant_id(db))
+    return ChatService(
+        db, get_whatsapp_client(), get_openai_client(), get_settings(), tenant
+    )
 
 
 def get_analytics_service(db: AsyncSession = Depends(get_db)) -> AnalyticsService:
