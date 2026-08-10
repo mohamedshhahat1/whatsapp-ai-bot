@@ -19,7 +19,7 @@
 #   6  verify every expected table exists
 #   7  verify the expected indexes exist
 #   8  verify the pgvector extension and its vector column
-#   9  verify data integrity (row counts, FK orphans, NOT NULL sanity)
+#   9  verify the data restored (non-empty, connected, no orphans, no NULL PKs)
 #  10  verify the application boots against the restored database
 #  11  run the application health checks
 #
@@ -289,11 +289,38 @@ fi
 # --------------------------------------------------------------------------
 step "9/11 verify data integrity"
 # --------------------------------------------------------------------------
+# The row counts are ASSERTED, not merely logged. Everything above this point
+# is satisfied by a perfectly-shaped EMPTY database: the tables exist, the
+# indexes exist, pgvector is installed -- and everything below is a negative
+# check, so no orphaned message and no NULL primary key are both trivially
+# true of no rows at all. A restore that silently produced nothing would walk
+# through all eleven steps and report success.
+#
+# That is not hypothetical. The CI drill spent three migrations verifying an
+# empty database while printing `rows in users: 0` on every run. The count was
+# always there; nothing was reading it. A number in a log is not a check.
 for t in users conversations messages; do
     c="$(psql_drill "${DRILL_DB}" "SELECT count(*) FROM ${t};" || printf 'ERR')"
     [ "${c}" = "ERR" ] && fail_drill "could not count rows in ${t}"
     log "rows in ${t}: ${c}"
+    [ "${c}" -gt 0 ] 2>/dev/null \
+        || fail_drill "restored table '${t}' is empty -- the schema came back but the data did not, so this drill proves nothing about the backup's contents"
 done
+
+# The positive counterpart to the orphan check below. That check is negative
+# and so is satisfied by having no messages; this one cannot be. At least one
+# message must still be reachable from a customer through a conversation.
+#
+# The tenant predicates are deliberate. Since 0016 these foreign keys are
+# composite -- (tenant_id, conversation_id) and (tenant_id, user_id) -- so a
+# join on the id alone would still pass if the restore lost or scrambled the
+# tenant column. Joining on both is what proves the composite keys, and the
+# tenant dimension they carry, survived the dump and restore round trip.
+connected="$(psql_drill "${DRILL_DB}" "SELECT count(*) FROM messages AS m JOIN conversations AS c ON c.id = m.conversation_id AND c.tenant_id = m.tenant_id JOIN users AS u ON u.id = c.user_id AND u.tenant_id = c.tenant_id;" || printf 'ERR')"
+[ "${connected}" != "ERR" ] || fail_drill "could not join messages to conversations to users on the tenant-carrying keys -- see ${REPORT}"
+[ "${connected}" -gt 0 ] 2>/dev/null \
+    || fail_drill "no message is reachable from a customer through a conversation within a single tenant -- the rows restored but the relationships between them did not"
+log "rows connected across the tenant-carrying keys: ${connected}"
 
 # Referential integrity: a dump restored out of order can leave orphans even
 # though every individual table looks fine.
