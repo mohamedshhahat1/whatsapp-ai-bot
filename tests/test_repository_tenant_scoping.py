@@ -17,13 +17,13 @@ document or an AI log behind fails in teardown -- which is the schema working,
 not the test being fragile.
 """
 
+from inspect import Parameter, signature
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import get_settings
 from app.models.document import EMBEDDING_DIMENSIONS
 from app.repositories.ai_log import AILogRepository
 from app.repositories.document import ChunkInput, DocumentRepository
@@ -102,9 +102,10 @@ async def test_list_documents_does_not_return_another_tenants_documents(
     mine = await _add_document(db, default_tenant)
     theirs = await _add_document(db, other_tenant)
     try:
-        ours = [document.source for document in await repository.list_documents(
-            tenant_id=default_tenant
-        )]
+        ours = [
+            document.source
+            for document in await repository.list_documents(tenant_id=default_tenant)
+        ]
         assert mine in ours
         assert theirs not in ours
 
@@ -166,11 +167,15 @@ async def test_scoped_reads_refuse_to_run_without_a_tenant(db: AsyncSession) -> 
 async def test_services_cannot_be_built_without_a_tenant(db: AsyncSession) -> None:
     """Both services that enumerate tenant-owned data demand a context.
 
-    Constructed rather than called, because the point is that there is no
-    reachable state in which one of these exists without knowing who it acts
-    for.
+    There is no reachable state in which one of these exists without knowing
+    who it acts for, which is what stops a future caller reintroducing an
+    unscoped enumeration without noticing.
     """
     with pytest.raises(TypeError):
         AdminService(db)  # type: ignore[call-arg]
-    with pytest.raises(TypeError):
-        KnowledgeIngestionService(db, None, get_settings())  # type: ignore[call-arg]
+
+    # Read from the signature rather than by constructing one with a
+    # deliberately wrong embedding client: the property under test is that
+    # the parameter has no default, and this reads exactly that.
+    tenant = signature(KnowledgeIngestionService).parameters["tenant"]
+    assert tenant.default is Parameter.empty
