@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    String,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.channels.constants import WHATSAPP
@@ -106,11 +113,27 @@ def derive_session_state(
 
 class Conversation(Base):
     __tablename__ = "conversations"
+    __table_args__ = (
+        # The customer reference carries the tenant with it, so a conversation
+        # cannot be attached to a customer in another tenant. CASCADE is
+        # carried over from 0000 unchanged: widening the key changes which
+        # rows are acceptable, not what a delete does.
+        ForeignKeyConstraint(
+            ["tenant_id", "user_id"],
+            ["users.tenant_id", "users.id"],
+            name="fk_conversations_user",
+            ondelete="CASCADE",
+        ),
+        # The key messages point at.
+        UniqueConstraint("tenant_id", "id", name="uq_conversations_tenant_scoped_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
+    # No separate key to tenants: the composite key above already prevents a
+    # tenant this conversation's customer does not belong to, and the customer
+    # cannot outlive its own tenant.
+    tenant_id: Mapped[int] = mapped_column(index=True)
+    user_id: Mapped[int] = mapped_column(index=True)
     # Which app the customer is writing from. Denormalised from users.channel
     # rather than joined: every dashboard list, analytics rollup and operator
     # filter wants it on the row, and a user's channel cannot change, so this

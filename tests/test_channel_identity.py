@@ -3,7 +3,8 @@
 The migration and UserRepository are only correct together. 0013 made
 ``users.external_id`` NOT NULL, and the WhatsApp writer had to start filling
 it in the same commit -- so these drive the writer against the migrated
-schema rather than against the model.
+schema rather than against the model. 0016 did the same thing again with
+``tenant_id``, which is why the hand-written inserts below name it too.
 
 The race these ON CONFLICT clauses exist for is real: a customer who sends two
 messages quickly produces two webhook deliveries that two Celery workers can
@@ -86,7 +87,9 @@ async def test_writing_the_same_whatsapp_customer_twice_is_one_row(
         await purge(db, wa_id)
 
 
-async def test_the_losing_writer_of_a_race_is_a_no_op(db: AsyncSession) -> None:
+async def test_the_losing_writer_of_a_race_is_a_no_op(
+    db: AsyncSession, default_tenant: int
+) -> None:
     """What ON CONFLICT DO NOTHING buys, after the schema change.
 
     Driven at SQL level because the race cannot be staged deterministically
@@ -94,6 +97,10 @@ async def test_the_losing_writer_of_a_race_is_a_no_op(db: AsyncSession) -> None:
     writer could have committed, that SELECT finds the row. Racing two live
     sessions instead would block on the unique index until one committed. This
     is the exact statement the loser runs, against a row already committed.
+
+    The tenant is part of that statement since 0016 -- get_or_create fills it
+    in -- and without it the insert would fail NOT NULL before ON CONFLICT got
+    the chance to decide anything.
     """
     wa_id = new_wa_id()
     try:
@@ -103,6 +110,7 @@ async def test_the_losing_writer_of_a_race_is_a_no_op(db: AsyncSession) -> None:
         await db.execute(
             pg_insert(User)
             .values(
+                tenant_id=default_tenant,
                 channel=WHATSAPP,
                 external_id=wa_id,
                 wa_id=wa_id,
@@ -118,14 +126,17 @@ async def test_the_losing_writer_of_a_race_is_a_no_op(db: AsyncSession) -> None:
 
 
 async def test_naming_one_constraint_would_leave_the_other_unguarded(
-    db: AsyncSession,
+    db: AsyncSession, default_tenant: int
 ) -> None:
     """Why get_or_create leaves its conflict target unnamed.
 
     A duplicate customer row can trip either unique constraint, and Postgres
     reports whichever it reaches first. Naming uq_users_channel_external_id
-    leaves ix_users_wa_id free to raise IntegrityError -- the exact failure the
-    clause exists to prevent, and one that would only appear under load.
+    leaves the phone-number uniqueness free to raise IntegrityError -- the
+    exact failure the clause exists to prevent, and one that would only appear
+    under load. Since 0016 that second constraint is uq_users_tenant_wa_id
+    rather than the global ix_users_wa_id: scoping it to the tenant changed
+    which rows collide, not that they collide.
     """
     wa_id = new_wa_id()
     try:
@@ -133,11 +144,14 @@ async def test_naming_one_constraint_would_leave_the_other_unguarded(
         await db.commit()
 
         # Same phone number, different channel: the pair constraint is not
-        # violated at all, so naming it guards nothing here.
+        # violated at all, so naming it guards nothing here. The tenant
+        # matches the existing row, which leaves the phone number as the only
+        # thing this insert can collide on.
         with pytest.raises(IntegrityError):
             await db.execute(
                 pg_insert(User)
                 .values(
+                    tenant_id=default_tenant,
                     channel=MESSENGER,
                     external_id="psid-" + wa_id,
                     wa_id=wa_id,

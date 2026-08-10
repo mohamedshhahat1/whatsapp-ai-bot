@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import TYPE_CHECKING
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -24,18 +24,26 @@ from app.db.base import Base
 # changing this value AND running a migration that rebuilds the column.
 EMBEDDING_DIMENSIONS = 1536
 
-if TYPE_CHECKING:
-    pass
-
 
 class Document(Base):
     """One source file from the knowledge folder."""
 
     __tablename__ = "documents"
+    __table_args__ = (
+        # Two tenants may both upload "pricing.pdf", and before 0016 the
+        # second upload found the first tenant's row and overwrote it.
+        UniqueConstraint("tenant_id", "source", name="uq_documents_tenant_source"),
+        # The key chunks point at. See the note on User.
+        UniqueConstraint("tenant_id", "id", name="uq_documents_tenant_scoped_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    # Path relative to the knowledge folder, e.g. "prices.pdf".
-    source: Mapped[str] = mapped_column(String(512), unique=True, index=True)
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id", ondelete="RESTRICT"), index=True
+    )
+    # Path relative to the knowledge folder, e.g. "prices.pdf". Indexed for
+    # lookup; uniqueness lives in the tenant-scoped constraint above.
+    source: Mapped[str] = mapped_column(String(512), index=True)
     title: Mapped[str] = mapped_column(String(255))
     # sha256 of the file: lets ingestion skip unchanged documents.
     content_hash: Mapped[str] = mapped_column(String(64))
@@ -59,6 +67,14 @@ class DocumentChunk(Base):
 
     __tablename__ = "document_chunks"
     __table_args__ = (
+        # CASCADE carried over from 0001 unchanged; passive_deletes above
+        # depends on the database performing it.
+        ForeignKeyConstraint(
+            ["tenant_id", "document_id"],
+            ["documents.tenant_id", "documents.id"],
+            name="fk_document_chunks_document",
+            ondelete="CASCADE",
+        ),
         UniqueConstraint("document_id", "chunk_index", name="uq_chunk_position"),
         # HNSW beats IVFFlat for small/medium corpora and needs no training
         # step, so the index works from the very first inserted row.
@@ -72,9 +88,13 @@ class DocumentChunk(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    document_id: Mapped[int] = mapped_column(
-        ForeignKey("documents.id", ondelete="CASCADE"), index=True
-    )
+    # Denormalised rather than reached through the document, because a vector
+    # index cannot be filtered through a join. Tenant-filtered retrieval is
+    # Phase 4 and needs the column to exist on this row to be possible at all;
+    # the strategy for combining it with the HNSW index is a measurement, not
+    # a decision to be made here.
+    tenant_id: Mapped[int] = mapped_column(index=True)
+    document_id: Mapped[int] = mapped_column(index=True)
     chunk_index: Mapped[int] = mapped_column(Integer)
     # 1-based PDF page, NULL for plain-text sources.
     page: Mapped[int | None] = mapped_column(Integer)

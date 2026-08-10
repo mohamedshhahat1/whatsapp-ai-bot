@@ -40,7 +40,9 @@ from app.channels.constants import MESSENGER, WHATSAPP
 from app.config import get_settings
 from app.db.session import SessionLocal, engine
 from app.main import app
+from app.models.tenant import Tenant
 from app.repositories.conversation import ConversationRepository
+from app.repositories.tenant import default_tenant_id
 from app.repositories.user import UserRepository
 
 # Deleting a customer by hand rather than relying on cascades: the FKs are
@@ -68,6 +70,10 @@ DELETE FROM conversations WHERE user_id IN (
 """
 
 _DELETE_USERS = "DELETE FROM users WHERE wa_id = :wa_id"
+
+# Keyed on wa_id alone and therefore not tenant-scoped, deliberately: a test
+# that puts the same phone number in two tenants -- which the new uniqueness
+# exists to allow -- must have both rows cleaned up by one call.
 
 # The same four deletes keyed on (channel, external_id) instead of on wa_id.
 #
@@ -102,6 +108,8 @@ DELETE FROM conversations WHERE user_id IN (
 _DELETE_USERS_BY_CHANNEL = (
     "DELETE FROM users WHERE channel = :channel AND external_id = :external_id"
 )
+
+_DELETE_TENANT = "DELETE FROM tenants WHERE slug = :slug"
 
 
 @pytest.fixture
@@ -167,6 +175,44 @@ async def db() -> AsyncIterator[AsyncSession]:
         yield session
 
 
+@pytest.fixture
+async def default_tenant(db: AsyncSession) -> int:
+    """The tenant every writer falls back to when given none.
+
+    Created by migration 0015, so this reads it rather than making one. A test
+    that needs to prove something is tenant-scoped needs to know which tenant
+    it landed in, and inventing a second default would prove nothing.
+    """
+    return await default_tenant_id(db)
+
+
+@pytest.fixture
+async def other_tenant(db: AsyncSession) -> AsyncIterator[int]:
+    """A second tenant, so isolation can be demonstrated rather than assumed.
+
+    The teardown deletes the tenant row outright and will fail loudly if the
+    test left data behind, because every direct tenant reference added in 0016
+    is ON DELETE RESTRICT. That is the intended behaviour: a tenant that still
+    owns rows is not deletable, and a teardown that swallowed the error would
+    hide exactly the guarantee these tests exist to check. Purge the
+    customers, documents and logs a test creates before it finishes.
+    """
+    slug = "test-tenant-" + uuid4().hex[:12]
+    tenant = Tenant(name="Test Tenant", slug=slug)
+    db.add(tenant)
+    await db.flush()
+    # Captured before the commit expires the instance. Reading tenant.id
+    # afterwards would be implicit IO, which async SQLAlchemy refuses outside
+    # an await -- it raises MissingGreenlet rather than quietly reloading.
+    created = int(tenant.id)
+    await db.commit()
+    try:
+        yield created
+    finally:
+        await db.execute(text(_DELETE_TENANT), {"slug": slug})
+        await db.commit()
+
+
 @dataclass
 class Customer:
     """A throwaway customer with an open conversation.
@@ -215,9 +261,18 @@ async def purge_channel(session: AsyncSession, channel: str, external_id: str) -
     await session.commit()
 
 
-async def create_customer(session: AsyncSession, wa_id: str) -> Customer:
-    """Create a customer with an open conversation, through the repositories."""
-    user = await UserRepository(session).get_or_create(wa_id=wa_id, name="Test User")
+async def create_customer(
+    session: AsyncSession, wa_id: str, *, tenant_id: int | None = None
+) -> Customer:
+    """Create a customer with an open conversation, through the repositories.
+
+    ``tenant_id`` defaults to the deployment's original tenant, so every
+    existing caller behaves exactly as it did before tenancy. Passing one is
+    how a test puts the same phone number in two tenants at once.
+    """
+    user = await UserRepository(session).get_or_create(
+        wa_id=wa_id, name="Test User", tenant_id=tenant_id
+    )
     conversation = await ConversationRepository(session).get_or_create_active(user.id)
     await session.commit()
     return Customer(
@@ -234,6 +289,8 @@ async def create_channel_customer(
     channel: str,
     external_id: str,
     name: str | None = "Test User",
+    *,
+    tenant_id: int | None = None,
 ) -> Customer:
     """Create a customer on any channel, with an open conversation.
 
@@ -244,7 +301,7 @@ async def create_channel_customer(
     row falls back to the column's server default and reads as WhatsApp.
     """
     user = await UserRepository(session).get_or_create_by_channel(
-        channel=channel, external_id=external_id, name=name
+        channel=channel, external_id=external_id, name=name, tenant_id=tenant_id
     )
     conversation = await ConversationRepository(session).get_or_create_active(
         user.id, channel=channel

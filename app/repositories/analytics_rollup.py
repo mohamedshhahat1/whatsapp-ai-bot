@@ -23,6 +23,25 @@ only symptom would be totals that no longer add up.
 ``AnalyticsRepository.daily_usage`` still uses ``date_trunc`` and therefore
 still carries that dependency. Changing it is out of scope here, but it is
 why this module does not copy the pattern.
+
+One row per tenant, including the quiet ones
+--------------------------------------------
+The obvious way to add tenancy is to put ``GROUP BY tenant_id`` on the
+aggregates. That is wrong here, and the existing test suite says so.
+
+Before tenancy the aggregates were bare, so they returned exactly one row even
+over an empty range, and an idle day was therefore stored as a row of zeros.
+That is load-bearing: it is what makes "rolled up, nothing happened"
+distinguishable from "never run", which is the only way a stalled scheduler is
+visible at all. A grouped aggregate over an empty range returns no rows, so
+that distinction would quietly disappear -- and the day would look like a gap
+rather than a quiet Sunday.
+
+So the statement is driven from ``tenants`` and LEFT JOINs the aggregates onto
+it. Every tenant gets a row for every rolled-up day whether it was busy or
+not, the zeros come from COALESCE rather than from an accident of SQL
+semantics, and a tenant created today does not retroactively acquire history
+it never had.
 """
 
 from __future__ import annotations
@@ -36,12 +55,15 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from app.models.ai_log import AILog
 from app.models.analytics_rollup import AnalyticsDaily
 from app.models.message import Message
+from app.models.tenant import Tenant
 from app.repositories.analytics import PriceDefaults, _cost_parts, _pricing_lateral
 from app.repositories.base import BaseRepository
+from app.repositories.tenant import resolve_tenant_id
 
-# Columns written by the rollup. "day" leads because it is the conflict target
-# and is therefore never part of the update set.
+# Columns written by the rollup. The two key columns lead, because they are the
+# conflict target and are therefore never part of the update set.
 ROLLUP_COLUMNS = (
+    "tenant_id",
     "day",
     "requests",
     "errors",
@@ -53,6 +75,9 @@ ROLLUP_COLUMNS = (
     "output_cost_usd",
     "messages",
 )
+
+#: How many leading columns of ROLLUP_COLUMNS form the primary key.
+_KEY_COLUMNS = 2
 
 
 def day_bounds(day: date) -> tuple[datetime, datetime]:
@@ -83,19 +108,18 @@ class AnalyticsRollupRepository(BaseRepository):
     """Populates ``analytics_daily``."""
 
     async def rollup_day(self, day: date, defaults: PriceDefaults) -> None:
-        """Recompute and store the summary for one UTC day.
+        """Recompute and store the summary for one UTC day, for every tenant.
 
-        Idempotent: the day is the primary key, so a second run for the same
-        date collides and updates in place. The conflict action is DO UPDATE
-        rather than DO NOTHING on purpose -- a re-run exists precisely to pick
-        up rows that arrived after the first attempt, and DO NOTHING would
-        skip the day for having been seen.
+        Idempotent: ``(tenant_id, day)`` is the primary key, so a second run
+        for the same date collides and updates in place. The conflict action is
+        DO UPDATE rather than DO NOTHING on purpose -- a re-run exists
+        precisely to pick up rows that arrived after the first attempt, and DO
+        NOTHING would skip the day for having been seen.
 
-        One statement, and one round trip. Both aggregate subqueries are bare
-        (no GROUP BY), so each returns exactly one row even over an empty
-        range, and joining them ON true is a one-row cross join rather than a
-        fan-out. That is also what makes an empty day land as a row of zeros
-        instead of no row at all.
+        Still one statement and one round trip, regardless of how many tenants
+        exist. The two aggregates are grouped by tenant and LEFT JOINed onto
+        ``tenants``, so a tenant with no activity yields a row of zeros rather
+        than no row -- see the module docstring for why that matters.
 
         Both scans are range predicates on indexed created_at columns.
         """
@@ -105,6 +129,7 @@ class AnalyticsRollupRepository(BaseRepository):
 
         logs = (
             select(
+                AILog.tenant_id.label("tenant_id"),
                 func.count(AILog.id).label("requests"),
                 # count() of a nullable column counts non-NULLs only, which is
                 # exactly the number of failed calls. Same definition as
@@ -122,35 +147,46 @@ class AnalyticsRollupRepository(BaseRepository):
             .select_from(AILog)
             .outerjoin(pricing, true())
             .where(AILog.created_at >= start, AILog.created_at < end)
+            .group_by(AILog.tenant_id)
             .subquery()
         )
 
         messages = (
-            select(func.count(Message.id).label("messages"))
+            select(
+                Message.tenant_id.label("tenant_id"),
+                func.count(Message.id).label("messages"),
+            )
             .where(Message.created_at >= start, Message.created_at < end)
+            .group_by(Message.tenant_id)
             .subquery()
         )
 
+        # Driven from tenants, not from the aggregates. COALESCE supplies the
+        # zeros for a tenant that had no traffic, which is what keeps an idle
+        # day storable and therefore keeps a missing day meaningful.
         source = (
             select(
+                Tenant.id.label("tenant_id"),
                 literal(day, Date).label("day"),
-                logs.c.requests,
-                logs.c.errors,
-                logs.c.prompt_tokens,
-                logs.c.completion_tokens,
-                logs.c.total_tokens,
-                logs.c.latency_ms_sum,
-                logs.c.input_cost_usd,
-                logs.c.output_cost_usd,
-                messages.c.messages,
+                func.coalesce(logs.c.requests, 0).label("requests"),
+                func.coalesce(logs.c.errors, 0).label("errors"),
+                func.coalesce(logs.c.prompt_tokens, 0).label("prompt_tokens"),
+                func.coalesce(logs.c.completion_tokens, 0).label("completion_tokens"),
+                func.coalesce(logs.c.total_tokens, 0).label("total_tokens"),
+                func.coalesce(logs.c.latency_ms_sum, 0).label("latency_ms_sum"),
+                func.coalesce(logs.c.input_cost_usd, 0).label("input_cost_usd"),
+                func.coalesce(logs.c.output_cost_usd, 0).label("output_cost_usd"),
+                func.coalesce(messages.c.messages, 0).label("messages"),
             )
-            .select_from(logs)
-            .join(messages, true())
+            .select_from(Tenant)
+            .outerjoin(logs, logs.c.tenant_id == Tenant.id)
+            .outerjoin(messages, messages.c.tenant_id == Tenant.id)
         )
 
         statement = pg_insert(AnalyticsDaily).from_select(list(ROLLUP_COLUMNS), source)
         updates: dict[str, Any] = {
-            name: getattr(statement.excluded, name) for name in ROLLUP_COLUMNS[1:]
+            name: getattr(statement.excluded, name)
+            for name in ROLLUP_COLUMNS[_KEY_COLUMNS:]
         }
         # Moved forward even when nothing changed, so a stalled scheduler shows
         # up as an updated_at that stops advancing.
@@ -158,7 +194,7 @@ class AnalyticsRollupRepository(BaseRepository):
 
         await self.session.execute(
             statement.on_conflict_do_update(
-                index_elements=[AnalyticsDaily.day],
+                index_elements=[AnalyticsDaily.tenant_id, AnalyticsDaily.day],
                 set_=updates,
             )
         )
@@ -175,9 +211,19 @@ class AnalyticsRollupRepository(BaseRepository):
             await self.rollup_day(day, defaults)
         return len(days)
 
-    async def get(self, day: date) -> AnalyticsDaily | None:
-        """Return the stored summary for one day, if it has been rolled up."""
+    async def get(
+        self, day: date, tenant_id: int | None = None
+    ) -> AnalyticsDaily | None:
+        """Return one tenant's stored summary for a day, if it was rolled up.
+
+        ``tenant_id`` defaults to the deployment's original tenant, so a
+        single-tenant caller reads exactly what it read before 0016.
+        """
+        owner = await resolve_tenant_id(self.session, tenant_id)
         result = await self.session.execute(
-            select(AnalyticsDaily).where(AnalyticsDaily.day == day)
+            select(AnalyticsDaily).where(
+                AnalyticsDaily.tenant_id == owner,
+                AnalyticsDaily.day == day,
+            )
         )
         return result.scalar_one_or_none()

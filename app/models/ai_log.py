@@ -14,6 +14,18 @@ class AILog(Base):
     __tablename__ = "ai_logs"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    # Its own key to tenants, and deliberately NOT folded into a composite key
+    # with conversation_id below.
+    #
+    # conversation_id is ON DELETE SET NULL so that deleting a conversation
+    # does not delete its cost record. A composite key would make Postgres
+    # null BOTH columns on that delete, silently detaching the usage row from
+    # the tenant that gets billed for it -- which is exactly the defect this
+    # column exists to fix. So the tenant is kept independent of the
+    # conversation's lifetime, and RESTRICT keeps it from vanishing.
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id", ondelete="RESTRICT"), index=True
+    )
     conversation_id: Mapped[int | None] = mapped_column(
         ForeignKey("conversations.id", ondelete="SET NULL"), index=True
     )

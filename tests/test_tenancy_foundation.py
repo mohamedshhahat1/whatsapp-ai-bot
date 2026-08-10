@@ -60,14 +60,23 @@ _DEACTIVATE_EVERYONE_ELSE = """
 UPDATE operators SET is_active = false WHERE username <> :username
 """
 
+# Since 0016 a customer row names its owner, so the tenant is passed in rather
+# than defaulted. Which tenant does not matter to 0015 -- it asks whether any
+# ownable row exists at all -- so each test hands over one it knows about.
 _INSERT_CUSTOMER = """
-INSERT INTO users (channel, external_id, wa_id, name)
-VALUES ('whatsapp', :external_id, :external_id, 'Tenancy test')
+INSERT INTO users (tenant_id, channel, external_id, wa_id, name)
+VALUES (:tenant_id, 'whatsapp', :external_id, :external_id, 'Tenancy test')
 """
 
 _DELETE_MEMBERSHIPS = "DELETE FROM tenant_memberships"
 
-_DELETE_DEFAULT_TENANT = "DELETE FROM tenants WHERE slug = :slug"
+# Reaching the pre-0015 state by moving the slug aside instead of deleting the
+# row. Every tenant reference added in 0016 is ON DELETE RESTRICT, so a delete
+# would either fail against rows this test does not own or, worse, require
+# destroying them. 0015 resolves the default tenant by slug and conflicts on
+# slug, so a rename produces precisely the precondition it cares about -- and
+# unlike a delete it does so whatever else the database happens to contain.
+_RENAME_TENANT = "UPDATE tenants SET slug = :slug WHERE id = :tenant_id"
 
 _TABLE_EXISTS = "SELECT to_regclass(:name) IS NOT NULL"
 
@@ -301,6 +310,12 @@ async def test_an_existing_real_operator_becomes_the_default_tenant_owner(
     Everybody except the new account is deactivated inside the transaction, so
     'the first eligible row' is deterministic whatever else the test database
     happens to contain.
+
+    The pre-0015 state -- nothing answers to the default slug -- is produced by
+    renaming that tenant rather than deleting it, for the reason recorded above
+    _RENAME_TENANT. Whatever rows this database already holds keep the owner
+    they have; only the slug moves, so the migration below has to create a
+    tenant of its own, which the last assertion checks it did.
     """
     module = _foundation()
     username = "tenancy-owner-" + uuid4().hex[:8]
@@ -315,13 +330,23 @@ async def test_an_existing_real_operator_becomes_the_default_tenant_owner(
         )
         await db.execute(text(_DEACTIVATE_EVERYONE_ELSE), {"username": username})
         await db.execute(text(_DELETE_MEMBERSHIPS))
-        await db.execute(
-            text(_DELETE_DEFAULT_TENANT),
+
+        original_id = await db.scalar(
+            text(module.SELECT_TENANT_BY_SLUG),
             {"slug": DEFAULT_TENANT_SLUG},
         )
+        assert original_id is not None, "migration 0015 seeds this row"
+        await db.execute(
+            text(_RENAME_TENANT),
+            {"slug": "pre-0015-" + uuid4().hex[:12], "tenant_id": original_id},
+        )
+
         await db.execute(
             text(_INSERT_CUSTOMER),
-            {"external_id": "tenancy-" + uuid4().hex[:12]},
+            {
+                "tenant_id": original_id,
+                "external_id": "tenancy-" + uuid4().hex[:12],
+            },
         )
 
         data_exists = bool(await db.scalar(text(module.TENANT_OWNABLE_DATA_EXISTS)))
@@ -344,6 +369,7 @@ async def test_an_existing_real_operator_becomes_the_default_tenant_owner(
             text(module.SELECT_TENANT_BY_SLUG),
             {"slug": DEFAULT_TENANT_SLUG},
         )
+        assert tenant_id != original_id, "the migration reused an existing tenant"
         for member_id, role in module.plan_memberships(eligible):
             await db.execute(
                 text(module.INSERT_MEMBERSHIP),
@@ -382,9 +408,17 @@ async def test_a_deployment_with_only_the_shared_key_is_refused_for_real(
             text(_DEACTIVATE_EVERYONE_ELSE),
             {"username": LEGACY_OPERATOR_USERNAME},
         )
+        tenant_id = await db.scalar(
+            text(module.SELECT_TENANT_BY_SLUG),
+            {"slug": DEFAULT_TENANT_SLUG},
+        )
+        assert tenant_id is not None, "migration 0015 seeds this row"
         await db.execute(
             text(_INSERT_CUSTOMER),
-            {"external_id": "tenancy-" + uuid4().hex[:12]},
+            {
+                "tenant_id": tenant_id,
+                "external_id": "tenancy-" + uuid4().hex[:12],
+            },
         )
 
         data_exists = bool(await db.scalar(text(module.TENANT_OWNABLE_DATA_EXISTS)))
