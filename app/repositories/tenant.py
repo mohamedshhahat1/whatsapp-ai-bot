@@ -118,9 +118,7 @@ async def tenant_exists(session: AsyncSession, tenant_id: int) -> bool:
     return found is not None
 
 
-async def tenant_ids_for_operator(
-    session: AsyncSession, operator_id: int
-) -> list[int]:
+async def tenant_ids_for_operator(session: AsyncSession, operator_id: int) -> list[int]:
     """Every tenant this operator holds a membership in, lowest id first.
 
     Membership answers "which tenant", and nothing else. ``role`` is read by
