@@ -343,18 +343,37 @@ async def test_the_downgrade_guard_sees_every_tenant_that_owns_a_row(
     represent only one: analytics_daily would need two rows under one primary
     key, and two tenants' customers sharing a phone number would collide on a
     global unique index. The downgrade has to say so rather than pick a winner.
+
+    Both customers are created here. An earlier version created only the second
+    tenant's and relied on the default tenant already owning something, which
+    is true only while another test has leaked a row into it -- so it asserted
+    against the suite's debris rather than against its own fixture, and failed
+    the moment the rest of the suite began cleaning up after itself.
     """
     module = _migration(TENANT_OWNERSHIP)
-    wa_id = new_wa_id()
+    here = new_wa_id()
+    elsewhere = new_wa_id()
     try:
-        await create_customer(db, wa_id, tenant_id=other_tenant)
+        await create_customer(db, here, tenant_id=default_tenant)
+        await create_customer(db, elsewhere, tenant_id=other_tenant)
+
         rows = await db.execute(text(module.TENANT_IDS_IN_USE))
-        found = list(rows.scalars())
-        assert other_tenant in found
-        assert default_tenant in found
-        assert len(set(found)) > 1, "the guard would allow a lossy downgrade"
+        found = set(rows.scalars())
+
+        assert default_tenant in found, "the guard missed the default tenant"
+        assert other_tenant in found, "the guard missed the second tenant"
+        # More than one owner is the condition downgrade() raises on. The old
+        # schema has nowhere to put the second tenant's rows, so the migration
+        # stops rather than deciding which tenant's data survives.
+        assert len(found) > 1, "the guard would allow a lossy downgrade"
     finally:
-        await purge(db, wa_id)
+        # Nested, so a failure clearing the first customer cannot strand the
+        # second: its tenant is torn down by a fixture, and analytics_daily,
+        # ai_logs and users all reference tenants ON DELETE RESTRICT.
+        try:
+            await purge(db, here)
+        finally:
+            await purge(db, elsewhere)
 
 
 # --- What the constraints refuse --------------------------------------------
