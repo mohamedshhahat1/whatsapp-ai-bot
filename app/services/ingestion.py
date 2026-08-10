@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 from app.core.chunking import TextChunk, chunk_text
 from app.core.logging import get_logger
+from app.core.tenant_context import TenantContext
 from app.integrations.embeddings import EmbeddingClient
 from app.repositories.document import ChunkInput, DocumentRepository
 from app.services import knowledge_guard
@@ -76,17 +77,26 @@ def humanize(stem: str) -> str:
 
 
 class KnowledgeIngestionService:
-    """Builds and refreshes the vector index from the knowledge folder."""
+    """Builds and refreshes the vector index from the knowledge folder.
+
+    Every document this writes, and the prune sweep that deletes documents,
+    belong to ``tenant``. It is a required constructor argument with no
+    default: ingestion both enumerates and deletes, so a service that could be
+    built without stating an owner could prune one tenant's knowledge base
+    while indexing another's.
+    """
 
     def __init__(
         self,
         session: AsyncSession,
         embeddings: EmbeddingClient,
         settings: Settings,
+        tenant: TenantContext,
     ) -> None:
         self._session = session
         self._embeddings = embeddings
         self._settings = settings
+        self._tenant = tenant
         self._documents = DocumentRepository(session)
 
     async def ingest_file(
@@ -96,7 +106,9 @@ class KnowledgeIngestionService:
         source = str(path.relative_to(root)) if root else path.name
         try:
             content_hash = file_hash(path)
-            existing = await self._documents.get_by_source(source)
+            existing = await self._documents.get_by_source(
+                source, tenant_id=self._tenant.tenant_id
+            )
             if existing and existing.content_hash == content_hash and not force:
                 return IngestionResult(source, "unchanged", existing.chunk_count)
 
@@ -116,7 +128,9 @@ class KnowledgeIngestionService:
             if knowledge_guard.is_unfilled(full_text):
                 note = knowledge_guard.describe(full_text)
                 if existing:
-                    await self._documents.delete_by_source(source)
+                    await self._documents.delete_by_source(
+                        source, tenant_id=self._tenant.tenant_id
+                    )
                     await self._session.commit()
                     note = f"{note}; removed from the index"
                 logger.warning("document_skipped_unfilled", source=source, detail=note)
@@ -151,7 +165,10 @@ class KnowledgeIngestionService:
             ]
 
             document = await self._documents.upsert(
-                source=source, title=humanize(path.stem), content_hash=content_hash
+                source=source,
+                title=humanize(path.stem),
+                content_hash=content_hash,
+                tenant_id=self._tenant.tenant_id,
             )
             await self._documents.replace_chunks(document, payload)
             await self._session.commit()
@@ -171,6 +188,11 @@ class KnowledgeIngestionService:
         Args:
             force: Re-embed even when the file hash is unchanged.
             prune: Delete indexed documents whose file no longer exists.
+
+        Pruning compares the folder against this tenant's documents only.
+        Before the enumeration was scoped, a prune run driven by one tenant's
+        folder would have deleted every other tenant's documents too, on the
+        grounds that no file backed them.
         """
         if not directory.is_dir():
             raise FileNotFoundError(f"Knowledge folder not found: {directory}")
@@ -187,9 +209,14 @@ class KnowledgeIngestionService:
 
         if prune:
             present = {str(path.relative_to(directory)) for path in files}
-            for document in await self._documents.list_documents():
+            indexed = await self._documents.list_documents(
+                tenant_id=self._tenant.tenant_id
+            )
+            for document in indexed:
                 if document.source not in present:
-                    await self._documents.delete_by_source(document.source)
+                    await self._documents.delete_by_source(
+                        document.source, tenant_id=self._tenant.tenant_id
+                    )
                     results.append(IngestionResult(document.source, "removed"))
             await self._session.commit()
 

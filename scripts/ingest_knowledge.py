@@ -12,6 +12,10 @@ Inside Docker:
 Files that still contain the [[TODO]] marker are reported as skipped and are
 not indexed. That is not an error: it means a knowledge_templates/ document
 has not been filled in yet.
+
+The script indexes into the deployment's original tenant. Choosing a tenant
+from the command line waits for Phase 3, when tenants get their own knowledge
+folders and credentials.
 """
 
 import argparse
@@ -23,8 +27,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import get_settings  # noqa: E402
+from app.core.tenant_context import system_tenant_context  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
 from app.integrations.embeddings import get_embedding_client  # noqa: E402
+from app.repositories.tenant import resolve_tenant_id  # noqa: E402
 from app.services.ingestion import KnowledgeIngestionService  # noqa: E402
 
 STATUS_ICONS = {
@@ -70,7 +76,15 @@ async def main() -> int:
     print("-" * 62)
 
     async with SessionLocal() as session:
-        service = KnowledgeIngestionService(session, get_embedding_client(), settings)
+        # No request, no operator, no membership -- so there is nothing to
+        # derive a tenant from and nothing to validate a selector against.
+        # The CLI states its context explicitly instead of letting the
+        # ingestion service fall back to a default argument, so that the
+        # decision is visible here rather than implied three layers down.
+        tenant = system_tenant_context(await resolve_tenant_id(session, None))
+        service = KnowledgeIngestionService(
+            session, get_embedding_client(), settings, tenant
+        )
         try:
             results = await service.ingest_directory(
                 directory, force=args.force, prune=args.prune

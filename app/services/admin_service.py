@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.events import conversation_handoff, publish
 from app.core.exceptions import NotFoundError
+from app.core.tenant_context import TenantContext
 from app.models.conversation import MODE_BOT, MODE_HUMAN, Conversation
 from app.models.document import Document
 from app.models.user import User
@@ -21,8 +22,26 @@ from app.services.retrieval import RetrievedDocument, build_retriever
 
 
 class AdminService:
-    def __init__(self, session: AsyncSession) -> None:
+    """Everything the operator console reads and does, for one tenant.
+
+    ``tenant`` is a required constructor argument. The service is built per
+    request by ``get_admin_service``, which resolves the context from the
+    caller's credential, so there is no way to reach these methods without a
+    tenant having been established first.
+
+    Not every method is scoped yet. The reads that were true enumerations or
+    aggregates -- the document list and the token total -- are; the
+    conversation, user and message paths still call repository methods that
+    have not been scoped, and are scoped in the following commits of this
+    step. Route-level ownership checks for identifiers supplied by the caller
+    are step 4, and are what stops one tenant naming another's conversation
+    id. Holding the tenant here from the start is what makes both possible
+    without changing this signature again.
+    """
+
+    def __init__(self, session: AsyncSession, tenant: TenantContext) -> None:
         self._session = session
+        self._tenant = tenant
         self._users = UserRepository(session)
         self._conversations = ConversationRepository(session)
         self._messages = MessageRepository(session)
@@ -202,13 +221,19 @@ class AdminService:
         )
 
     async def list_documents(self) -> list[Document]:
-        """Knowledge-base documents currently indexed."""
-        return await self._documents.list_documents()
+        """Knowledge-base documents indexed by the tenant this request acts for."""
+        return await self._documents.list_documents(tenant_id=self._tenant.tenant_id)
 
     async def search_knowledge(
         self, query: str, limit: int = 5
     ) -> list[RetrievedDocument]:
-        """Preview what RAG would feed the model for a given question."""
+        """Preview what RAG would feed the model for a given question.
+
+        Still builds its own retriever, and that retriever still searches
+        every tenant's chunks. Both halves are fixed in the next commit, where
+        the tenant predicate reaches ``DocumentRepository.search`` and the
+        retriever is constructed with a context instead of without one.
+        """
         retriever = build_retriever(self._session, get_settings())
         return await retriever.retrieve(query, limit=limit)
 
@@ -220,6 +245,12 @@ class AdminService:
         now produces several. ``total_users`` is the customer count. The two
         used to be nearly interchangeable and no longer are; see
         ``StatsRead`` for the field-level wording.
+
+        ``total_tokens_used`` is this tenant's spend. The customer, session
+        and message counters beside it are still deployment-wide until their
+        repositories are scoped in the next commits of this step; they are
+        counts of rows rather than the rows themselves, so the gap leaks a
+        magnitude and not a record, and it closes within the same step.
         """
         since = datetime.now(UTC) - timedelta(hours=24)
         return StatsRead(
@@ -227,5 +258,7 @@ class AdminService:
             total_conversations=await self._conversations.count(),
             total_messages=await self._messages.count(),
             messages_last_24h=await self._messages.count_since(since),
-            total_tokens_used=await self._ai_logs.total_tokens(),
+            total_tokens_used=await self._ai_logs.total_tokens(
+                tenant_id=self._tenant.tenant_id
+            ),
         )

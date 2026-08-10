@@ -53,5 +53,17 @@ class AILogRepository(BaseRepository):
         await self.session.flush()
         return log
 
-    async def total_tokens(self) -> int:
-        return int(await self.session.scalar(select(func.sum(AILog.total_tokens))) or 0)
+    async def total_tokens(self, *, tenant_id: int) -> int:
+        """Every token billed to one tenant.
+
+        Mandatory keyword argument for the same reason as the document
+        enumeration: a SUM with no predicate produces a believable number for
+        any caller, so a missing scope is invisible in the response and
+        visible only on an invoice. There is deliberately no value of
+        ``tenant_id`` that means "all tenants" -- a deployment-wide total is a
+        different question, and one nothing is asking yet.
+        """
+        statement = select(func.sum(AILog.total_tokens)).where(
+            AILog.tenant_id == tenant_id
+        )
+        return int(await self.session.scalar(statement) or 0)

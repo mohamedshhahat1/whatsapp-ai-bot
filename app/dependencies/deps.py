@@ -92,11 +92,6 @@ def get_chat_service(db: AsyncSession = Depends(get_db)) -> ChatService:
     return ChatService(db, get_whatsapp_client(), get_openai_client(), get_settings())
 
 
-def get_admin_service(db: AsyncSession = Depends(get_db)) -> AdminService:
-    """Admin service bound to the request-scoped database session."""
-    return AdminService(db)
-
-
 def get_analytics_service(db: AsyncSession = Depends(get_db)) -> AnalyticsService:
     """Cost and usage analytics bound to the request-scoped session."""
     return AnalyticsService(db, get_settings())
@@ -371,6 +366,27 @@ async def require_tenant_context(
         # whichever branch happened to be last.
         raise _no_tenant_access()
     return await _operator_tenant_context(db, principal.operator_id, selected)
+
+
+# Declared after require_tenant_context rather than beside the other service
+# factories: Depends() is evaluated when the function is defined, so a factory
+# cannot name a dependency that appears later in the module.
+def get_admin_service(
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_tenant_context),
+) -> AdminService:
+    """Admin service bound to the request-scoped session and its tenant.
+
+    Asking for the context here rather than in each route is what makes it
+    impossible to add an admin endpoint that reads tenant-owned data without
+    one: there is no way to obtain the service without the dependency having
+    run. Every reason it can refuse -- no tenant, an ambiguous deployment, a
+    selector naming somebody else's tenant -- is decided in one place.
+
+    This binds the request to a tenant; it does not yet check that the
+    identifiers in the path belong to it. Those ownership checks are step 4.
+    """
+    return AdminService(db, tenant)
 
 
 def _peer_is_internal(request: Request) -> bool:

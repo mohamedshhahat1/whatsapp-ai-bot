@@ -43,6 +43,11 @@ class DocumentRepository(BaseRepository):
         second tenant uploading ``pricing.pdf`` finds the first tenant's row
         and overwrites its title, hash and every chunk under it. That is a
         write, not a read, so it could not wait for Phase 1c.
+
+        ``tenant_id=None`` still means the deployment's original tenant, as it
+        has since 0016. That is a write-path default and not an "all tenants"
+        one -- it resolves to exactly one owner -- so Phase 1c leaves it
+        alone rather than churning every 1b caller.
         """
         owner = await resolve_tenant_id(self.session, tenant_id)
         return await self.session.scalar(
@@ -52,13 +57,36 @@ class DocumentRepository(BaseRepository):
             )
         )
 
-    async def list_documents(self) -> list[Document]:
-        """Every document, across every tenant. Scoping is Phase 1c."""
-        result = await self.session.scalars(select(Document).order_by(Document.source))
+    async def list_documents(self, *, tenant_id: int) -> list[Document]:
+        """Every document in one tenant's knowledge base.
+
+        ``tenant_id`` is keyword-only and deliberately has no default. An
+        enumeration is the shape of read a default breaks silently: a caller
+        that forgot to pass one would still be handed a list, just with other
+        tenants' documents in it, and nothing in the response would say so.
+        Mandatory makes the omission a TypeError at the call site instead of
+        a leak found later.
+        """
+        statement = (
+            select(Document)
+            .where(Document.tenant_id == tenant_id)
+            .order_by(Document.source)
+        )
+        result = await self.session.scalars(statement)
         return list(result)
 
-    async def count_chunks(self) -> int:
-        return int(await self.session.scalar(select(func.count(DocumentChunk.id))) or 0)
+    async def count_chunks(self, *, tenant_id: int) -> int:
+        """How many chunks this tenant has indexed.
+
+        Scoped even though nothing calls it today. A count across every
+        tenant's corpus is a cross-tenant read whatever it is eventually
+        wired to, and leaving the unscoped version in place would let the
+        next caller inherit the defect rather than have to introduce it.
+        """
+        statement = select(func.count(DocumentChunk.id)).where(
+            DocumentChunk.tenant_id == tenant_id
+        )
+        return int(await self.session.scalar(statement) or 0)
 
     async def upsert(
         self,
@@ -143,6 +171,12 @@ class DocumentRepository(BaseRepository):
         measurement, and it belongs to the RAG phase rather than to a schema
         change -- a filter added here without one would quietly return fewer
         results than asked for.
+
+        The correctness half of that argument no longer holds, and D-3 says
+        so: this predicate lands in the next commit of this phase, together
+        with the retriever and chat service it cannot be changed apart from.
+        The measurement, and any index strategy that follows it, stays in
+        Phase 4.
         """
         if not embedding:
             return []
