@@ -28,7 +28,7 @@ def ts(**delta: float) -> str:
     return str(int(moment.timestamp()))
 
 
-def text_payload(body: str = "\u0645\u0631\u062d\u0628\u0627", **kwargs) -> dict:
+def text_payload(body: str = "مرحبا", **kwargs) -> dict:
     """One webhook delivery carrying one text message.
 
     Defaults to an Arabic greeting because that is the input that takes the
@@ -83,6 +83,14 @@ def routed(monkeypatch):
 
     ``record_without_answering`` is replaced too, so the stale path needs no
     database: what is asserted is that it was chosen, not what it stored.
+
+    ``default_tenant_id`` is replaced for the same reason and is the same kind
+    of collaborator. Phase 1c made the processor resolve a tenant before it
+    builds a service, which is a real query on a path these tests run with no
+    session at all. Which tenant a delivery is given is asserted where that is
+    the subject -- the tenancy tests, and the integration test that runs this
+    function against a migrated database -- not here, where the subject is
+    which handler a delivery reaches.
     """
     service = FakeService()
     recorded: list[dict] = []
@@ -90,6 +98,11 @@ def routed(monkeypatch):
     monkeypatch.setattr(
         webhook_processor, "ChatService", lambda *args, **kwargs: service
     )
+
+    async def fake_tenant(session):
+        return 1
+
+    monkeypatch.setattr(webhook_processor, "default_tenant_id", fake_tenant)
 
     async def fake_record(session, settings, **kwargs):
         recorded.append(kwargs)
@@ -114,7 +127,7 @@ async def _process(payload):
 async def test_a_fresh_message_is_answered_normally(routed):
     payload, service, recorded = routed(text_payload(timestamp=ts(seconds=5)))
     await _process(payload)
-    assert service.texts == ["\u0645\u0631\u062d\u0628\u0627"]
+    assert service.texts == ["مرحبا"]
     assert recorded == []
 
 
