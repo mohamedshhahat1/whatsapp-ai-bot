@@ -157,26 +157,39 @@ class DocumentRepository(BaseRepository):
         return True
 
     async def search(
-        self, embedding: list[float], limit: int = 5, min_score: float = 0.0
+        self,
+        embedding: list[float],
+        limit: int = 5,
+        min_score: float = 0.0,
+        *,
+        tenant_id: int,
     ) -> list[SearchHit]:
-        """Return the closest chunks by cosine similarity.
+        """Return the closest chunks by cosine similarity, within one tenant.
 
         pgvector exposes *distance* (0 = identical). We convert to a 0-1
         similarity score so callers can reason in intuitive terms.
 
-        Deliberately still unfiltered. ``document_chunks.tenant_id`` exists as
-        of 0016 so that filtering is possible at all, but adding a predicate to
-        an HNSW scan changes which index strategy is correct and how many rows
-        have to be examined to still return ``limit`` of them. That is a
-        measurement, and it belongs to the RAG phase rather than to a schema
-        change -- a filter added here without one would quietly return fewer
-        results than asked for.
+        ``tenant_id`` is keyword-only and has no default. This is the read
+        that decides what the model is told, so an omitted scope here would
+        not merely widen a listing -- it would quote one company's private
+        knowledge base into another company's customer conversation. A
+        TypeError at the call site is the only acceptable way to forget it.
 
-        The correctness half of that argument no longer holds, and D-3 says
-        so: this predicate lands in the next commit of this phase, together
-        with the retriever and chat service it cannot be changed apart from.
-        The measurement, and any index strategy that follows it, stays in
-        Phase 4.
+        The predicate is on the chunk rather than on the joined document
+        because the composite foreign key added in 0016 makes the two
+        identical by construction: a chunk cannot reference a document
+        belonging to another tenant. Filtering the table being scanned also
+        keeps the condition where the index can use it.
+
+        The filter arrives now because correctness could not wait for the
+        measurement (D-3). What is deferred to Phase 4 is the index strategy,
+        not the predicate: an HNSW scan applies ``WHERE`` after walking the
+        graph, so once a deployment holds several tenants' corpora a filtered
+        search can examine its neighbour list and return fewer than ``limit``
+        rows. On a single-tenant deployment the predicate matches every row
+        the scan would have considered anyway, so today it changes nothing
+        about what comes back. Restoring recall properly needs partial or
+        partitioned indexes and a benchmark, which is Phase 4's subject.
         """
         if not embedding:
             return []
@@ -185,6 +198,7 @@ class DocumentRepository(BaseRepository):
         statement = (
             select(DocumentChunk, distance)
             .options(joinedload(DocumentChunk.document))
+            .where(DocumentChunk.tenant_id == tenant_id)
             .order_by(distance)
             .limit(limit)
         )
