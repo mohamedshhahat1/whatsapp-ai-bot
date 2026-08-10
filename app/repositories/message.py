@@ -5,12 +5,43 @@ from datetime import datetime
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from app.models.conversation import Conversation
 from app.models.message import (
     STATUS_PENDING,
     STATUS_SENT,
     Message,
 )
 from app.repositories.base import BaseRepository
+
+
+def _tenant_of(conversation_id: int):
+    """The owning tenant, as a subquery to be embedded in an INSERT.
+
+    A message belongs to whoever owns its conversation, so the value is read
+    from the parent row rather than passed in. Doing it as a subquery inside
+    the same statement matters twice over.
+
+    It keeps the insert a single statement. ``claim_inbound`` and
+    ``reserve_reply`` are the whole basis of the no-duplicate-send guarantee
+    precisely because Postgres serialises two concurrent callers on one unique
+    index; splitting either into a lookup followed by an insert would put a
+    gap between the check and the write, which is the race those methods were
+    written to remove.
+
+    And it makes a cross-tenant message unwritable rather than merely
+    discouraged. There is no argument a caller could pass wrongly: the tenant
+    is whatever the conversation says it is, and the composite foreign key
+    then has nothing left to catch.
+
+    A conversation_id that does not exist yields NULL, which the NOT NULL
+    column rejects -- the same class of failure as the foreign key violation
+    it produced before.
+    """
+    return (
+        select(Conversation.tenant_id)
+        .where(Conversation.id == conversation_id)
+        .scalar_subquery()
+    )
 
 
 class MessageRepository(BaseRepository):
@@ -25,7 +56,17 @@ class MessageRepository(BaseRepository):
         status: str | None = None,
         reply_to_wa_message_id: str | None = None,
     ) -> Message:
+        # Resolved with its own SELECT rather than a subquery, unlike the two
+        # reservation methods below. This path returns a live ORM object whose
+        # attributes callers read after the flush, and a column written from a
+        # SQL expression comes back expired -- which in async SQLAlchemy means
+        # the next read of it raises MissingGreenlet instead of loading. One
+        # extra primary-key lookup is a fair price for that not being a trap.
+        tenant_id = await self.session.scalar(
+            select(Conversation.tenant_id).where(Conversation.id == conversation_id)
+        )
         message = Message(
+            tenant_id=tenant_id,
             conversation_id=conversation_id,
             direction=direction,
             type=type,
@@ -64,10 +105,16 @@ class MessageRepository(BaseRepository):
         statement. Postgres serialises the two inserts on the unique index
         itself, so exactly one caller is handed an id and the loser is told
         before it spends anything.
+
+        The conflict target is still ``wa_message_id`` alone and is not
+        tenant-scoped. Meta's ids are globally unique, so the tenant would add
+        nothing to the key -- and a conflict target that fails to fire here
+        means a customer receives the same answer twice.
         """
         statement = (
             pg_insert(Message)
             .values(
+                tenant_id=_tenant_of(conversation_id),
                 conversation_id=conversation_id,
                 wa_message_id=wa_message_id,
                 direction="inbound",
@@ -104,10 +151,16 @@ class MessageRepository(BaseRepository):
         a customer who gets two different answers to one question, or two
         contradictory ones about a quotation, loses trust in the business --
         and every duplicate is a second OpenAI charge.
+
+        The reservation key stays global for the same reason as
+        ``claim_inbound``'s, and because the comment-to-DM reservation shares
+        this index. Narrowing it is deferred until integration ownership
+        exists, because getting it wrong sends duplicates to real customers.
         """
         statement = (
             pg_insert(Message)
             .values(
+                tenant_id=_tenant_of(conversation_id),
                 conversation_id=conversation_id,
                 direction="outbound",
                 type=type,

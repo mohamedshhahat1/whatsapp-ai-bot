@@ -1,6 +1,6 @@
 """Pre-aggregated daily analytics.
 
-One row per UTC calendar day holding the figures
+One row per tenant per UTC calendar day holding the figures
 ``AnalyticsRepository.daily_usage`` computes on the fly. The live query scans
 ai_logs and messages across the whole requested window on every dashboard
 load, and ai_logs takes one row per OpenAI call -- it is the fastest growing
@@ -28,6 +28,7 @@ from sqlalchemy import (
     CheckConstraint,
     Date,
     DateTime,
+    ForeignKey,
     Integer,
     Numeric,
     func,
@@ -38,16 +39,23 @@ from app.db.base import Base
 
 
 class AnalyticsDaily(Base):
-    """One summary row per completed UTC day."""
+    """One summary row per tenant per completed UTC day."""
 
     __tablename__ = "analytics_daily"
 
-    # The day is the primary key, and that is what makes the rollup
+    # The pair is the primary key, and that is what makes the rollup
     # idempotent: re-running a night collides and updates in place instead of
-    # inserting a second row. The same index serves the range scans a reader
-    # would issue (WHERE day >= ... ORDER BY day), so no secondary index is
-    # needed -- adding one would only cost write time on a table whose whole
-    # purpose is to be cheap to maintain.
+    # inserting a second row. tenant_id leads so the same index serves the
+    # range scans a reader would issue for one tenant
+    # (WHERE tenant_id = ? AND day >= ... ORDER BY day) -- no secondary index
+    # is needed, and adding one would only cost write time on a table whose
+    # whole purpose is to be cheap to maintain.
+    #
+    # RESTRICT: a tenant is suspended rather than deleted, and its history
+    # should not be silently removable either way.
+    tenant_id: Mapped[int] = mapped_column(
+        ForeignKey("tenants.id", ondelete="RESTRICT"), primary_key=True
+    )
     day: Mapped[date] = mapped_column(Date, primary_key=True)
 
     requests: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

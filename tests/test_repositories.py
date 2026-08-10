@@ -59,25 +59,46 @@ async def test_get_or_create_active_conversation_is_idempotent(
 
 
 async def test_database_rejects_a_second_active_conversation(
-    db: AsyncSession, customer: Customer
+    db: AsyncSession, customer: Customer, default_tenant: int
 ) -> None:
     """The guarantee is the partial unique index, not application code.
 
     Uses its own session because the failed transaction has to be rolled
     back, which would otherwise discard the fixture's work.
+
+    The tenant is supplied so that the row is legal in every other respect.
+    Since 0016 a conversation without one fails NOT NULL first, which would
+    leave this test green for a reason that has nothing to do with
+    uq_active_conversation_per_user -- the thing it exists to check.
     """
     async with SessionLocal() as other:
-        other.add(Conversation(user_id=customer.user_id, status="active"))
+        other.add(
+            Conversation(
+                tenant_id=default_tenant,
+                user_id=customer.user_id,
+                status="active",
+            )
+        )
         with pytest.raises(IntegrityError):
             await other.commit()
         await other.rollback()
 
 
 async def test_closed_conversations_do_not_block_a_new_one(
-    db: AsyncSession, customer: Customer
+    db: AsyncSession, customer: Customer, default_tenant: int
 ) -> None:
-    """The index is partial: only one *active* conversation is restricted."""
-    db.add(Conversation(user_id=customer.user_id, status="closed"))
+    """The index is partial: only one *active* conversation is restricted.
+
+    The customer fixture writes its rows in the default tenant, so that is the
+    tenant the composite key to users requires here.
+    """
+    db.add(
+        Conversation(
+            tenant_id=default_tenant,
+            user_id=customer.user_id,
+            status="closed",
+        )
+    )
     await db.commit()
     still_open = await ConversationRepository(db).get_or_create_active(customer.user_id)
     assert still_open.id == customer.conversation_id
