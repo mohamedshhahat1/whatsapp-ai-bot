@@ -109,9 +109,18 @@ jobs:
       # The tenant is resolved from the tenants table rather than hard-coded,
       # because ids are assigned by a sequence; 0015 seeds the default tenant
       # on an empty database, which is exactly what this is.
+      #
+      # -i is load-bearing, not cosmetic. docker exec does not attach stdin
+      # without it, so the heredoc below is discarded, psql reads EOF,
+      # executes nothing and exits 0. That is exactly what happened the first
+      # time this step ran for real: three inserts silently became none, and
+      # the verification step below is the only reason it surfaced as a red
+      # job rather than as another green drill over an empty database. The
+      # count queries in the other steps pass their SQL with -c, which needs
+      # no stdin, which is why they kept working while this did not.
       - name: Seed representative rows
         run: |
-          docker exec -e PGPASSWORD=sourcepass drill-source \
+          docker exec -i -e PGPASSWORD=sourcepass drill-source \
             psql -U postgres -d whatsapp_ai_bot -v ON_ERROR_STOP=1 <<'SQL'
             INSERT INTO users (tenant_id, channel, external_id, wa_id, name, created_at)
             SELECT t.id, 'whatsapp', '201000000001', '201000000001',
