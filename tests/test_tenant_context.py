@@ -41,7 +41,7 @@ from app.repositories.tenant import (
     tenant_ids_for_operator,
     tenant_ids_owning_data,
 )
-from tests.conftest import Customer, create_customer, new_wa_id, purge
+from tests.conftest import create_customer, new_wa_id, purge
 
 MIGRATION_0016 = (
     Path(__file__).resolve().parent.parent
@@ -343,19 +343,39 @@ async def test_owning_data_is_not_the_same_as_existing(
     D-2 hangs on this distinction: an onboarding flow that created a tenant
     and stopped must not suspend push notifications for the business that is
     actually using the system.
-    """
-    before = await tenant_ids_owning_data(db)
-    assert other_tenant not in before
 
-    wa_id = new_wa_id()
-    created: Customer | None = None
+    Both tenants are seeded on purpose. "More than one tenant owns data" is a
+    question about the whole deployment, so seeding only the newcomer leaves
+    the established tenant owning nothing, the deployment single-tenant, and
+    the assertion measuring an empty database rather than the distinction.
+    """
+    active_wa_id = new_wa_id()
+    newcomer_wa_id = new_wa_id()
     try:
-        created = await create_customer(db, wa_id, tenant_id=other_tenant)
-        assert created.user_id
+        # The business already using the system.
+        active = await create_customer(db, active_wa_id, tenant_id=default_tenant)
+        assert active.user_id
+
         owning = await tenant_ids_owning_data(db)
-        assert other_tenant in owning
+        assert owning == [default_tenant], (
+            "This test needs exactly one data-owning tenant to start from; "
+            f"the database reports {owning}, so an earlier test left rows behind."
+        )
+
+        # Two tenant rows exist; only one owns anything, so push stays on.
+        assert await count_tenants(db) == 2
+        assert other_tenant not in owning
+        assert await more_than_one_tenant_owns_data(db) is False
+
+        # The newcomer owns a row, and now the deployment really is shared.
+        newcomer = await create_customer(db, newcomer_wa_id, tenant_id=other_tenant)
+        assert newcomer.user_id
+        both = await tenant_ids_owning_data(db)
+        assert both == sorted([default_tenant, other_tenant])
         assert await more_than_one_tenant_owns_data(db) is True
     finally:
-        await purge(db, wa_id)
+        await purge(db, newcomer_wa_id)
+        await purge(db, active_wa_id)
 
     assert other_tenant not in await tenant_ids_owning_data(db)
+    assert await more_than_one_tenant_owns_data(db) is False
