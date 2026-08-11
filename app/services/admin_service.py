@@ -29,14 +29,18 @@ class AdminService:
     caller's credential, so there is no way to reach these methods without a
     tenant having been established first.
 
-    Not every method is scoped yet. The reads that were true enumerations or
-    aggregates -- the document list, the token total and the knowledge search
-    -- are; the conversation, user and message paths still call repository
-    methods that have not been scoped, and are scoped in the following commits
-    of this step. Route-level ownership checks for identifiers supplied by the
-    caller are step 4, and are what stops one tenant naming another's
-    conversation id. Holding the tenant here from the start is what makes both
-    possible without changing this signature again.
+    Every read here now carries it. The enumerations and aggregates -- the
+    customer and conversation lists, the headline counters, the document list,
+    the token total and the knowledge search -- are scoped, and so are the
+    by-id lookups behind the single-conversation routes, which means an id
+    belonging to another tenant reads as absent and the route answers 404
+    rather than serving somebody else's transcript.
+
+    That 404 falls out of the repository boundary rather than out of route
+    authorization, and the difference matters for what is still missing:
+    the audit trail for platform-key access to tenant data, selector
+    handling, and a route-enumeration regression test proving no future
+    endpoint can skip the dependency. Those are step 4.
     """
 
     def __init__(self, session: AsyncSession, tenant: TenantContext) -> None:
@@ -49,7 +53,9 @@ class AdminService:
         self._documents = DocumentRepository(session)
 
     async def list_users(self, offset: int, limit: int) -> list[User]:
-        return await self._users.list(offset=offset, limit=limit)
+        return await self._users.list(
+            offset=offset, limit=limit, tenant_id=self._tenant.tenant_id
+        )
 
     async def list_conversations(
         self, offset: int, limit: int, status: str | None = None
@@ -62,10 +68,14 @@ class AdminService:
         of one per customer, and an operator looking for live work would
         otherwise scroll past a day of closed history to find it.
         """
-        return await self._conversations.list(offset=offset, limit=limit, status=status)
+        return await self._conversations.list(
+            offset=offset, limit=limit, status=status, tenant_id=self._tenant.tenant_id
+        )
 
     async def get_conversation(self, conversation_id: int) -> Conversation:
-        conversation = await self._conversations.get_with_messages(conversation_id)
+        conversation = await self._conversations.get_with_messages(
+            conversation_id, tenant_id=self._tenant.tenant_id
+        )
         if conversation is None:
             raise NotFoundError(f"Conversation {conversation_id} not found")
         return conversation
@@ -79,6 +89,11 @@ class AdminService:
         and the most recent others -- enough for the operator panel to say
         "5th visit" and link to the previous four.
 
+        Only the first lookup carries the tenant, and the rest do not need to:
+        everything after it is derived from a conversation this tenant owns.
+        ``user_id`` came off that row, a user belongs to exactly one tenant,
+        and the two panel queries are keyed on it.
+
         Sessions are deliberately NOT merged. They are separate visits and
         stitching them into one transcript would misrepresent what happened,
         hiding the gaps that are the whole point of the lifecycle. The operator
@@ -90,7 +105,9 @@ class AdminService:
         ways nobody asked for and would leak one visit's pricing talk into the
         next.
         """
-        conversation = await self._conversations.get(conversation_id)
+        conversation = await self._conversations.get(
+            conversation_id, tenant_id=self._tenant.tenant_id
+        )
         if conversation is None:
             raise NotFoundError(f"Conversation {conversation_id} not found")
 
@@ -105,7 +122,9 @@ class AdminService:
         return user, total, others
 
     async def delete_conversation(self, conversation_id: int) -> None:
-        conversation = await self._conversations.get(conversation_id)
+        conversation = await self._conversations.get(
+            conversation_id, tenant_id=self._tenant.tenant_id
+        )
         if conversation is None:
             raise NotFoundError(f"Conversation {conversation_id} not found")
         await self._conversations.delete(conversation)
@@ -119,7 +138,9 @@ class AdminService:
         reason: str,
         operator_id: int | None = None,
     ) -> Conversation:
-        conversation = await self._conversations.get(conversation_id)
+        conversation = await self._conversations.get(
+            conversation_id, tenant_id=self._tenant.tenant_id
+        )
         if conversation is None:
             raise NotFoundError(f"Conversation {conversation_id} not found")
 
@@ -243,7 +264,7 @@ class AdminService:
         return await retriever.retrieve(query, limit=limit)
 
     async def stats(self) -> StatsRead:
-        """Headline counters for the dashboard.
+        """Headline counters for the dashboard, for this tenant.
 
         ``total_conversations`` counts SESSIONS, not customers, and has done
         since sessions started closing themselves -- one returning customer
@@ -251,19 +272,20 @@ class AdminService:
         used to be nearly interchangeable and no longer are; see
         ``StatsRead`` for the field-level wording.
 
-        ``total_tokens_used`` is this tenant's spend. The customer, session
-        and message counters beside it are still deployment-wide until their
-        repositories are scoped in the next commits of this step; they are
-        counts of rows rather than the rows themselves, so the gap leaks a
-        magnitude and not a record, and it closes within the same step.
+        Every figure is this tenant's own. The customer, session and message
+        counters were deployment-wide until step 2c scoped their repositories:
+        each leaked a magnitude rather than a record, which is the milder half
+        of this class of bug, but a dashboard that reports a competitor's
+        traffic as your own is wrong in the direction people notice.
         """
+        tenant_id = self._tenant.tenant_id
         since = datetime.now(UTC) - timedelta(hours=24)
         return StatsRead(
-            total_users=await self._users.count(),
-            total_conversations=await self._conversations.count(),
-            total_messages=await self._messages.count(),
-            messages_last_24h=await self._messages.count_since(since),
-            total_tokens_used=await self._ai_logs.total_tokens(
-                tenant_id=self._tenant.tenant_id
+            total_users=await self._users.count(tenant_id=tenant_id),
+            total_conversations=await self._conversations.count(tenant_id=tenant_id),
+            total_messages=await self._messages.count(tenant_id=tenant_id),
+            messages_last_24h=await self._messages.count_since(
+                since, tenant_id=tenant_id
             ),
+            total_tokens_used=await self._ai_logs.total_tokens(tenant_id=tenant_id),
         )

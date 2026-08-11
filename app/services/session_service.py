@@ -25,6 +25,17 @@ flushed broker or a second replica changes nothing, because there was never
 anything to lose. Beat re-emitting a tick early is harmless for the same
 reason a redelivered tick is: the claim below is idempotent.
 
+The sweep is deployment-wide and stays that way
+-----------------------------------------------
+It runs on a beat tick with no request, no credential and therefore no tenant
+to act for, so the repository reads on this path are global by design rather
+than by omission -- ``claim_idle_sessions``, ``idle_targets``, ``close`` and
+the explicitly named ``get_for_sweep``. Nothing here takes an id from a
+caller: the claim chooses its own rows and everything downstream works from
+that committed list. Splitting the pass per tenant would need either a queue
+per tenant or one pass per tenant per minute and would isolate nothing that
+is not already isolated.
+
 Exactly one goodbye
 -------------------
 ``claim_idle_sessions`` takes ``closing_sent_at`` with a conditional UPDATE
@@ -333,14 +344,22 @@ class SessionService:
         them. One extra SELECT per closed session, on a path that already
         makes a provider call.
 
-        The reload is explicit because ``get`` on its own is not enough.
-        Closing the session UPDATEs the row, which expires ``updated_at`` on
+        Uses ``get_for_sweep`` rather than the tenant-scoped ``get``. This is
+        the sweep, which acts for no tenant and has none to pass; the id came
+        from its own committed claim rather than from a caller, so there is
+        nothing here that a tenant predicate would protect. The method is
+        separately named precisely so this line has to say which of the two it
+        wants, instead of a permissive default deciding for it.
+
+        The reload is explicit because reading the row is not enough on its
+        own. Closing the session UPDATEs it, which expires ``updated_at`` on
         whatever instance is already in this session's identity map, and
-        ``get`` hands that same instance straight back rather than re-reading
-        it. Touching the expired attribute would then have to fetch it, and an
-        implicit fetch during plain attribute access is the one thing asyncio
-        cannot service here -- SQLAlchemy raises MissingGreenlet instead of
-        blocking. Awaiting the reload is what makes that IO legal.
+        ``get_for_sweep`` -- a primary-key get -- hands that same instance
+        straight back rather than re-reading it. Touching the expired
+        attribute would then have to fetch it, and an implicit fetch during
+        plain attribute access is the one thing asyncio cannot service here:
+        SQLAlchemy raises MissingGreenlet instead of blocking. Awaiting the
+        reload is what makes that IO legal.
 
         Whether the instance is in the identity map at all depends on the
         caller, which is why this survived: the sweep's own Celery task opens
@@ -351,7 +370,7 @@ class SessionService:
         this event will refetch, and an event sent from inside the transaction
         can be delivered before the close is visible to that read.
         """
-        conversation = await self._conversations.get(conversation_id)
+        conversation = await self._conversations.get_for_sweep(conversation_id)
         if conversation is None:  # pragma: no cover - deleted mid-sweep
             return
         try:

@@ -120,13 +120,76 @@ class IdleSession(NamedTuple):
 
 
 class ConversationRepository(BaseRepository):
-    async def get(self, conversation_id: int) -> Conversation | None:
+    async def get(self, conversation_id: int, *, tenant_id: int) -> Conversation | None:
+        """One conversation, if it belongs to this tenant.
+
+        ``tenant_id`` is mandatory and keyword-only. This is the read behind
+        every operator action that names a conversation by id -- open it, read
+        its history, delete it, take it over, resume the AI, reply into it --
+        and until Phase 1c it was ``session.get`` by primary key alone, which
+        is to say it answered for any id in the deployment.
+
+        A conversation belonging to somebody else reads as absent rather than
+        forbidden. Every caller already turns ``None`` into a 404, and that is
+        the answer that reveals least: a 403 would confirm the id exists,
+        which turns this into an oracle for enumerating other tenants'
+        conversations by counting off integers.
+
+        This is the repository half of that guarantee, not the whole of it.
+        Route-level authorization -- the audit trail for platform-key access,
+        selector handling, and a regression test proving no future endpoint
+        skips the dependency -- is step 4.
+
+        Uses a filtered SELECT rather than ``session.get``. A primary-key get
+        cannot carry a predicate, and worse, it consults the identity map
+        first: had any earlier query in the same session already loaded the
+        row, it would be handed back without the database being asked at all.
+        """
+        return await self.session.scalar(
+            select(Conversation).where(
+                Conversation.id == conversation_id,
+                Conversation.tenant_id == tenant_id,
+            )
+        )
+
+    async def get_for_sweep(self, conversation_id: int) -> Conversation | None:
+        """One conversation by id, with no tenant predicate. Global by design.
+
+        For the idle-session sweep, which is a single deployment-wide pass on
+        a Celery beat tick. It acts for no tenant because no tenant asked it
+        to run, and there is no request, credential or context anywhere on
+        that path to resolve one from.
+
+        This is not a hole in :meth:`get`. ``claim_idle_sessions`` has already
+        chosen these ids in one global conditional UPDATE and committed the
+        claim; this only reads back a row the sweep itself selected. No caller
+        supplies the id, so there is nothing here for a caller to aim.
+
+        Deliberately a separate method with its own name rather than a
+        ``tenant_id=None`` branch on :meth:`get`. An optional predicate on an
+        authorization boundary is one forgotten argument away from an unscoped
+        read, and it would make "no tenant" mean "every tenant" in a signature
+        that is otherwise mandatory everywhere. A caller has to ask for this
+        by name, the name says exactly what it does, and it shows up in review
+        and in grep as the deliberate exception it is.
+        """
         return await self.session.get(Conversation, conversation_id)
 
-    async def get_with_messages(self, conversation_id: int) -> Conversation | None:
+    async def get_with_messages(
+        self, conversation_id: int, *, tenant_id: int
+    ) -> Conversation | None:
+        """One conversation and its transcript, if it belongs to this tenant.
+
+        Scoped on the same terms as :meth:`get`, and the more urgent of the
+        two: this one returns the message bodies rather than a row of
+        metadata, so an unscoped hit hands over the actual conversation.
+        """
         return await self.session.scalar(
             select(Conversation)
-            .where(Conversation.id == conversation_id)
+            .where(
+                Conversation.id == conversation_id,
+                Conversation.tenant_id == tenant_id,
+            )
             .options(selectinload(Conversation.messages))
         )
 
@@ -144,9 +207,10 @@ class ConversationRepository(BaseRepository):
         Not filtered by channel either, and it does not need to be: identity
         is ``(channel, external_id)``, so the same human on two channels is
         two users and ``user_id`` already scopes this to one of them. The same
-        argument now covers the tenant, since a user row belongs to exactly
-        one -- which is why this method needs no tenant predicate to be
-        correct, only the wider read-path work in Phase 1c to be complete.
+        argument covers the tenant, since a user row belongs to exactly one.
+        That makes this derived-safe rather than unscoped: the caller reached
+        a ``user_id`` through a tenant-scoped path, and no tenant predicate
+        here could narrow the answer any further than ``user_id`` already has.
         """
         return await self.session.scalar(
             select(Conversation)
@@ -236,6 +300,13 @@ class ConversationRepository(BaseRepository):
         opening a specific conversation and replying to it has stated their
         intent, and second-guessing it after an arbitrary number of minutes
         would just resurrect the orphaned-reply bug for older sessions.
+
+        No tenant predicate, and that is derived rather than overlooked. Both
+        callers reach this through ``revive_for_operator``, which is handed a
+        conversation they have already loaded through the tenant-scoped
+        :meth:`get`; there is no path to this id that did not pass the check.
+        A second predicate here would be a decorative one, and decorative
+        predicates are how a real boundary comes to look optional.
 
         Returns ``None`` when the customer has since started another session,
         because the partial unique index permits only one active conversation
@@ -362,6 +433,10 @@ class ConversationRepository(BaseRepository):
         with an operator would be swept and closed on the very next pass,
         before the customer had any chance to notice the AI was back.
 
+        Takes a loaded conversation rather than an id, which is what makes it
+        derived-safe: the caller has already been handed this row by a
+        tenant-scoped read, so there is no id here to point at another tenant.
+
         Does not commit: the caller owns the transaction boundary, because a
         handoff triggered by an inbound message must be committed together with
         that message.
@@ -424,6 +499,9 @@ class ConversationRepository(BaseRepository):
         Used when ENABLE_REPEAT_WELCOME_AFTER_NEW_SESSION is off, to tell a
         genuinely new customer from a returning one, and by the operator's
         customer history panel.
+
+        Derived-safe: ``user_id`` belongs to exactly one tenant, so the count
+        is already confined to that tenant's rows.
         """
         return int(
             await self.session.scalar(
@@ -444,6 +522,8 @@ class ConversationRepository(BaseRepository):
         -- but an operator answering someone needs to know they have been here
         four times before, so the panel links across them.
 
+        Derived-safe on ``user_id``, like :meth:`count_for_user`.
+
         Explicitly NOT used to build model context: the AI still sees only the
         current session, because silently widening what it remembers would
         change its answers in ways nobody asked for.
@@ -460,6 +540,12 @@ class ConversationRepository(BaseRepository):
         self, idle_before: datetime, limit: int = 200
     ) -> list[int]:
         """Take ownership of every session that has gone idle, atomically.
+
+        Deployment-wide by design, and not a read path a tenant can reach:
+        this runs on a Celery beat tick with no request and no credential
+        behind it. Splitting the sweep per tenant would mean either a queue
+        per tenant or one pass per tenant per minute, and would buy nothing --
+        no caller chooses which rows it touches.
 
         Returns the ids this caller now owns. Another sweep running at the
         same moment gets a disjoint set, and no session is ever handed to two
@@ -525,6 +611,10 @@ class ConversationRepository(BaseRepository):
     async def idle_targets(self, conversation_ids: list[int]) -> list[IdleSession]:
         """Resolve claimed session ids to a channel and a recipient.
 
+        Global for the same reason as :meth:`claim_idle_sessions`, and safe
+        for a narrower one: the ids come from that method's own committed
+        claim, never from a caller.
+
         The channel comes from the conversation rather than from the user so
         that it describes the visit being closed, which is the thing the
         goodbye is about.
@@ -563,6 +653,8 @@ class ConversationRepository(BaseRepository):
     async def close(self, conversation_id: int) -> None:
         """End a session.
 
+        Global, and reached only with an id the sweep has already claimed.
+
         Setting ``status`` to closed releases the customer's slot in
         ``uq_active_conversation_per_user``, so their next message opens a new
         conversation rather than resuming this one -- unless it arrives inside
@@ -577,9 +669,17 @@ class ConversationRepository(BaseRepository):
         )
 
     async def list(
-        self, offset: int = 0, limit: int = 50, status: str | None = None
+        self,
+        offset: int = 0,
+        limit: int = 50,
+        status: str | None = None,
+        *,
+        tenant_id: int,
     ) -> list[Conversation]:
-        """Conversations for the operator list.
+        """This tenant's conversations, for the operator list.
+
+        ``tenant_id`` is mandatory: this is a true enumeration, and unscoped
+        it paginated through every conversation in the deployment.
 
         Ordering, in full: unclaimed sales leads first, then everything else
         by recency, newest first.
@@ -605,7 +705,7 @@ class ConversationRepository(BaseRepository):
         operator's live work is a shrinking minority of the table and would
         otherwise be buried under closed history within a day.
         """
-        stmt = select(Conversation)
+        stmt = select(Conversation).where(Conversation.tenant_id == tenant_id)
         if status is not None:
             stmt = stmt.where(Conversation.status == status)
         result = await self.session.scalars(
@@ -616,31 +716,46 @@ class ConversationRepository(BaseRepository):
         return list(result)
 
     async def delete(self, conversation: Conversation) -> None:
+        """Delete a loaded conversation.
+
+        Derived-safe: takes the row rather than an id, and the only caller
+        obtained it from the tenant-scoped :meth:`get`.
+        """
         await self.session.delete(conversation)
 
-    async def count(self, status: str | None = None) -> int:
-        """How many conversations exist, optionally within one status.
+    async def count(self, status: str | None = None, *, tenant_id: int) -> int:
+        """How many conversations this tenant has, optionally within a status.
 
         The unfiltered count is a count of SESSIONS, not of customers, and has
         been since sessions started closing themselves. Callers that want
         customers should count users.
         """
-        stmt = select(func.count(Conversation.id))
+        stmt = select(func.count(Conversation.id)).where(
+            Conversation.tenant_id == tenant_id
+        )
         if status is not None:
             stmt = stmt.where(Conversation.status == status)
         return int(await self.session.scalar(stmt) or 0)
 
-    async def count_unclaimed_leads(self) -> int:
+    async def count_unclaimed_leads(self, *, tenant_id: int) -> int:
         """Open sales leads with nobody on them -- the dashboard badge.
 
         Scoped to active sessions by ``_UNCLAIMED_LEAD``, so a lead that went
         idle and closed stops inflating the badge. An operator cannot pick up
         a closed session's lead, and a badge counting work nobody can do is a
         badge people learn to ignore.
+
+        Scoped to the tenant for a plainer reason: a badge counting another
+        company's leads is worse than a badge counting nothing. This method
+        has no caller yet, and taking the tenant now is what stops the first
+        one inheriting a deployment-wide number by default.
         """
         return int(
             await self.session.scalar(
-                select(func.count(Conversation.id)).where(_UNCLAIMED_LEAD)
+                select(func.count(Conversation.id)).where(
+                    _UNCLAIMED_LEAD,
+                    Conversation.tenant_id == tenant_id,
+                )
             )
             or 0
         )
