@@ -13,6 +13,7 @@ from app.config import Settings, get_settings
 from app.core.events import conversation_activity, conversation_reopened, publish
 from app.core.exceptions import ConflictError, NotFoundError
 from app.core.logging import get_logger
+from app.core.tenant_context import TenantContext
 from app.integrations.whatsapp import WhatsAppClient
 from app.models.conversation import STATUS_CLOSED, Conversation
 from app.models.message import Message
@@ -100,6 +101,12 @@ async def revive_for_operator(
     ``closing_sent_at`` while preserving ``welcome_sent_at`` and the whole
     transcript) and COMMITS before returning.
 
+    Takes a loaded conversation rather than an id, which is what keeps it out
+    of the tenant question entirely: every caller obtained this row from the
+    tenant-scoped ``ConversationRepository.get``, so the ownership check has
+    already happened and there is no identifier here to point at somebody
+    else's row.
+
     Committing here rather than leaving it to the caller is deliberate: the
     callers go on to make a WhatsApp API call, and a revive that is still
     uncommitted when that call fails would roll back and leave the operator's
@@ -143,10 +150,25 @@ async def revive_for_operator(
 
 
 class ReplyService:
+    """Sends an operator's reply into one conversation, for one tenant.
+
+    ``tenant`` is required. It is what makes the conversation lookup below an
+    authorization boundary rather than a plain fetch by id: the id arrives
+    from the request path, so without a tenant an operator could name any
+    conversation in the deployment and have a message delivered into it.
+
+    Positional and mandatory rather than defaulted. A default would have to
+    invent a tenant, and the only tenant available to invent is the
+    deployment's original one -- which is precisely the silent fallback D-6
+    forbids. Every route reaches this through ``get_reply_service``, which
+    resolves the context from the caller's own credential.
+    """
+
     def __init__(
         self,
         session: AsyncSession,
         whatsapp: WhatsAppClient,
+        tenant: TenantContext,
         settings: Settings | None = None,
     ) -> None:
         self._session = session
@@ -155,6 +177,7 @@ class ReplyService:
         # constructor means deps.get_reply_service and every existing test
         # that injects a fake client are unchanged.
         self._whatsapp = whatsapp
+        self._tenant = tenant
         self._settings = settings or get_settings()
         self._conversations = ConversationRepository(session)
         self._messages = MessageRepository(session)
@@ -179,6 +202,14 @@ class ReplyService:
         The message is persisted only after the platform accepts it, so a
         failed send never leaves a phantom message in the transcript.
 
+        The lookup carries this service's tenant, so a conversation belonging
+        to somebody else reads as absent and the caller raises the same 404 it
+        raises for an id that does not exist. That is the answer that reveals
+        least -- a 403 would confirm the conversation is real -- and it is the
+        check that stops a message being delivered to another tenant's
+        customer. Route-level authorization and its audit trail are step 4;
+        this is the repository boundary underneath them.
+
         A closed conversation is revived before anything is sent. Replying
         into a closed session used to succeed and then strand the exchange:
         the message reached the customer, but their answer opened a different
@@ -195,7 +226,9 @@ class ReplyService:
         working; None simply means the reply is not attributed to an operator
         account, which is what a shared-key request produces.
         """
-        conversation = await self._conversations.get(conversation_id)
+        conversation = await self._conversations.get(
+            conversation_id, tenant_id=self._tenant.tenant_id
+        )
         if conversation is None:
             raise NotFoundError(f"Conversation {conversation_id} not found")
 

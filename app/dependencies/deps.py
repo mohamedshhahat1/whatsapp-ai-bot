@@ -134,11 +134,6 @@ def get_pricing_service(db: AsyncSession = Depends(get_db)) -> PricingService:
     return PricingService(db)
 
 
-def get_reply_service(db: AsyncSession = Depends(get_db)) -> ReplyService:
-    """Manual reply service bound to the request-scoped session."""
-    return ReplyService(db, get_whatsapp_client())
-
-
 def get_device_service(db: AsyncSession = Depends(get_db)) -> DeviceService:
     """Device registration bound to the request-scoped session."""
     return DeviceService(db)
@@ -385,9 +380,10 @@ async def require_tenant_context(
     return await _operator_tenant_context(db, principal.operator_id, selected)
 
 
-# Declared after require_tenant_context rather than beside the other service
-# factories: Depends() is evaluated when the function is defined, so a factory
-# cannot name a dependency that appears later in the module.
+# The two factories below are declared after require_tenant_context rather
+# than beside the other service factories: Depends() is evaluated when the
+# function is defined, so a factory cannot name a dependency that appears
+# later in the module.
 def get_admin_service(
     db: AsyncSession = Depends(get_db),
     tenant: TenantContext = Depends(require_tenant_context),
@@ -404,6 +400,24 @@ def get_admin_service(
     identifiers in the path belong to it. Those ownership checks are step 4.
     """
     return AdminService(db, tenant)
+
+
+def get_reply_service(
+    db: AsyncSession = Depends(get_db),
+    tenant: TenantContext = Depends(require_tenant_context),
+) -> ReplyService:
+    """Manual reply service bound to the request-scoped session and tenant.
+
+    Moved down the module for the ordering reason above; it used to sit with
+    the other service factories and could not stay there once it needed the
+    context.
+
+    The context is what stops an operator sending a message into a
+    conversation belonging to another tenant: the lookup inside
+    ``send_manual_reply`` carries it, so such an id reads as absent and the
+    route answers 404 without anything being delivered.
+    """
+    return ReplyService(db, get_whatsapp_client(), tenant)
 
 
 def _peer_is_internal(request: Request) -> bool:
