@@ -16,20 +16,26 @@ _CHANNEL_IDENTITY_CONSTRAINT = "uq_users_channel_external_id"
 
 
 class UserRepository(BaseRepository):
-    async def get_by_wa_id(self, wa_id: str) -> User | None:
-        """Resolve a customer by phone number across every tenant.
+    async def get_by_wa_id(self, wa_id: str, *, tenant_id: int) -> User | None:
+        """Resolve a customer by phone number, within one tenant.
 
-        Deliberately still unscoped. Scoping the read paths is Phase 1c, where
-        a tenant context arrives with the request; adding a filter here now
-        would need a tenant argument every caller would have to invent, and an
-        invented tenant is how a lookup starts returning nothing.
+        ``tenant_id`` is mandatory and keyword-only. This read was unscoped
+        until Phase 1c, and 0016 is what made that dangerous rather than
+        merely untidy: it replaced the global ``ix_users_wa_id`` with
+        ``uq_users_tenant_wa_id``, so the same phone number may now
+        legitimately exist in several tenants. An unscoped lookup returns an
+        arbitrary one of them, and whichever row Postgres happened to hand
+        back would decide whose customer was answered, out of whose history.
 
-        The write paths below do not use this method, precisely because they
-        must not resolve a customer belonging to somebody else.
+        There is deliberately no default. A default would be a tenant this
+        method invented, and an invented tenant is how a lookup stops failing
+        and starts quietly answering for the wrong company.
+
+        This is also the lookup ``get_or_create`` uses. The private helper
+        that used to sit beside it ran exactly this query, and keeping two
+        spellings of one predicate is how the scoped and unscoped versions
+        drifted apart in the first place.
         """
-        return await self.session.scalar(select(User).where(User.wa_id == wa_id))
-
-    async def _get_in_tenant_by_wa_id(self, wa_id: str, tenant_id: int) -> User | None:
         return await self.session.scalar(
             select(User).where(User.wa_id == wa_id, User.tenant_id == tenant_id)
         )
@@ -55,10 +61,12 @@ class UserRepository(BaseRepository):
         Both the lookup and the re-read are scoped to the tenant since
         0016_tenant_ownership. That is the fix for the defect where a second
         tenant's inbound message resolved to the first tenant's customer and
-        was answered out of the first tenant's history. ``tenant_id`` defaults
-        to the deployment's original tenant, which keeps the single-tenant
-        path working exactly as before; Phase 1c replaces the default with a
-        tenant established by the request.
+        was answered out of the first tenant's history. ``tenant_id`` remains
+        optional HERE, unlike on the read paths above, and that is a decision
+        rather than an oversight: this is a write path reached by an inbound
+        webhook, which carries no operator credential to resolve a tenant
+        from. Under D-5 those deliveries resolve to the deployment's original
+        tenant for now, and real per-integration resolution is Phase 3.
 
         The conflict target is deliberately left unnamed. This row trips two
         unique constraints when it duplicates an existing customer --
@@ -68,7 +76,7 @@ class UserRepository(BaseRepository):
         this clause exists to prevent.
         """
         owner = await resolve_tenant_id(self.session, tenant_id)
-        user = await self._get_in_tenant_by_wa_id(wa_id, owner)
+        user = await self.get_by_wa_id(wa_id, tenant_id=owner)
         if user is None:
             await self.session.execute(
                 pg_insert(User)
@@ -81,14 +89,16 @@ class UserRepository(BaseRepository):
                 )
                 .on_conflict_do_nothing()
             )
-            user = await self._get_in_tenant_by_wa_id(wa_id, owner)
+            user = await self.get_by_wa_id(wa_id, tenant_id=owner)
             if user is None:  # pragma: no cover - only if the winner rolled back
                 raise ConflictError(f"Could not create or load customer {wa_id}")
         if name and user.name != name:
             user.name = name
         return user
 
-    async def get_by_channel_id(self, channel: str, external_id: str) -> User | None:
+    async def get_by_channel_id(
+        self, channel: str, external_id: str, *, tenant_id: int
+    ) -> User | None:
         """Resolve a customer by their id on one specific channel.
 
         The same human on WhatsApp and on Messenger is two rows. Meta exposes
@@ -96,18 +106,11 @@ class UserRepository(BaseRepository):
         honest way to merge them and pretending otherwise would attach one
         customer's history to another.
 
-        Unscoped for the same reason as ``get_by_wa_id``; see the note there.
+        Scoped on the same terms as :meth:`get_by_wa_id`; see the note there.
+        Two tenants running Instagram DMs through the same agency can hold
+        the same page-scoped id, so this needs the predicate for the same
+        reason the phone-number lookup does.
         """
-        return await self.session.scalar(
-            select(User).where(
-                User.channel == channel,
-                User.external_id == external_id,
-            )
-        )
-
-    async def _get_in_tenant_by_channel_id(
-        self, channel: str, external_id: str, tenant_id: int
-    ) -> User | None:
         return await self.session.scalar(
             select(User).where(
                 User.channel == channel,
@@ -141,7 +144,7 @@ class UserRepository(BaseRepository):
         the only one they can violate.
         """
         owner = await resolve_tenant_id(self.session, tenant_id)
-        user = await self._get_in_tenant_by_channel_id(channel, external_id, owner)
+        user = await self.get_by_channel_id(channel, external_id, tenant_id=owner)
         if user is None:
             await self.session.execute(
                 pg_insert(User)
@@ -153,7 +156,7 @@ class UserRepository(BaseRepository):
                 )
                 .on_conflict_do_nothing(constraint=_CHANNEL_IDENTITY_CONSTRAINT)
             )
-            user = await self._get_in_tenant_by_channel_id(channel, external_id, owner)
+            user = await self.get_by_channel_id(channel, external_id, tenant_id=owner)
             if user is None:  # pragma: no cover - only if the winner rolled back
                 raise ConflictError(
                     f"Could not create or load customer {external_id} on {channel}"
@@ -162,11 +165,30 @@ class UserRepository(BaseRepository):
             user.name = name
         return user
 
-    async def list(self, offset: int = 0, limit: int = 50) -> list[User]:
+    async def list(
+        self, offset: int = 0, limit: int = 50, *, tenant_id: int
+    ) -> list[User]:
+        """This tenant's customers, newest first.
+
+        A true enumeration, and therefore an authorization boundary rather
+        than a tidiness question: unscoped, this handed every customer in the
+        deployment -- names and phone numbers included -- to whichever
+        operator asked for page one.
+        """
         result = await self.session.scalars(
-            select(User).order_by(User.created_at.desc()).offset(offset).limit(limit)
+            select(User)
+            .where(User.tenant_id == tenant_id)
+            .order_by(User.created_at.desc())
+            .offset(offset)
+            .limit(limit)
         )
         return list(result)
 
-    async def count(self) -> int:
-        return int(await self.session.scalar(select(func.count(User.id))) or 0)
+    async def count(self, *, tenant_id: int) -> int:
+        """How many customers this tenant has."""
+        return int(
+            await self.session.scalar(
+                select(func.count(User.id)).where(User.tenant_id == tenant_id)
+            )
+            or 0
+        )

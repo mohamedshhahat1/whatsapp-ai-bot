@@ -192,6 +192,9 @@ class MessageRepository(BaseRepository):
         ``None`` means nothing has been reserved yet. ``pending`` means a
         previous attempt got as far as the WhatsApp call and its outcome is
         unknown, which is the case a retry has to treat as "already sent".
+
+        Global by design, like the reservation index it probes; see
+        :meth:`exists_by_wa_id` for the full argument.
         """
         return await self.session.scalar(
             select(Message.status).where(
@@ -216,6 +219,27 @@ class MessageRepository(BaseRepository):
             await self.session.delete(message)
 
     async def exists_by_wa_id(self, wa_message_id: str) -> bool:
+        """Whether this provider message id has already been stored.
+
+        Deliberately global, and left that way in Phase 1c after being
+        considered rather than missed. Three things make it the right answer.
+
+        The id is Meta's and is unique across the platform, so there is no
+        second tenant this could confuse: the predicate would narrow a key
+        that is already a key.
+
+        The index it probes is global, and Phase 1b locked it that way --
+        ``wa_message_id`` and ``reply_to_wa_message_id`` are the anchors the
+        reserve-before-send guarantee rests on. A tenant predicate here would
+        turn a clean "already handled" into a scoped miss followed by a unique
+        violation on the insert: the same outcome reached by a worse route.
+
+        And this is not an enumeration or an authorization boundary. Nothing
+        is returned but a boolean, and the id arrives from the provider rather
+        than from a caller who could name somebody else's message. The cost of
+        being wrong here is a customer receiving the same reply twice, which
+        is the one failure this file exists to prevent.
+        """
         result = await self.session.scalar(
             select(Message.id).where(Message.wa_message_id == wa_message_id)
         )
@@ -231,6 +255,12 @@ class MessageRepository(BaseRepository):
         return list(reversed(list(result)))
 
     async def update_status_by_wa_id(self, wa_message_id: str, status: str) -> None:
+        """Apply a delivery-status callback to the message it names.
+
+        Global for the same reasons as :meth:`exists_by_wa_id`: the id is
+        globally unique and arrives from the provider, not from a caller who
+        could name another tenant's row.
+        """
         await self.session.execute(
             update(Message)
             .where(Message.wa_message_id == wa_message_id)
@@ -267,13 +297,28 @@ class MessageRepository(BaseRepository):
             or 0
         )
 
-    async def count(self) -> int:
-        return int(await self.session.scalar(select(func.count(Message.id))) or 0)
+    async def count(self, *, tenant_id: int) -> int:
+        """How many messages this tenant has stored.
 
-    async def count_since(self, since: datetime) -> int:
+        An aggregate over tenant-owned rows, so it takes the tenant. It feeds
+        the dashboard headline, where an unscoped total reports the whole
+        deployment's traffic to every customer of it.
+        """
         return int(
             await self.session.scalar(
-                select(func.count(Message.id)).where(Message.created_at >= since)
+                select(func.count(Message.id)).where(Message.tenant_id == tenant_id)
+            )
+            or 0
+        )
+
+    async def count_since(self, since: datetime, *, tenant_id: int) -> int:
+        """How many of this tenant's messages have arrived since ``since``."""
+        return int(
+            await self.session.scalar(
+                select(func.count(Message.id)).where(
+                    Message.tenant_id == tenant_id,
+                    Message.created_at >= since,
+                )
             )
             or 0
         )
