@@ -11,13 +11,20 @@ figures are compared against a baseline taken inside the same test rather than
 against a constant. The second tenant is created empty, so its figures are
 exact.
 
+Step 2c adds the customer and conversation reads to what was already covered
+for documents, chunks and AI logs. Those are the paths an operator reaches by
+naming an identifier, so they are authorization boundaries rather than
+listings, and the tests below aim another tenant's id at each of them in both
+directions.
+
 Cleanup is not optional. ``other_tenant`` deletes its row on teardown and
 every reference added in 0016 is ON DELETE RESTRICT, so a test that leaves a
 document or an AI log behind fails in teardown -- which is the schema working,
 not the test being fragile.
 """
 
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from datetime import UTC, datetime, timedelta
 from inspect import Parameter, signature
 from typing import cast
 from uuid import uuid4
@@ -29,13 +36,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.core.tenant_context import system_tenant_context
 from app.integrations.embeddings import EmbeddingClient
+from app.models.conversation import MODE_HUMAN, TAG_SALES_LEAD
 from app.models.document import EMBEDDING_DIMENSIONS
 from app.repositories.ai_log import AILogRepository
+from app.repositories.conversation import ConversationRepository
 from app.repositories.document import ChunkInput, DocumentRepository
+from app.repositories.message import MessageRepository
+from app.repositories.user import UserRepository
 from app.services.admin_service import AdminService
 from app.services.chat_service import ChatService
 from app.services.ingestion import KnowledgeIngestionService
+from app.services.reply_service import ReplyService
 from app.services.retrieval import PgVectorRetriever, build_retriever
+from tests.conftest import Customer, create_customer, new_wa_id, purge
 
 #: Which embedding dimension the retrieval tests seed and query on. Chunks
 #: written elsewhere in the suite sit on dimension 0, so a query on this axis
@@ -140,6 +153,50 @@ async def _drop_ai_logs(session: AsyncSession, tenant_id: int) -> None:
         {"tenant_id": tenant_id},
     )
     await session.commit()
+
+
+async def _add_message(
+    session: AsyncSession, conversation_id: int, content: str
+) -> None:
+    """Store one inbound message on a conversation.
+
+    The provider id is unique per call because ``wa_message_id`` carries a
+    global unique index -- deliberately global, see MessageRepository -- so a
+    constant here would collide with the second message this file writes.
+    """
+    await MessageRepository(session).create(
+        conversation_id=conversation_id,
+        direction="inbound",
+        content=content,
+        wa_message_id="wamid.phase1c." + uuid4().hex[:12],
+    )
+    await session.commit()
+
+
+@pytest.fixture
+async def two_customers(
+    db: AsyncSession, default_tenant: int, other_tenant: int
+) -> AsyncIterator[tuple[Customer, Customer]]:
+    """The same phone number, as a customer of each tenant.
+
+    Deliberately the SAME wa_id in both. That is the situation 0016 made
+    legal when it replaced the global ``ix_users_wa_id`` with
+    ``uq_users_tenant_wa_id``, and it is the one an unscoped lookup gets
+    wrong: two rows match, and whichever Postgres returned first decided whose
+    customer was answered. Seeding it here means these tests fail against the
+    queries they replace rather than merely passing against the new ones.
+
+    Teardown purges by wa_id, which is not tenant-scoped, so one call removes
+    both sides -- and it has to, because ``other_tenant`` deletes its row
+    afterwards and every reference added in 0016 is ON DELETE RESTRICT.
+    """
+    wa_id = new_wa_id()
+    mine = await create_customer(db, wa_id, tenant_id=default_tenant)
+    theirs = await create_customer(db, wa_id, tenant_id=other_tenant)
+    try:
+        yield mine, theirs
+    finally:
+        await purge(db, wa_id)
 
 
 async def test_list_documents_does_not_return_another_tenants_documents(
@@ -250,6 +307,179 @@ async def test_the_retriever_only_reaches_its_own_tenants_knowledge(
         await _drop_documents(db, other_tenant, [theirs])
 
 
+async def test_get_by_wa_id_resolves_within_the_asking_tenant(
+    db: AsyncSession,
+    default_tenant: int,
+    other_tenant: int,
+    two_customers: tuple[Customer, Customer],
+) -> None:
+    """One phone number, two tenants, two different customers.
+
+    Unscoped this returned whichever row the planner reached first, so the
+    inbound path could answer a customer out of another company's history.
+    """
+    mine, theirs = two_customers
+    users = UserRepository(db)
+
+    # The premise of the whole test: these really are two distinct rows.
+    assert mine.user_id != theirs.user_id
+
+    found = await users.get_by_wa_id(mine.wa_id, tenant_id=default_tenant)
+    assert found is not None
+    assert found.id == mine.user_id
+
+    found = await users.get_by_wa_id(theirs.wa_id, tenant_id=other_tenant)
+    assert found is not None
+    assert found.id == theirs.user_id
+
+
+async def test_get_conversation_does_not_reach_across_tenants(
+    db: AsyncSession,
+    default_tenant: int,
+    other_tenant: int,
+    two_customers: tuple[Customer, Customer],
+) -> None:
+    """The boundary behind every /admin route that names a conversation id.
+
+    Asserted in both directions so the result cannot be an artefact of which
+    tenant happens to own the older row.
+    """
+    mine, theirs = two_customers
+    conversations = ConversationRepository(db)
+
+    stolen = await conversations.get(theirs.conversation_id, tenant_id=default_tenant)
+    assert stolen is None
+
+    ours = await conversations.get(mine.conversation_id, tenant_id=default_tenant)
+    assert ours is not None
+    assert ours.id == mine.conversation_id
+
+    stolen = await conversations.get(mine.conversation_id, tenant_id=other_tenant)
+    assert stolen is None
+
+
+async def test_get_with_messages_does_not_hand_over_a_transcript(
+    db: AsyncSession,
+    default_tenant: int,
+    other_tenant: int,
+    two_customers: tuple[Customer, Customer],
+) -> None:
+    """The worse of the two by-id reads: this one returns message bodies."""
+    _, theirs = two_customers
+    await _add_message(db, theirs.conversation_id, "our margin is confidential")
+    conversations = ConversationRepository(db)
+
+    stolen = await conversations.get_with_messages(
+        theirs.conversation_id, tenant_id=default_tenant
+    )
+    assert stolen is None
+
+    ours = await conversations.get_with_messages(
+        theirs.conversation_id, tenant_id=other_tenant
+    )
+    assert ours is not None
+    assert [message.content for message in ours.messages] == [
+        "our margin is confidential"
+    ]
+
+
+async def test_listings_and_counts_stop_at_the_tenant_boundary(
+    db: AsyncSession,
+    default_tenant: int,
+    other_tenant: int,
+    two_customers: tuple[Customer, Customer],
+) -> None:
+    """Enumerations and counters, from both sides of the boundary."""
+    _, theirs = two_customers
+    users = UserRepository(db)
+    conversations = ConversationRepository(db)
+    messages = MessageRepository(db)
+
+    await _add_message(db, theirs.conversation_id, "theirs")
+
+    # The second tenant holds exactly one customer, one conversation and one
+    # message, so its side is exact rather than a membership check.
+    assert await users.count(tenant_id=other_tenant) == 1
+    assert await conversations.count(tenant_id=other_tenant) == 1
+    assert await messages.count(tenant_id=other_tenant) == 1
+
+    listed = await users.list(tenant_id=other_tenant, limit=200)
+    assert [user.id for user in listed] == [theirs.user_id]
+
+    rows = await conversations.list(tenant_id=other_tenant, limit=200)
+    assert [row.id for row in rows] == [theirs.conversation_id]
+
+    # The default tenant carries rows from the rest of the suite and may hold
+    # more than one page of them, so what can be asserted here is ownership
+    # rather than a total.
+    ours = await conversations.list(tenant_id=default_tenant, limit=200)
+    assert theirs.conversation_id not in [row.id for row in ours]
+    assert all(row.tenant_id == default_tenant for row in ours)
+
+
+async def test_recent_message_and_lead_counters_are_per_tenant(
+    db: AsyncSession,
+    default_tenant: int,
+    other_tenant: int,
+    two_customers: tuple[Customer, Customer],
+) -> None:
+    """The two aggregates that feed the dashboard's live numbers."""
+    _, theirs = two_customers
+    messages = MessageRepository(db)
+    conversations = ConversationRepository(db)
+
+    since = datetime.now(UTC) - timedelta(hours=1)
+    messages_before = await messages.count_since(since, tenant_id=default_tenant)
+    leads_before = await conversations.count_unclaimed_leads(tenant_id=default_tenant)
+
+    await _add_message(db, theirs.conversation_id, "just arrived")
+
+    assert await messages.count_since(since, tenant_id=other_tenant) == 1
+    # The other tenant's brand-new message must not appear in this window.
+    assert await messages.count_since(since, tenant_id=default_tenant) == (
+        messages_before
+    )
+
+    # Turn the other tenant's conversation into a genuinely unclaimed lead:
+    # tagged, handed to a human, and assigned to nobody.
+    lead = await conversations.get(theirs.conversation_id, tenant_id=other_tenant)
+    assert lead is not None
+    await conversations.set_mode(lead, MODE_HUMAN, tag=TAG_SALES_LEAD)
+    await db.commit()
+
+    assert await conversations.count_unclaimed_leads(tenant_id=other_tenant) == 1
+    # And it must not inflate the other tenant's badge.
+    assert await conversations.count_unclaimed_leads(tenant_id=default_tenant) == (
+        leads_before
+    )
+
+
+async def test_the_sweep_helper_is_global_on_purpose(
+    db: AsyncSession,
+    default_tenant: int,
+    other_tenant: int,
+    two_customers: tuple[Customer, Customer],
+) -> None:
+    """The one deliberate exception, asserted rather than assumed.
+
+    The idle sweep runs on a beat tick with no request behind it and no
+    tenant to act for, so ``get_for_sweep`` reads any id it is given. What
+    makes that safe is that the id comes from the sweep's own committed claim
+    -- and what keeps it safe is the second half of this test: the scoped
+    ``get`` beside it still refuses the same id, so the exception cannot
+    quietly become a route to unscoped rows through the boundary method.
+    """
+    _, theirs = two_customers
+    conversations = ConversationRepository(db)
+
+    swept = await conversations.get_for_sweep(theirs.conversation_id)
+    assert swept is not None
+    assert swept.id == theirs.conversation_id
+
+    scoped = await conversations.get(theirs.conversation_id, tenant_id=default_tenant)
+    assert scoped is None
+
+
 async def test_scoped_reads_refuse_to_run_without_a_tenant(db: AsyncSession) -> None:
     """The scope cannot be omitted, only supplied.
 
@@ -267,6 +497,44 @@ async def test_scoped_reads_refuse_to_run_without_a_tenant(db: AsyncSession) -> 
         await documents.search(_embedding())  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         await logs.total_tokens()  # type: ignore[call-arg]
+
+
+async def test_customer_and_conversation_reads_refuse_without_a_tenant(
+    db: AsyncSession,
+) -> None:
+    """The same property for everything scoped in step 2c.
+
+    ``get_for_sweep`` is absent from this list deliberately. It is the one
+    read here that is meant to run without a tenant, and giving it a separate
+    name rather than an optional argument is exactly what lets this test be
+    exhaustive about the rest: there is no permissive branch to forget.
+    """
+    users = UserRepository(db)
+    conversations = ConversationRepository(db)
+    messages = MessageRepository(db)
+
+    with pytest.raises(TypeError):
+        await users.get_by_wa_id("whoever")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await users.get_by_channel_id("messenger", "psid")  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await users.list()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await users.count()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await conversations.get(1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await conversations.get_with_messages(1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await conversations.list()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await conversations.count()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await conversations.count_unclaimed_leads()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await messages.count()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        await messages.count_since(datetime.now(UTC))  # type: ignore[call-arg]
 
 
 async def test_retrieval_cannot_be_built_without_a_tenant() -> None:
@@ -289,17 +557,21 @@ async def test_retrieval_cannot_be_built_without_a_tenant() -> None:
 
 
 async def test_services_cannot_be_built_without_a_tenant(db: AsyncSession) -> None:
-    """Both services that enumerate tenant-owned data demand a context.
+    """Every service that reaches tenant-owned data demands a context.
 
     There is no reachable state in which one of these exists without knowing
     who it acts for, which is what stops a future caller reintroducing an
-    unscoped enumeration without noticing.
+    unscoped enumeration -- or, in ReplyService's case, delivering a message
+    into another tenant's conversation -- without noticing.
     """
     with pytest.raises(TypeError):
         AdminService(db)  # type: ignore[call-arg]
 
     # Read from the signature rather than by constructing one with a
-    # deliberately wrong embedding client: the property under test is that
-    # the parameter has no default, and this reads exactly that.
-    tenant = signature(KnowledgeIngestionService).parameters["tenant"]
-    assert tenant.default is Parameter.empty
+    # deliberately wrong embedding client or WhatsApp client: the property
+    # under test is that the parameter has no default, and this reads exactly
+    # that.
+    services: list[Callable[..., object]] = [ReplyService, KnowledgeIngestionService]
+    for service in services:
+        parameter = signature(service).parameters["tenant"]
+        assert parameter.default is Parameter.empty, service

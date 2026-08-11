@@ -131,11 +131,13 @@ async def _mode(session: AsyncSession, conversation_id: int) -> str | None:
 
 
 async def test_no_model_call_while_an_operator_owns_the_conversation(
-    db: AsyncSession, customer: Customer
+    db: AsyncSession, customer: Customer, default_tenant: int
 ) -> None:
     """The whole point: OpenAI is never called, but the message is still kept."""
     conversations = ConversationRepository(db)
-    conversation = await conversations.get(customer.conversation_id)
+    conversation = await conversations.get(
+        customer.conversation_id, tenant_id=default_tenant
+    )
     assert conversation is not None
     await conversations.set_mode(conversation, MODE_HUMAN, operator="Ahmed")
     await db.commit()
@@ -218,10 +220,12 @@ async def test_the_single_keyword_hands_off_through_the_webhook(
 
 
 async def test_the_bot_answers_again_after_the_ai_is_resumed(
-    db: AsyncSession, customer: Customer
+    db: AsyncSession, customer: Customer, default_tenant: int
 ) -> None:
     conversations = ConversationRepository(db)
-    conversation = await conversations.get(customer.conversation_id)
+    conversation = await conversations.get(
+        customer.conversation_id, tenant_id=default_tenant
+    )
     assert conversation is not None
     await conversations.set_mode(conversation, MODE_HUMAN, operator="Ahmed")
     await db.commit()

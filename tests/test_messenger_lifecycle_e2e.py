@@ -163,6 +163,7 @@ class TestMessengerRoundTrip:
         self,
         db: AsyncSession,
         messenger_customer: Customer,
+        default_tenant: int,
         adapter: _RecordingAdapter,
         published: list[Any],
     ) -> None:
@@ -170,7 +171,9 @@ class TestMessengerRoundTrip:
         conversations = ConversationRepository(db)
         await _arrive(db, messenger_customer)
 
-        first = await conversations.get(messenger_customer.conversation_id)
+        first = await conversations.get(
+            messenger_customer.conversation_id, tenant_id=default_tenant
+        )
         assert first is not None
         assert first.channel == MESSENGER
         assert first.status == STATUS_ACTIVE
@@ -264,6 +267,7 @@ class TestMessengerRoundTrip:
         self,
         db: AsyncSession,
         messenger_customer: Customer,
+        default_tenant: int,
         adapter: _RecordingAdapter,
         published: list[Any],
     ) -> None:
@@ -281,7 +285,7 @@ class TestMessengerRoundTrip:
         await service.close_idle_sessions()
 
         conversation = await ConversationRepository(db).get(
-            messenger_customer.conversation_id
+            messenger_customer.conversation_id, tenant_id=default_tenant
         )
         assert conversation is not None
         assert conversation.status == STATUS_CLOSED
